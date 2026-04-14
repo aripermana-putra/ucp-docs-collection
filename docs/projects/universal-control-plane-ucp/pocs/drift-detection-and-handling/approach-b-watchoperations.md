@@ -13,18 +13,20 @@ parent_page_id: "../drift-detection-and-handling.md"
 
 ## How It Works
 
-A `WatchOperation` resource watches all XRs with `platform.io/drift-protection: "true"`.
-When any watched XR changes, Crossplane creates an `Operation` that runs `function-python`.
-The function checks if the XR is actually drifted, then calls the Temporal Python SDK to
-start `DriftApprovalWorkflow`. No external binary needed.
+A `WatchOperation` resource watches all MRs with `platform.io/drift-protection: "true"`.
+When any watched MR changes, Crossplane creates an `Operation` that runs `function-python`.
+The function diffs `spec.forProvider` against `status.atProvider`, resolves the MR's
+`ownerReferences` to identify the XR, then calls the Temporal Python SDK to start
+`DriftApprovalWorkflow`. No external binary needed.
 
 ```
-XR condition changes (event-driven, Crossplane watch stream)
+MR changes (event-driven, Crossplane watch stream)
     └── WatchOperation triggers Operation creation
             └── function-python executes:
-                  1. check isDrifted(watchedXR)
-                  2. if drifted → temporalio.client.start_workflow(DriftApprovalWorkflow)
-                  3. if not drifted → no-op, complete
+                  1. diff forProvider vs atProvider
+                  2. if drifted → resolve ownerRef → XR name
+                  3. temporalio.client.start_workflow(DriftApprovalWorkflow)
+                  4. if not drifted → no-op, complete
 ```
 
 ---
@@ -35,14 +37,15 @@ XR condition changes (event-driven, Crossplane watch stream)
 ┌─────────────────────────────────────────────────────────┐
 │ Kubernetes / Crossplane                                  │
 │                                                          │
-│  WatchOperation (one per XR type)                        │
-│  └── watch.kind: XDatabase / XComputeInstance / etc.    │
+│  WatchOperation (one per MR type)                        │
+│  └── watch.kind: DatabaseInstance / Instance / etc.     │
 │       watch.matchLabels: drift-protection=true          │
 │         │                                               │
-│         │ XR changes (event-driven)                     │
+│         │ MR changes (event-driven)                     │
 │         ▼                                               │
 │     Operation created → function-python pod runs        │
-│       └── checks Synced=False                           │
+│       └── diffs forProvider vs atProvider               │
+│       └── resolves ownerRef → XR name                   │
 │       └── calls Temporal gRPC :7233                     │
 └──────────────────────────┬──────────────────────────────┘
                            │  Temporal Python SDK (gRPC)
@@ -56,7 +59,7 @@ XR condition changes (event-driven, Crossplane watch stream)
 ## Crossplane Features Required
 
 | Feature | Status | Notes |
-|---------|--------|-------|
+|---|---|---|
 | ManagementPolicies | GA (beta) | Already available |
 | WatchOperations | **Alpha** | Requires `--enable-operations` flag |
 | Operations | **Alpha** | Same flag |
@@ -68,17 +71,19 @@ XR condition changes (event-driven, Crossplane watch stream)
 
 ## Multi-Resource Support
 
-One `WatchOperation` per XR type, all pointing to the same `function-drift-notifier`:
+One `WatchOperation` per MR type, all pointing to the same `function-drift-notifier`:
 
 ```
 crossplane/watchoperations/
-├── drift-watch-xdatabase.yaml
-├── drift-watch-xcomputeinstance.yaml
-├── drift-watch-xkubernetescluster.yaml
-└── drift-watch-xobjectstorage.yaml
+├── drift-watch-databaseinstance.yaml
+├── drift-watch-instance.yaml
+├── drift-watch-cluster.yaml
+├── drift-watch-nodepool.yaml
+└── drift-watch-bucket.yaml
 ```
 
-Adding a new resource type = copy one WatchOperation YAML and update `watch.kind`.
+Adding a new resource type = copy one WatchOperation YAML and update `watch.apiVersion`
+and `watch.kind`.
 
 ---
 
@@ -88,11 +93,11 @@ Adding a new resource type = copy one WatchOperation YAML and update `watch.kind
 apiVersion: ops.crossplane.io/v1alpha1
 kind: WatchOperation
 metadata:
-  name: drift-watch-xdatabase
+  name: drift-watch-databaseinstance
 spec:
   watch:
-    apiVersion: platform.example.io/v1alpha1
-    kind: XDatabase
+    apiVersion: sql.gcp.upbound.io/v1beta2
+    kind: DatabaseInstance
     matchLabels:
       platform.io/drift-protection: "true"
   concurrencyPolicy: Allow
@@ -111,10 +116,9 @@ spec:
             temporalAddress: "temporal-frontend.temporal-system:7233"
             temporalTaskQueue: "db-provisioning"
             temporalNamespace: "default"
-            xrGroup: "platform.example.io"
-            xrVersion: "v1alpha1"
-            xrResource: "xdatabases"
-            xrKind: "XDatabase"
+            mrGroup: "sql.gcp.upbound.io"
+            mrVersion: "v1beta2"
+            mrResource: "databaseinstances"
 ```
 
 ---
@@ -125,15 +129,17 @@ spec:
 async def run(req, _) -> fnv1.RunFunctionResponse:
     rsp = response.to(req)
     watched = request.get_required_resource(req, "ops.crossplane.io/watched-resource")
-    name      = watched["metadata"]["name"]
-    namespace = watched["metadata"].get("namespace", "default")
-    config    = req.input["spec"]
+    config  = req.input["spec"]
 
-    if not is_drifted(watched):
+    drifted, detail = is_drifted(watched)
+    if not drifted:
         return rsp  # no-op on every non-drifted change
 
-    xr_kind     = config["xrKind"]
-    workflow_id = f"drift-approval-{namespace}-{xr_kind.lower()}-{name}"
+    # Resolve ownerReferences to find the XR
+    xr_name, xr_kind, xr_api_version = resolve_controller_owner(watched)
+    xr_group, xr_version = split_api_version(xr_api_version)
+    namespace = watched["metadata"].get("namespace", "default")
+    workflow_id = f"drift-approval-{namespace}-{xr_kind.lower()}-{xr_name}"
 
     await start_drift_workflow(
         address=config["temporalAddress"],
@@ -141,20 +147,53 @@ async def run(req, _) -> fnv1.RunFunctionResponse:
         task_queue=config["temporalTaskQueue"],
         workflow_id=workflow_id,
         input_payload={
-            "xrGroup": config["xrGroup"], "xrVersion": config["xrVersion"],
-            "xrResource": config["xrResource"], "xrKind": xr_kind,
-            "xrName": name, "namespace": namespace,
-            "detectedAt": datetime.now(timezone.utc).isoformat(),
-            "driftReason": get_synced_reason(watched),
+            "mrGroup":     config["mrGroup"],
+            "mrVersion":   config["mrVersion"],
+            "mrResource":  config["mrResource"],
+            "mrName":      watched["metadata"]["name"],
+            "mrNamespace": namespace,
+            "xrGroup":     xr_group,
+            "xrVersion":   xr_version,
+            "xrResource":  plural_from_kind(xr_kind),
+            "xrKind":      xr_kind,
+            "xrName":      xr_name,
+            "xrNamespace": namespace,
+            "detectedAt":  datetime.now(timezone.utc).isoformat(),
+            "driftDetail": detail,
         },
     )
     return rsp
 
-def is_drifted(obj: dict) -> bool:
-    for c in obj.get("status", {}).get("conditions", []):
-        if c.get("type") == "Synced" and c.get("status") == "False":
-            return c.get("reason", "") == "ReconcileError"
-    return False
+def is_drifted(obj: dict) -> tuple[bool, str]:
+    """Compare spec.forProvider against status.atProvider.
+    Ignores keys present in atProvider but absent in forProvider (computed fields).
+    Returns (drifted, detail_string).
+    """
+    for_provider = obj.get("spec", {}).get("forProvider", {})
+    at_provider  = obj.get("status", {}).get("atProvider", {})
+    if not at_provider:
+        return False, ""  # Observe() has not run yet
+    diffs = diff_maps("", for_provider, at_provider)
+    if not diffs:
+        return False, ""
+    return True, "; ".join(diffs)
+
+def diff_maps(prefix: str, desired: dict, observed: dict) -> list[str]:
+    out = []
+    for k, dv in desired.items():
+        path = f"{prefix}.{k}" if prefix else k
+        ov = observed.get(k)
+        if isinstance(dv, dict) and isinstance(ov, dict):
+            out.extend(diff_maps(path, dv, ov))
+        elif str(dv) != str(ov):
+            out.append(f"{path}: {dv} → {ov}")
+    return out
+
+def resolve_controller_owner(obj: dict) -> tuple[str, str, str]:
+    for ref in obj.get("metadata", {}).get("ownerReferences", []):
+        if ref.get("controller", False):
+            return ref["name"], ref["kind"], ref["apiVersion"]
+    return "", "", ""
 ```
 
 ---
@@ -162,24 +201,25 @@ def is_drifted(obj: dict) -> bool:
 ## Deduplication
 
 Two layers:
-1. **`is_drifted()` gate** — exits if XR is not actually drifted. Prevents Temporal calls on every reconcile tick.
-2. **Temporal workflow ID** — deterministic `drift-approval-<ns>-<kind>-<name>`. `AlreadyStarted` swallowed silently.
+1. **`is_drifted()` gate** — exits if MR is not actually drifted. Prevents Temporal calls on every reconcile tick.
+2. **Temporal workflow ID** — deterministic `drift-approval-<ns>-<xrKind>-<xrName>`. `AlreadyStarted` swallowed silently.
 
 ---
 
 ## New Files
 
 ```
-k8s/deploy-crossplane.sh                              MODIFY (--enable-operations)
-crossplane/providers/function-python.yaml             NEW
-crossplane/watchoperations/*.yaml (4 files)           NEW
-crossplane/functions/drift-notifier/main.py           NEW
-crossplane/functions/drift-notifier/requirements.txt  NEW
-crossplane/functions/drift-notifier/Dockerfile        NEW
-backend/temporal-worker/internal/workflows/drift_approval.go  NEW (shared)
-backend/temporal-worker/internal/activities/drift.go          NEW (shared)
-backend/temporal-worker/cmd/worker/main.go                    MODIFY
-k8s/temporal-worker/serviceaccount.yaml                       MODIFY (RBAC)
+k8s/deploy-crossplane.sh                                       MODIFY (--enable-operations)
+crossplane/providers/function-python.yaml                      NEW
+crossplane/watchoperations/*.yaml (5 files)                    NEW
+crossplane/functions/drift-notifier/main.py                    NEW
+crossplane/functions/drift-notifier/requirements.txt           NEW
+crossplane/functions/drift-notifier/Dockerfile                 NEW
+crossplane/functions/drift-notifier/package/crossplane.yaml    NEW
+backend/temporal-worker/internal/workflows/drift_approval.go   NEW (shared)
+backend/temporal-worker/internal/activities/drift.go           NEW (shared)
+backend/temporal-worker/cmd/worker/main.go                     MODIFY
+k8s/temporal-worker/serviceaccount.yaml                        MODIFY (RBAC)
 ```
 
 ---
@@ -219,9 +259,9 @@ kubectl run test --rm -it --image=alpine -n crossplane-system \
 ## Failure Modes
 
 | Failure | Effect | Recovery |
-|---------|--------|----------|
+|---|---|---|
 | function-python crashes | Operation marked Failed | Crossplane retries per `failedHistoryLimit` |
-| Temporal gRPC unreachable | `start_workflow` raises, Operation fails | Next XR change creates new Operation |
+| Temporal gRPC unreachable | `start_workflow` raises, Operation fails | Next MR change creates new Operation |
 | `--enable-operations` flag missing | WatchOperation CRD not registered | Re-install Crossplane with flag |
 | Function image unavailable | ImagePullBackOff | Push image, Operation auto-retries |
 
@@ -231,7 +271,7 @@ kubectl run test --rm -it --image=alpine -n crossplane-system \
 
 ### Pros
 - **No new K8s Deployment** — function runs as a short-lived Crossplane Operation pod (ephemeral, managed by Crossplane)
-- **Event-driven** — sub-second reaction after Crossplane propagates `Synced=False` to the XR; no poll delay
+- **Event-driven** — sub-second reaction after Crossplane updates `atProvider` on the MR; no poll delay
 - **Declarative** — WatchOperation YAML is self-describing; visible to anyone inspecting the cluster
 - **No persistent process** — Crossplane manages the Operation lifecycle; no pod to keep alive
 
@@ -250,4 +290,4 @@ kubectl run test --rm -it --image=alpine -n crossplane-system \
 - **Python in a Go codebase** — adds a new language and runtime to maintain.
 - **Higher per-type extension cost** — all approaches require something when adding a new resource type; B requires a full new WatchOperation YAML file per type, whereas A/C only need one ConfigMap line and D only needs a `temporal schedule update` command.
 - **Package build pipeline required** — the function is a Crossplane `.xpkg` package, not a plain Docker image. Building it requires `docker build` + `crossplane xpkg build` + `crossplane xpkg push`, plus a `package/crossplane.yaml` metadata file. This CI/CD step is absent from all other approaches.
-- **Detection floor is still ~1 min** — gated by Crossplane's own poll interval, same as all other approaches.
+- **Detection floor is still ~10 min** — gated by Crossplane's own `atProvider` refresh cycle (poll interval), same as all other approaches.

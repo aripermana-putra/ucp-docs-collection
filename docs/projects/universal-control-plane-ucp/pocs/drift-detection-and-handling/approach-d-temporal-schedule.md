@@ -14,8 +14,10 @@ parent_page_id: "../drift-detection-and-handling.md"
 ## How It Works
 
 A Temporal `Schedule` triggers `DriftScanWorkflow` every minute. The workflow runs
-`ScanDriftActivity`, which lists all XRs with the drift-protection label across all
-configured GVRs, and fires `DriftApprovalWorkflow` for any that are drifted.
+`ScanDriftActivity`, which lists all MRs with the drift-protection label across all
+configured MR GVRs, diffs `spec.forProvider` against `status.atProvider`, and fires
+`DriftApprovalWorkflow` for any that are drifted. The ownerReferences on each drifted
+MR are resolved to identify the XR for the workflow key.
 
 No external binary. No new Kubernetes Deployment. All logic lives inside Temporal.
 
@@ -23,10 +25,13 @@ No external binary. No new Kubernetes Deployment. All logic lives inside Tempora
 Temporal Schedule (every 1 min)
     └── DriftScanWorkflow
             └── ScanDriftActivity
-                  for each configured GVR:
-                    list XRs with platform.io/drift-protection=true
-                    for each XR with Synced=False:
-                      ExecuteWorkflow(DriftApprovalWorkflow, ...)
+                  for each configured MR GVR:
+                    list MRs with platform.io/drift-protection=true
+                    for each MR:
+                      drifted, detail := isDrifted(mr)  // forProvider vs atProvider
+                      if drifted:
+                        resolve ownerRef → XR name
+                        ExecuteWorkflow(DriftApprovalWorkflow, mrFields + xrFields)
 ```
 
 ---
@@ -40,11 +45,12 @@ Temporal Schedule (every 1 min)
 │  Schedule: drift-scan (every 1 min)              │
 │    └── DriftScanWorkflow                         │
 │          └── ScanDriftActivity                   │
-│                │ K8s API (list XRs per GVR)      │
-│                for each drifted XR:              │
+│                │ K8s API (list MRs per GVR)      │
+│                for each drifted MR:              │
+│                  resolve ownerRef → XR           │
 │                  ExecuteWorkflow(                │
 │                    DriftApprovalWorkflow,         │
-│                    id=drift-approval-<ns>-<name> │
+│                    id=drift-approval-<ns>-<xrKind>-<xrName>│
 │                  )                               │
 └──────────────────────────────────────────────────┘
                    │
@@ -52,7 +58,7 @@ Temporal Schedule (every 1 min)
                    ▼
 ┌──────────────────────────────────────────────────┐
 │ Kubernetes                                        │
-│  XDatabase, XComputeInstance, etc.               │
+│  DatabaseInstance, Instance, Cluster, Bucket     │
 │  with label platform.io/drift-protection=true   │
 └──────────────────────────────────────────────────┘
 ```
@@ -61,13 +67,13 @@ Temporal Schedule (every 1 min)
 
 ## Multi-Resource Support
 
-The GVR list is passed into `DriftScanWorkflow` as part of the Schedule input. Adding a
+The MR GVR list is passed into `DriftScanWorkflow` as part of the Schedule input. Adding a
 new resource type = update the Schedule — no code change, no redeployment:
 
 ```bash
 temporal schedule update \
   --schedule-id "drift-scan" \
-  --input '{"gvrs": ["...", "platform.example.io/v1alpha1/xloadbalancers"]}'
+  --input '{"gvrs": ["...", "networking.gcp.upbound.io/v1beta1/globaladdresses"]}'
 ```
 
 ---
@@ -94,7 +100,7 @@ crossplane/composition/* (4 files)                            MODIFY
 
 ```go
 type DriftScanInput struct {
-    GVRs []string `json:"gvrs"` // "group/version/resource" per entry
+    GVRs []string `json:"gvrs"` // MR GVRs: "group/version/resource" per entry
 }
 
 type DriftScanOutput struct {
@@ -131,12 +137,13 @@ func ScanDriftActivity(ctx context.Context, in workflows.DriftScanInput) (workfl
         })
         for _, item := range list.Items {
             out.ScannedResources++
-            if !isDrifted(&item) { continue }
+            drifted, detail := isDrifted(&item)
+            if !drifted { continue }
             out.DriftedResources++
 
-            driftIn  := buildDriftInput(&item, gvr, inferKindFromGVR(gvr))
-            wfID     := fmt.Sprintf("drift-approval-%s-%s-%s",
-                driftIn.Namespace, strings.ToLower(driftIn.XRKind), driftIn.XRName)
+            driftIn := buildDriftInput(&item, gvr, detail)
+            wfID    := fmt.Sprintf("drift-approval-%s-%s-%s",
+                driftIn.XRNamespace, strings.ToLower(driftIn.XRKind), driftIn.XRName)
 
             _, err := tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
                 ID: wfID, TaskQueue: "db-provisioning",
@@ -148,6 +155,73 @@ func ScanDriftActivity(ctx context.Context, in workflows.DriftScanInput) (workfl
         }
     }
     return out, nil
+}
+
+// isDrifted compares spec.forProvider against status.atProvider.
+// Fields present in atProvider but absent in forProvider are ignored (computed fields).
+func isDrifted(obj *unstructured.Unstructured) (bool, string) {
+    forProvider, _, _ := unstructured.NestedMap(obj.Object, "spec", "forProvider")
+    atProvider, _, _  := unstructured.NestedMap(obj.Object, "status", "atProvider")
+    if len(atProvider) == 0 {
+        return false, "" // Observe() has not run yet
+    }
+    diffs := diffMaps("", forProvider, atProvider)
+    if len(diffs) == 0 {
+        return false, ""
+    }
+    return true, strings.Join(diffs, "; ")
+}
+
+func diffMaps(prefix string, desired, observed map[string]interface{}) []string {
+    var out []string
+    for k, dv := range desired {
+        path := k
+        if prefix != "" {
+            path = prefix + "." + k
+        }
+        ov := observed[k]
+        if dMap, ok := dv.(map[string]interface{}); ok {
+            if oMap, ok := ov.(map[string]interface{}); ok {
+                out = append(out, diffMaps(path, dMap, oMap)...)
+            } else {
+                out = append(out, fmt.Sprintf("%s: differs", path))
+            }
+        } else if fmt.Sprintf("%v", dv) != fmt.Sprintf("%v", ov) {
+            out = append(out, fmt.Sprintf("%s: %v → %v", path, dv, ov))
+        }
+    }
+    return out
+}
+
+// buildDriftInput populates both MR and XR fields.
+// XR fields are resolved from the MR's ownerReferences (controller owner).
+func buildDriftInput(mr *unstructured.Unstructured, mrGVR schema.GroupVersionResource, detail string) DriftApprovalInput {
+    xrName, xrKind, xrAPIVersion := resolveControllerOwner(mr)
+    xrGroup, xrVersion := splitAPIVersion(xrAPIVersion)
+    return DriftApprovalInput{
+        MRGroup:     mrGVR.Group,
+        MRVersion:   mrGVR.Version,
+        MRResource:  mrGVR.Resource,
+        MRName:      mr.GetName(),
+        MRNamespace: mr.GetNamespace(),
+        XRGroup:     xrGroup,
+        XRVersion:   xrVersion,
+        XRResource:  pluralFromKind(xrKind),
+        XRKind:      xrKind,
+        XRName:      xrName,
+        XRNamespace: mr.GetNamespace(),
+        DetectedAt:  time.Now().UTC().Format(time.RFC3339),
+        DriftDetail: detail,
+    }
+}
+
+func resolveControllerOwner(obj *unstructured.Unstructured) (name, kind, apiVersion string) {
+    for _, ref := range obj.GetOwnerReferences() {
+        if ref.Controller != nil && *ref.Controller {
+            return ref.Name, ref.Kind, ref.APIVersion
+        }
+    }
+    return "", "", ""
 }
 ```
 
@@ -165,10 +239,11 @@ temporal schedule create \
   --overlap-policy Skip \
   --input '{
     "gvrs": [
-      "platform.example.io/v1alpha1/xdatabases",
-      "platform.example.io/v1alpha1/xcomputeinstances",
-      "platform.example.io/v1alpha1/xkubernetesclusters",
-      "platform.example.io/v1alpha1/xobjectstorages"
+      "sql.gcp.upbound.io/v1beta2/databaseinstances",
+      "compute.gcp.upbound.io/v1beta2/instances",
+      "container.gcp.upbound.io/v1beta2/clusters",
+      "container.gcp.upbound.io/v1beta2/nodepools",
+      "storage.gcp.upbound.io/v1beta2/buckets"
     ]
   }' \
   --cron "* * * * *"
@@ -182,11 +257,11 @@ trigger is skipped rather than stacking concurrent scans.
 ## Advantages Over A/C
 
 | Dimension | A/C (external binary) | D (Temporal Schedule) |
-|-----------|-----------------------|-----------------------|
+|---|---|---|
 | New K8s Deployments | 1 (drift-watcher) | 0 |
 | Scan observability | Pod logs | Temporal UI — full history per scan run with structured output |
 | Alerting on scan failure | Log-based alerting | Temporal workflow failure alerting (already in place) |
-| Update resource list | ConfigMap update + pod restart (C) | `temporal schedule update` — no deploy |
+| Update resource list | ConfigMap update + pod restart (A/C) | `temporal schedule update` — no deploy |
 | Audit trail | Logs only | Full Temporal workflow history |
 
 ---
@@ -194,7 +269,7 @@ trigger is skipped rather than stacking concurrent scans.
 ## Failure Modes
 
 | Failure | Effect | Recovery |
-|---------|--------|----------|
+|---|---|---|
 | Temporal worker crashes | Schedule fires; next run picks up all drifted resources | Auto-recover on restart |
 | Temporal server down | Schedule pauses | Scans resume when server recovers; all drift detected on next run |
 | K8s API unavailable during scan | `ScanDriftActivity` fails; workflow retries | Schedule fires again next minute |
@@ -218,7 +293,7 @@ availability for drift *detection* (not just handling).
 - **No new K8s Deployment** — fewest components to operate; all drift logic lives inside Temporal
 - **Richest observability** — every scan run is a Temporal workflow with structured output (`scanned` / `drifted` / `fired`) visible in the Temporal UI
 - **Full audit trail** — complete scan history retained in Temporal, not just pod logs
-- **Easiest resource type extension** — adding a new GVR only requires `temporal schedule update`; no deployment or restart
+- **Easiest resource type extension** — adding a new MR GVR only requires `temporal schedule update`; no deployment or restart
 - **Reuses existing alerting** — scan failures surface as Temporal workflow failures, picked up by any existing Temporal alerting
 
 ### Cons

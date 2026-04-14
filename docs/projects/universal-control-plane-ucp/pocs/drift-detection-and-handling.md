@@ -24,41 +24,56 @@ This is the target behaviour for all four approaches. The detection mechanism di
 
 ### Trigger Condition
 
-A resource is considered drifted when its XR has **all** of:
+A resource is considered drifted when its MR has **all** of:
 
 ```
-XR.status.conditions[Synced].status == "False"
+MR has label platform.io/drift-protection=true
 AND
-XR.status.conditions[Synced].reason == "ReconcileError"
+MR.status.atProvider is non-empty (Observe() has run at least once)
+AND
+at least one field in MR.spec.forProvider differs from MR.status.atProvider
 ```
 
-`ReconcilePaused` is set by the **pause annotation** (`crossplane.io/paused: "true"`), not by `managementPolicies: ["Observe"]` — the watcher ignores it. With `managementPolicies: ["Observe"]` and a healthy resource, Crossplane sets `Synced=True/ReconcileSuccess`.
+Detection happens at the **MR (Managed Resource) level** — `spec.forProvider` (desired state)
+and `status.atProvider` (actual observed state) are fields on the MR, not the XR. The watcher
+diffs these two maps and resolves the MR's `ownerReferences` to identify the owning XR.
+
+### Why not watch XR conditions (Synced=False)?
+
+Under `managementPolicies: ["Observe"]`, Crossplane still calls `Observe()` on every poll
+but skips `Update()`. When drift is detected, the reconciler logs it and sets
+`Synced=True/ReconcileSuccess` — **not** `Synced=False`. Watching for `Synced=False` on the
+XR would only fire for hard errors (auth failures, API unavailable), not config drift.
+The correct signal is a field-level diff between `forProvider` and `atProvider`.
+
+**Source:** `crossplane-runtime v1.17.0/v2.2.0`
+`pkg/reconciler/managed/reconciler.go` — when `!policy.ShouldUpdate()` and resource is not
+up to date: `status.MarkConditions(xpv1.ReconcileSuccess())`.
 
 ### Full Flow
 
 ```
-GCP resource drifted (deleted, modified outside Crossplane)
+GCP resource drifted (e.g. tier changed in GCP Console)
         │
-        │  ~1 min  — provider poll interval (--poll=1m, Crossplane default)
+        │  ~10 min — Crossplane provider default poll interval
         ▼
-[Provider reconciler]
-  Calls GCP API → 404 / mismatch
-  Sets MR (e.g. DatabaseInstance): Synced=False, reason=ReconcileError
-        │
-        │  seconds — composite reconciler watches MR via K8s watch stream
-        ▼
-[Composite reconciler]
-  Aggregates MR conditions → XR: Synced=False, reason=ReconcileError
+[Provider reconciler — managementPolicies: Observe]
+  Calls GCP API → reads actual state
+  Writes actual state to MR.status.atProvider
+  Skips Update() — Observe mode blocks auto-heal
+  Sets MR: Synced=True/ReconcileSuccess (drift is silent at condition level)
         │
         │  seconds (B/C) / up to 30s (A) / up to 1 min (D)
         │  — depends on approach detection mechanism
         ▼
 [Drift watcher / WatchOperation / Temporal schedule]
-  Detects XR: Synced=False, reason=ReconcileError
-  Starts DriftApprovalWorkflow (deduped by workflow ID)
+  Diffs MR.spec.forProvider vs MR.status.atProvider
+  → e.g. "settings.tier: db-n1-standard-2 → db-n1-standard-4"
+  Resolves MR.metadata.ownerReferences → XR name
+  Starts DriftApprovalWorkflow (deduped by workflow ID keyed on XR)
         │
         ▼
-NotifyDriftActivity
+NotifyDriftActivity(event=DRIFT_DETECTED)
   → structured log entry (POC stub)
   → swap point for Slack + email + PagerDuty in production
         │
@@ -67,21 +82,35 @@ Wait for "approval-signal" — 24h timeout
         │
         ├─ APPROVED ──────────────────────────────────────────┐
         │                                                      ▼
-        │                              FlipManagementPolicyActivity → policy="*"
-        │                              WaitXRReadyActivity (30 min timeout)
-        │                              FlipManagementPolicyActivity → policy="Observe"
-        │                              (R3 always runs — safety: never leave resource unmanaged)
+        │                              FlipManagementPolicyActivity(MR, Enable=false)
+        │                                → patches MR.spec.managementPolicies=["*"]
+        │                                → Crossplane resumes reconciliation, fixes drift
+        │                              WaitXRReadyActivity (resource-type timeout)
+        │                              FlipManagementPolicyActivity(MR, Enable=true)
+        │                                → restores managementPolicies=["Observe"]
+        │                              (R3 always runs — never leave MR in full management)
         │
-        └─ REJECTED or TIMEOUT
-                              do nothing — workflow terminates
-                              resource stays in Observe mode (no auto-heal)
+        ├─ REJECTED
+        │                              workflow terminates
+        │                              MR stays in Observe mode (drift is accepted)
+        │
+        └─ 24h TIMEOUT
+                              NotifyDriftActivity(event=APPROVAL_TIMEOUT)
+                              workflow terminates
+                              MR stays in Observe mode (watcher re-detects next cycle)
 ```
 
 ### Why `managementPolicies: ["Observe"]` on the MR
 
-When `driftProtection: true` is set on the XR, the composition renders `managementPolicies: ["Observe"]` on each composed managed resource (e.g. `DatabaseInstance`). This tells Crossplane: observe the resource, detect drift, report it — but **do not reconcile it**. The resource stays drifted until a human approves.
+When `driftProtection: true` is set on the XR, the composition renders
+`managementPolicies: ["Observe"]` on each composed MR. This tells Crossplane:
 
-`FlipManagementPolicyActivity` patches the MR's `managementPolicies` field directly. Setting it to `["*"]` re-enables full management so Crossplane can reconcile. After `WaitXRReady`, it flips back to `["Observe"]`.
+- **Keep calling `Observe()`** — `status.atProvider` stays up to date → drift is detectable
+- **Skip `Update/Create/Delete`** — auto-healing is permanently blocked
+
+`FlipManagementPolicyActivity` patches the MR's `spec.managementPolicies` directly.
+Setting it to `["*"]` re-enables full management so Crossplane can reconcile. After
+`WaitXRReady`, it flips back to `["Observe"]`.
 
 ---
 
@@ -89,10 +118,10 @@ When `driftProtection: true` is set on the XR, the composition renders `manageme
 
 | | Approach | Branch | Trigger mechanism |
 |-|----------|--------|-------------------|
-| A | Go Polling Watcher | `feature/drift-poc-approach-a-watcher` | Periodic poll of XR conditions |
-| B | WatchOperations + function-python | `feature/drift-poc-approach-b-watchoperations` | Crossplane-native event trigger |
-| C | Informer-based Watcher | `feature/drift-poc-approach-c-informer` | K8s watch stream (event-driven) |
-| D | Temporal Schedule | `feature/drift-poc-approach-d-temporal-schedule` | Temporal cron scan |
+| A | Go Polling Watcher | `feature/drift-poc-approach-a-watcher` | Periodic poll of MR `forProvider`/`atProvider` diff |
+| B | WatchOperations + function-python | `feature/drift-poc-approach-b-watchoperations` | Crossplane-native event on MR change |
+| C | Informer-based Watcher | `feature/drift-poc-approach-c-informer` | K8s watch stream on MR (event-driven) |
+| D | Temporal Schedule | `feature/drift-poc-approach-d-temporal-schedule` | Temporal cron scan of MR `forProvider`/`atProvider` |
 
 All branches base off: `feature/crossplane-v2-temporal-worker-migration`
 
@@ -104,16 +133,13 @@ See [Shared Design](https://confluence.rakuten-it.com/confluence/pages/viewpage.
 
 Key decisions:
 
-1. **Watch at XR level**, not MR level — works for all resource types generically
-2. **Label-based opt-in** — `platform.io/drift-protection: "true"` on any XR, no XRD
-   changes required for targeting
-3. **XRD `driftProtection` param** — controls whether the composition renders
-   `managementPolicies: ["Observe"]` on composed managed resources
-4. **Generic `DriftApprovalWorkflow`** — carries `xrGroup/Version/Resource/Kind` so it
-   works for any XR type
-5. **Generic `WaitXRReadyActivity`** — replaces per-type wait activities
-6. **Notification stub** — `NotifyDriftActivity` logs a structured entry; swap point for
-   Slack + email + PagerDuty in production
+1. **Watch at MR level**, resolve to XR via `ownerReferences` — `forProvider`/`atProvider` live on MRs; the XR only has aggregated conditions
+2. **`forProvider` vs `atProvider` diff** — the correct drift signal; XR `Synced=False` is not reliable under `managementPolicies: ["Observe"]`
+3. **Label-based opt-in** — `platform.io/drift-protection: "true"` propagated from XR to MR by the composition
+4. **XRD `driftProtection` param** — controls whether the composition renders `managementPolicies: ["Observe"]` on composed MRs
+5. **Generic `DriftApprovalWorkflow`** — carries both MR and XR identification fields; keyed on XR name for deduplication
+6. **Generic `WaitXRReadyActivity`** — waits at XR level (valid after full management is restored)
+7. **Notification stub** — `NotifyDriftActivity` logs a structured entry; three events: `DRIFT_DETECTED`, `APPROVAL_TIMEOUT`, `RECONCILIATION_FAILED`
 
 ---
 
