@@ -36,31 +36,76 @@ integration — event-driven instead of poll-driven.
 
 ---
 
+## Where `forProvider` and `atProvider` Come From
+
+The drift-watcher **never calls GCP or Omnia directly**. All state data comes from the
+**Kubernetes API server** via the `k8s.io/client-go/dynamic` informer.
+
+```
+GCP Console (manual change to CloudSQL tier)
+        │
+        │  GCP REST API
+        ▼
+provider-gcp pod (running in crossplane-system)
+  managementPolicies=["Observe"] → Observe() called on every poll (~10 min)
+  → calls GCP REST API, reads actual current state
+  → PATCH MR.status.atProvider via K8s API server
+        │
+        │  K8s API server writes to etcd AND pushes MODIFIED event to watch stream
+        ▼
+K8s API server
+  └── watch stream (WATCH /apis/sql.gcp.upbound.io/...?watch=true)
+        │  pushes MODIFIED event immediately to informer
+        ▼
+SharedInformerFactory (local in-process cache)
+  receives MODIFIED event → updates cached MR object
+  → fires UpdateFunc with new MR (atProvider now reflects actual GCP state)
+        │
+        ▼
+event handler: diff forProvider vs atProvider → fire workflow if mismatch
+```
+
+The critical point: the watch event fires the moment the provider pod writes `status.atProvider`
+to the K8s API server — **not** when GCP state changes. The provider pod is the bridge between
+GCP and K8s. Reaction time for the watcher = time between provider pod writing `atProvider`
+and the watch event arriving (milliseconds to seconds), not the provider poll interval.
+
+---
+
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ Kubernetes                                                  │
-│                                                             │
-│  MR objects with label platform.io/drift-protection        │
-│  (DatabaseInstance, Instance, Cluster, NodePool, Bucket)   │
-│    │                                                        │
-│    │  K8s watch stream (persistent HTTP/2 connection)      │
-│    ▼                                                        │
-│  SharedInformerFactory                                      │
-│  ├── informer for GVR: databaseinstances                   │
-│  ├── informer for GVR: instances                           │
-│  ├── informer for GVR: clusters                            │
-│  ├── informer for GVR: nodepools                           │
-│  └── informer for GVR: buckets                             │
-│       └── OnUpdate / OnAdd handler (same for all GVRs)     │
-│             diff forProvider/atProvider                     │
-│             if drifted → resolveOwnerRef → fireWorkflow     │
-└──────────────────────────┬──────────────────────────────────┘
-                           │  Temporal Go SDK
-                           ▼
-              DriftApprovalWorkflow
-              (see Shared Design)
+GCP / Omnia                provider-gcp / provider-roc pod
+(actual state)  ────────►  Observe() every ~10 min
+                           writes status.atProvider
+                                   │
+                                   │  PATCH /status (K8s API)
+                                   ▼
+                           K8s API server (etcd)
+                           also pushes MODIFIED event to watch streams
+                           ┌──────────────────────────────────┐
+                           │ DatabaseInstance                 │
+                           │  spec.forProvider:               │
+                           │    settings.tier: db-n1-std-2    │
+                           │  status.atProvider:              │
+                           │    settings.tier: db-n1-std-4 ←drift│
+                           └──────────────────────────────────┘
+                                   │
+                                   │  WATCH /apis/sql.gcp.upbound.io/...
+                                   │  (persistent HTTP/2, one stream per GVR)
+                                   ▼
+                           SharedInformerFactory (in drift-watcher process)
+                           ├── informer: databaseinstances
+                           ├── informer: instances
+                           ├── informer: clusters / nodepools
+                           └── informer: buckets
+                                UpdateFunc / AddFunc fires immediately
+                                diff forProvider vs atProvider
+                                ownerRef → XDatabase/my-postgres
+                                   │  Temporal Go SDK
+                                   ▼
+                           DriftApprovalWorkflow
+                           (see Shared Design)
 ```
 
 ---

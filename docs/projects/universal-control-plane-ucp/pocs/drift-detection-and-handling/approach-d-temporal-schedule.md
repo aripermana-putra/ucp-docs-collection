@@ -36,31 +36,73 @@ Temporal Schedule (every 1 min)
 
 ---
 
+## Where `forProvider` and `atProvider` Come From
+
+`ScanDriftActivity` runs inside the **temporal-worker pod** (already deployed in the cluster).
+It **never calls GCP or Omnia directly** — it reads all state from the **Kubernetes API server**
+using `k8s.io/client-go/dynamic`, the same client library used by Approaches A and C.
+
+```
+GCP Console (manual change to CloudSQL tier)
+        │
+        │  GCP REST API
+        ▼
+provider-gcp pod (running in crossplane-system)
+  managementPolicies=["Observe"] → Observe() called on every poll (~10 min)
+  → calls GCP REST API, reads actual current state
+  → PATCH MR.status.atProvider via K8s API server
+        │
+        │  K8s API server writes to etcd
+        ▼
+etcd (via K8s API server)
+  MR.spec.forProvider   = desired state (what Crossplane declared)
+  MR.status.atProvider  = actual state  (what GCP currently has)
+        │
+        │  Temporal Schedule fires every 1 min
+        ▼
+ScanDriftActivity (running inside temporal-worker pod)
+  dynamic client: LIST /apis/sql.gcp.upbound.io/v1beta2/databaseinstances
+  reads forProvider + atProvider from K8s API response
+  diff → if mismatch → resolve ownerRef → ExecuteWorkflow
+```
+
+The temporal-worker pod already has a `ServiceAccount` with K8s API access (for existing
+`ApplyYAMLActivity`, `WaitDatabaseClaimReadyActivity`, etc.). `ScanDriftActivity` reuses
+the same in-cluster kubeconfig — no additional auth setup required.
+
+---
+
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│ Temporal                                          │
-│                                                  │
-│  Schedule: drift-scan (every 1 min)              │
-│    └── DriftScanWorkflow                         │
-│          └── ScanDriftActivity                   │
-│                │ K8s API (list MRs per GVR)      │
-│                for each drifted MR:              │
-│                  resolve ownerRef → XR           │
-│                  ExecuteWorkflow(                │
-│                    DriftApprovalWorkflow,         │
-│                    id=drift-approval-<ns>-<xrKind>-<xrName>│
-│                  )                               │
-└──────────────────────────────────────────────────┘
-                   │
-                   │  K8s API (list)
-                   ▼
-┌──────────────────────────────────────────────────┐
-│ Kubernetes                                        │
-│  DatabaseInstance, Instance, Cluster, Bucket     │
-│  with label platform.io/drift-protection=true   │
-└──────────────────────────────────────────────────┘
+GCP / Omnia                provider-gcp / provider-roc pod
+(actual state)  ────────►  Observe() every ~10 min
+                           writes status.atProvider
+                                   │
+                                   │  PATCH /status (K8s API)
+                                   ▼
+                           K8s API server (etcd)
+                           ┌──────────────────────────────────┐
+                           │ DatabaseInstance                 │
+                           │  spec.forProvider:               │
+                           │    settings.tier: db-n1-std-2    │
+                           │  status.atProvider:              │
+                           │    settings.tier: db-n1-std-4 ←drift│
+                           └──────────────────────────────────┘
+                                   │
+                                   │  LIST /apis/sql.gcp.upbound.io/...
+                                   │  (dynamic client inside temporal-worker pod)
+                                   ▼
+                  Temporal Schedule (every 1 min)
+                  └── DriftScanWorkflow
+                        └── ScanDriftActivity
+                              diff forProvider vs atProvider
+                              ownerRef → XDatabase/my-postgres
+                                   │
+                                   │  Temporal Go SDK (gRPC to Temporal server)
+                                   ▼
+                           DriftApprovalWorkflow
+                           (see Shared Design)
 ```
 
 ---

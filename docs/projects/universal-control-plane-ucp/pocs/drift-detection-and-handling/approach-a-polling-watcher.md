@@ -32,27 +32,69 @@ Every 30s:
 
 ---
 
+## Where `forProvider` and `atProvider` Come From
+
+The drift-watcher **never calls GCP or Omnia directly**. All state data is read from the
+**Kubernetes API server** using the `k8s.io/client-go/dynamic` client.
+
+```
+GCP Console (manual change to CloudSQL tier)
+        │
+        │  GCP REST API
+        ▼
+provider-gcp pod (running in crossplane-system)
+  managementPolicies=["Observe"] → Observe() called on every poll (~10 min)
+  → calls GCP REST API, reads actual current state
+  → PATCH MR.status.atProvider via K8s API server
+        │
+        │  K8s API server writes to etcd
+        ▼
+etcd (via K8s API server)
+  MR.spec.forProvider   = desired state (what Crossplane declared)
+  MR.status.atProvider  = actual state  (what GCP currently has)
+        │
+        │  dynamic client: LIST /apis/sql.gcp.upbound.io/v1beta2/databaseinstances
+        │  (drift-watcher polls this endpoint every 30s)
+        ▼
+drift-watcher reads both fields from the K8s API response
+  diff forProvider vs atProvider → fire workflow if mismatch
+```
+
+`spec.forProvider` is written once when the MR is created by the composition.
+`status.atProvider` is updated by the provider pod on every `Observe()` call.
+The watcher sees the most recent observed state from the last provider poll — not
+real-time GCP state. Maximum staleness = provider poll interval (~10 min by default).
+
+---
+
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ Kubernetes                                                  │
-│                                                             │
-│  DatabaseInstance / Instance / Cluster / Bucket            │
-│  (MRs with label platform.io/drift-protection=true)        │
-│    └── spec.forProvider.settings.tier: db-n1-standard-2    │
-│        status.atProvider.settings.tier: db-n1-standard-4   │
-│                  │  diff detected                           │
-│                  │  ownerRef → XDatabase/my-postgres        │
-│                  │                                          │
-│  drift-watcher (polls every 30s)                            │
-│    for each MR GVR in config:                               │
-│      list MRs → diff forProvider/atProvider → fire if drifted│
-└──────────────────────────┬──────────────────────────────────┘
-                           │  Temporal Go SDK
-                           ▼
-              DriftApprovalWorkflow
-              (see Shared Design)
+GCP / Omnia                provider-gcp / provider-roc pod
+(actual state)  ────────►  Observe() every ~10 min
+                           writes status.atProvider
+                                   │
+                                   │  PATCH /status (K8s API)
+                                   ▼
+                           K8s API server (etcd)
+                           ┌──────────────────────────────────┐
+                           │ DatabaseInstance                 │
+                           │  spec.forProvider:               │
+                           │    settings.tier: db-n1-std-2    │
+                           │  status.atProvider:              │
+                           │    settings.tier: db-n1-std-4 ←drift│
+                           └──────────────────────────────────┘
+                                   │
+                                   │  LIST /apis/sql.gcp.upbound.io/...
+                                   │  (dynamic client, every 30s)
+                                   ▼
+                           drift-watcher
+                           diff forProvider vs atProvider
+                           ownerRef → XDatabase/my-postgres
+                                   │  Temporal Go SDK
+                                   ▼
+                           DriftApprovalWorkflow
+                           (see Shared Design)
 ```
 
 ---
