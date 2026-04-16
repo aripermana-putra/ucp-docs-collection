@@ -184,7 +184,7 @@ whether each field should be included in drift comparison.
 | `networkPolicy.enabled` | — | ✅ | ✅ | ✅ | Disabling network policy is a security regression |
 | `networkPolicy.provider` | — | ✅ | ✅ | ❌ | Usually set once at creation |
 | `nodeLocations` | ✅ | ✅ | ✅ | ✅ | Zone removal reduces availability |
-| `nodeConfig.shieldedInstanceConfig.enableSecureBoot` | ✅ | ✅ | ✅ | ✅ | Security posture for system node pool |
+| `nodeConfig.shieldedInstanceConfig.enableSecureBoot` | ✅ | — | ✅ | ❌ | Bootstrap-only — GCP does not return `nodeConfig` in atProvider once the default node pool is removed (`removeDefaultNodePool: true`); watcher skips map fields absent in atProvider |
 | `nodeConfig.imageType` | — | ✅ | ✅ | ⬜ | Writable — changing OS image type has workload impact |
 | `nodeConfig.diskType` | — | ✅ | ✅ | ✅ | Performance/cost impact |
 | `nodeConfig.diskSizeGb` | — | ✅ | ✅ | ✅ | Node disk size |
