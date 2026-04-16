@@ -174,6 +174,7 @@ whether each field should be included in drift comparison.
 | `removeDefaultNodePool` | ✅ | ✅ | ✅ | ❌ | Bootstrap flag — GCP echoes it back but has no ongoing meaning |
 | `initialNodeCount` | ✅ | ✅ | ✅ | ❌ | Bootstrap-only; actual node count managed by NodePool |
 | `loggingService` | ✅ | ✅ | ✅ | ✅ | Logging destination change has observability impact |
+| `loggingConfig.enableComponents` | ✅ | — | ✅ | ❌ | Composition declares `[]`; GCP omits the field entirely when empty — watcher treats empty desired slice as no-diff |
 | `monitoringService` | ✅ | ✅ | ✅ | ✅ | Monitoring destination change has observability impact |
 | `monitoringConfig.enableComponents` | ✅ | ✅ | ✅ | ✅ | Removing a component reduces observability |
 | `monitoringConfig.managedPrometheus.enabled` | ✅ | ✅ | ✅ | ✅ | Disabling removes managed metrics collection |
@@ -235,6 +236,8 @@ whether each field should be included in drift comparison.
 | `location` | ✅ | ✅ | ✅ | ✅ | |
 | `project` | ✅ | ✅ | ✅ | ❌ | Metadata |
 | `cluster` | ✅ | ✅ | ✅ | ❌ | Reference field — immutable after creation |
+| `clusterRef` | ✅ | — | ✅ | ❌ | Crossplane cross-resource reference — locates the parent Cluster MR; not a GCP field, never in atProvider |
+| `clusterSelector` | ✅ | — | ✅ | ❌ | Crossplane cross-resource selector — alternative to clusterRef; not a GCP field, never in atProvider |
 | `initialNodeCount` | ✅ | ✅ | ✅ | ✅ | Manual scale-down in console is drift |
 | `autoscaling.minNodeCount` | ✅ | ✅ | ✅ | ✅ | Lower bound change affects availability |
 | `autoscaling.maxNodeCount` | ✅ | ✅ | ✅ | ✅ | Upper bound change affects cost |
