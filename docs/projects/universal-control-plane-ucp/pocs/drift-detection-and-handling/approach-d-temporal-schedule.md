@@ -15,11 +15,16 @@ parent_page_id: "../drift-detection-and-handling.md"
 
 A Temporal `Schedule` triggers `DriftScanWorkflow` every minute. The workflow runs
 `ScanDriftActivity`, which lists all MRs with the drift-protection label across all
-configured MR GVRs, diffs `spec.forProvider` against `status.atProvider`, and fires
+configured MR GVRs, checks each MR against two complementary signals, and fires
 `DriftApprovalWorkflow` for any that are drifted. The ownerReferences on each drifted
 MR are resolved to identify the XR for the workflow key.
 
 No external binary. No new Kubernetes Deployment. All logic lives inside Temporal.
+
+Two signals are checked per MR (both are required):
+- **Field drift:** `forProvider vs atProvider` diff — catches field-level changes in GCP
+- **Resource deletion:** `.status.conditions[type=Synced, status=False, reason=ReconcileError]` — catches GCP-side deletion;
+  `atProvider` is cleared or stale when the resource no longer exists, so diff alone misses this
 
 ```
 Temporal Schedule (every 1 min)
@@ -28,7 +33,7 @@ Temporal Schedule (every 1 min)
                   for each configured MR GVR:
                     list MRs with platform.io/drift-protection=true
                     for each MR:
-                      drifted, detail := isDrifted(mr)  // forProvider vs atProvider
+                      drifted, detail := isDrifted(mr)  // checks both signals
                       if drifted:
                         resolve ownerRef → XR name
                         ExecuteWorkflow(DriftApprovalWorkflow, mrFields + xrFields)
@@ -48,7 +53,7 @@ GCP Console (manual change to CloudSQL tier)
         │  GCP REST API
         ▼
 provider-gcp pod (running in crossplane-system)
-  managementPolicies=["Observe"] → Observe() called on every poll (~10 min)
+  managementPolicies=["Observe"] → Observe() called on every poll (~1 min)
   → calls GCP REST API, reads actual current state
   → PATCH MR.status.atProvider via K8s API server
         │
@@ -76,7 +81,7 @@ the same in-cluster kubeconfig — no additional auth setup required.
 
 ```
 GCP / Omnia                provider-gcp / provider-roc pod
-(actual state)  ────────►  Observe() every ~10 min
+(actual state)  ────────►  Observe() every ~1 min (configured)
                            writes status.atProvider
                                    │
                                    │  PATCH /status (K8s API)
@@ -199,19 +204,52 @@ func ScanDriftActivity(ctx context.Context, in workflows.DriftScanInput) (workfl
     return out, nil
 }
 
-// isDrifted compares spec.forProvider against status.atProvider.
-// Fields present in atProvider but absent in forProvider are ignored (computed fields).
+// isDrifted detects drift using two complementary signals.
+// Signal 1: forProvider vs atProvider field diff (field changes in GCP).
+// Signal 2: Synced=False/ReconcileError (resource deleted from GCP — atProvider
+//           is unreliable when the resource no longer exists).
 func isDrifted(obj *unstructured.Unstructured) (bool, string) {
+    // Signal 1: field diff
     forProvider, _, _ := unstructured.NestedMap(obj.Object, "spec", "forProvider")
     atProvider, _, _  := unstructured.NestedMap(obj.Object, "status", "atProvider")
-    if len(atProvider) == 0 {
-        return false, "" // Observe() has not run yet
+    if len(atProvider) > 0 {
+        diffs := diffMaps("", forProvider, atProvider)
+        if len(diffs) > 0 {
+            return true, strings.Join(diffs, "; ")
+        }
     }
-    diffs := diffMaps("", forProvider, atProvider)
-    if len(diffs) == 0 {
-        return false, ""
+    // Signal 2: Synced=False (resource deleted or unobservable)
+    if isSyncedFalse(obj) {
+        return true, "resource deleted or unobservable (.status.conditions[Synced].status=False, reason=ReconcileError)"
     }
-    return true, strings.Join(diffs, "; ")
+    return false, ""
+}
+
+// isSyncedFalse returns true when .status.conditions[type=Synced].status=False and
+// .status.conditions[type=Synced].reason=ReconcileError — the signal that a GCP resource
+// has been deleted or can no longer be observed. atProvider is unreliable in this state.
+func isSyncedFalse(obj *unstructured.Unstructured) bool {
+    conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+    for _, c := range conditions {
+        cond, ok := c.(map[string]interface{})
+        if !ok {
+            continue
+        }
+        if cond["type"] == "Synced" && cond["status"] == "False" {
+            reason, _ := cond["reason"].(string)
+            return reason == "ReconcileError"
+        }
+    }
+    return false
+}
+
+// skippedPaths lists field paths excluded from drift comparison.
+// These are fields where GCP normalizes the value in a way that cannot be matched
+// without additional API calls.
+var skippedPaths = map[string]struct{}{
+    // GCE: image family reference (e.g. "debian-cloud/debian-12") is resolved by GCP
+    // to a specific versioned image URL. Cannot compare without a GCP API call.
+    "bootDisk[0].initializeParams.sourceImage": {},
 }
 
 func diffMaps(prefix string, desired, observed map[string]interface{}) []string {
@@ -220,6 +258,9 @@ func diffMaps(prefix string, desired, observed map[string]interface{}) []string 
         path := k
         if prefix != "" {
             path = prefix + "." + k
+        }
+        if _, skip := skippedPaths[path]; skip {
+            continue
         }
         ov := observed[k]
         if dMap, ok := dv.(map[string]interface{}); ok {

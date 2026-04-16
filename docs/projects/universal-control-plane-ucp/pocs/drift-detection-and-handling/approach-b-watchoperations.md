@@ -15,17 +15,23 @@ parent_page_id: "../drift-detection-and-handling.md"
 
 A `WatchOperation` resource watches all MRs with `platform.io/drift-protection: "true"`.
 When any watched MR changes, Crossplane creates an `Operation` that runs `function-python`.
-The function diffs `spec.forProvider` against `status.atProvider`, resolves the MR's
-`ownerReferences` to identify the XR, then calls the Temporal Python SDK to start
-`DriftApprovalWorkflow`. No external binary needed.
+The function checks two complementary signals for drift, resolves the MR's `ownerReferences`
+to identify the XR, then calls the Temporal Python SDK to start `DriftApprovalWorkflow`.
+No external binary needed.
+
+Two signals are checked per MR (both are required):
+- **Field drift:** `forProvider vs atProvider` diff — catches field-level changes in GCP
+- **Resource deletion:** `.status.conditions[type=Synced, status=False, reason=ReconcileError]` — catches GCP-side deletion;
+  `atProvider` is cleared or stale when the resource no longer exists, so diff alone misses this
 
 ```
 MR changes (event-driven, Crossplane watch stream)
     └── WatchOperation triggers Operation creation
             └── function-python executes:
-                  1. diff forProvider vs atProvider
-                  2. if drifted → resolve ownerRef → XR name
-                  3. temporalio.client.start_workflow(DriftApprovalWorkflow)
+                  1. if forProvider != atProvider (field drift) → drifted=True
+                  2. elif .status.conditions[type=Synced, status=False, reason=ReconcileError] → drifted=True
+                  3. if drifted → resolve ownerRef → XR name
+                     → temporalio.client.start_workflow(DriftApprovalWorkflow)
                   4. if not drifted → no-op, complete
 ```
 
@@ -165,23 +171,52 @@ async def run(req, _) -> fnv1.RunFunctionResponse:
     return rsp
 
 def is_drifted(obj: dict) -> tuple[bool, str]:
-    """Compare spec.forProvider against status.atProvider.
-    Ignores keys present in atProvider but absent in forProvider (computed fields).
-    Returns (drifted, detail_string).
+    """Detect drift using two complementary signals.
+
+    Signal 1: forProvider vs atProvider field diff (field changes in GCP).
+    Signal 2: Synced=False/ReconcileError (resource deleted from GCP — atProvider
+              is unreliable when the resource no longer exists).
     """
+    # Signal 1: field diff
     for_provider = obj.get("spec", {}).get("forProvider", {})
     at_provider  = obj.get("status", {}).get("atProvider", {})
-    if not at_provider:
-        return False, ""  # Observe() has not run yet
-    diffs = diff_maps("", for_provider, at_provider)
-    if not diffs:
-        return False, ""
-    return True, "; ".join(diffs)
+    if at_provider:
+        diffs = diff_maps("", for_provider, at_provider)
+        if diffs:
+            return True, "; ".join(diffs)
+    # Signal 2: Synced=False (resource deleted or unobservable)
+    if is_synced_false(obj):
+        return True, "resource deleted or unobservable (.status.conditions[Synced].status=False, reason=ReconcileError)"
+    return False, ""
+
+
+def is_synced_false(obj: dict) -> bool:
+    """Return True when status.conditions[Synced].status=False and reason=ReconcileError.
+
+    This is the signal that a GCP resource has been deleted or can no longer be observed.
+    atProvider is unreliable in this state — diff alone will not detect deletion.
+    """
+    for cond in obj.get("status", {}).get("conditions", []):
+        if cond.get("type") == "Synced" and cond.get("status") == "False":
+            return cond.get("reason") == "ReconcileError"
+    return False
+
+# SKIPPED_PATHS lists field paths excluded from drift comparison.
+# These are fields where GCP normalizes the value in a way that cannot be matched
+# without additional API calls.
+SKIPPED_PATHS = {
+    # GCE: image family reference (e.g. "debian-cloud/debian-12") is resolved by GCP
+    # to a specific versioned image URL. Cannot compare without a GCP API call.
+    "bootDisk[0].initializeParams.sourceImage",
+}
+
 
 def diff_maps(prefix: str, desired: dict, observed: dict) -> list[str]:
     out = []
     for k, dv in desired.items():
         path = f"{prefix}.{k}" if prefix else k
+        if path in SKIPPED_PATHS:
+            continue
         ov = observed.get(k)
         if isinstance(dv, dict) and isinstance(ov, dict):
             out.extend(diff_maps(path, dv, ov))

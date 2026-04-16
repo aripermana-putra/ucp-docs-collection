@@ -16,15 +16,20 @@ parent_page_id: "../drift-detection-and-handling.md"
 A Go binary (`drift-watcher`) — same concept as Approach A — but instead of periodic
 list-polls, it uses `client-go` **shared informers** that maintain a persistent K8s watch
 stream per MR type. When any watched MR changes, the informer pushes the event immediately
-to an event handler, which diffs `spec.forProvider` against `status.atProvider`. If drift
-is detected, it resolves the MR's `ownerReferences` to identify the XR and fires
-`DriftApprovalWorkflow`. No polling delay.
+to an event handler, which checks two complementary signals for drift. If drift is detected,
+it resolves the MR's `ownerReferences` to identify the XR and fires `DriftApprovalWorkflow`.
+No polling delay.
+
+Two signals are checked per MR (both are required):
+- **Field drift:** `forProvider vs atProvider` diff — catches field-level changes in GCP
+- **Resource deletion:** `.status.conditions[type=Synced, status=False, reason=ReconcileError]` — catches GCP-side deletion;
+  `atProvider` is cleared or stale when the resource no longer exists, so diff alone misses this
 
 ```
 K8s API server (persistent watch stream, one per MR GVR)
     └── informer pushes event when MR object changes
             └── event handler runs:
-                  drifted, detail := isDrifted(mr)
+                  drifted, detail := isDrifted(mr)  // checks both signals
                   if drifted:
                     resolve ownerRef → XR name
                     fireWorkflow(mrFields + xrFields)
@@ -47,7 +52,7 @@ GCP Console (manual change to CloudSQL tier)
         │  GCP REST API
         ▼
 provider-gcp pod (running in crossplane-system)
-  managementPolicies=["Observe"] → Observe() called on every poll (~10 min)
+  managementPolicies=["Observe"] → Observe() called on every poll (~1 min)
   → calls GCP REST API, reads actual current state
   → PATCH MR.status.atProvider via K8s API server
         │
@@ -76,7 +81,7 @@ and the watch event arriving (milliseconds to seconds), not the provider poll in
 
 ```
 GCP / Omnia                provider-gcp / provider-roc pod
-(actual state)  ────────►  Observe() every ~10 min
+(actual state)  ────────►  Observe() every ~1 min (configured)
                            writes status.atProvider
                                    │
                                    │  PATCH /status (K8s API)
@@ -175,19 +180,52 @@ func main() {
     <-stopCh
 }
 
-// isDrifted compares spec.forProvider against status.atProvider.
-// Fields present in atProvider but absent in forProvider are ignored (computed fields).
+// isDrifted detects drift using two complementary signals.
+// Signal 1: forProvider vs atProvider field diff (field changes in GCP).
+// Signal 2: Synced=False/ReconcileError (resource deleted from GCP — atProvider
+//           is unreliable when the resource no longer exists).
 func isDrifted(obj *unstructured.Unstructured) (bool, string) {
+    // Signal 1: field diff
     forProvider, _, _ := unstructured.NestedMap(obj.Object, "spec", "forProvider")
     atProvider, _, _  := unstructured.NestedMap(obj.Object, "status", "atProvider")
-    if len(atProvider) == 0 {
-        return false, "" // Observe() has not run yet
+    if len(atProvider) > 0 {
+        diffs := diffMaps("", forProvider, atProvider)
+        if len(diffs) > 0 {
+            return true, strings.Join(diffs, "; ")
+        }
     }
-    diffs := diffMaps("", forProvider, atProvider)
-    if len(diffs) == 0 {
-        return false, ""
+    // Signal 2: Synced=False (resource deleted or unobservable)
+    if isSyncedFalse(obj) {
+        return true, "resource deleted or unobservable (.status.conditions[Synced].status=False, reason=ReconcileError)"
     }
-    return true, strings.Join(diffs, "; ")
+    return false, ""
+}
+
+// isSyncedFalse returns true when .status.conditions[type=Synced].status=False and
+// .status.conditions[type=Synced].reason=ReconcileError — the signal that a GCP resource
+// has been deleted or can no longer be observed. atProvider is unreliable in this state.
+func isSyncedFalse(obj *unstructured.Unstructured) bool {
+    conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+    for _, c := range conditions {
+        cond, ok := c.(map[string]interface{})
+        if !ok {
+            continue
+        }
+        if cond["type"] == "Synced" && cond["status"] == "False" {
+            reason, _ := cond["reason"].(string)
+            return reason == "ReconcileError"
+        }
+    }
+    return false
+}
+
+// skippedPaths lists field paths excluded from drift comparison.
+// These are fields where GCP normalizes the value in a way that cannot be matched
+// without additional API calls.
+var skippedPaths = map[string]struct{}{
+    // GCE: image family reference (e.g. "debian-cloud/debian-12") is resolved by GCP
+    // to a specific versioned image URL. Cannot compare without a GCP API call.
+    "bootDisk[0].initializeParams.sourceImage": {},
 }
 
 func diffMaps(prefix string, desired, observed map[string]interface{}) []string {
@@ -196,6 +234,9 @@ func diffMaps(prefix string, desired, observed map[string]interface{}) []string 
         path := k
         if prefix != "" {
             path = prefix + "." + k
+        }
+        if _, skip := skippedPaths[path]; skip {
+            continue
         }
         ov := observed[k]
         if dMap, ok := dv.(map[string]interface{}); ok {
