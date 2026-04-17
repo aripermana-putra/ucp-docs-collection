@@ -127,7 +127,7 @@ ManagementPolicy mechanism). The trigger extension overhead is what differs.
 
 | Scenario | A | B | C | D |
 |----------|---|---|---|---|
-| Drift not detected | Pod logs + XR conditions | `kubectl describe watchoperation` + `kubectl get operations` | Pod logs + XR conditions | Temporal scan workflow result |
+| Drift not detected | Pod logs + XR conditions — cannot tell if watcher missed it or provider never observed | `kubectl describe watchoperation` + `kubectl get operations` | Informer heartbeat distinguishes two failure modes: no `INFORMER_UPDATE` = provider not observing; update fired but no drift log = watcher ran clean | Temporal scan workflow result |
 | Workflow fires but stalls | Temporal UI | Temporal UI | Temporal UI | Temporal UI |
 | ManagementPolicy not flipping | `kubectl get xr -o yaml` + Temporal events | Same | Same | Same |
 
@@ -135,9 +135,9 @@ ManagementPolicy mechanism). The trigger extension overhead is what differs.
 
 | Approach | Score | Notes |
 |----------|:-----:|-------|
-| A | 2 | Pod logs + `kubectl get xr -o yaml`; straightforward but log-only |
+| A | 2 | Pod logs + `kubectl get xr -o yaml`; cannot distinguish provider-silent from watcher-missed |
 | B | 2 | `kubectl describe watchoperation` + `kubectl get operations`; structured but more objects to inspect |
-| C | 2 | Same as A; informer event logs slightly more verbose |
+| C | 1 | Informer events act as a provider heartbeat — absence of `INFORMER_UPDATE` pinpoints the problem upstream at the provider, not the watcher; no ambiguity |
 | D | 1 | Temporal UI shows every scan run with structured output (scanned/drifted counts); fastest to diagnose |
 
 ---
@@ -250,13 +250,13 @@ kubectl get --raw /metrics | grep apiserver_request_total | grep list
 | Setup complexity | 4 | 1 | 4 | 4 | B requires alpha flag + Crossplane reinstall + image build + push |
 | Code volume | 3 | 3 | 2 | 4 | D least new code (no binary); C slightly more than A (informer setup); B has Python overhead |
 | Multi-resource extensibility | 3 | 2 | 2 | 4 | D: schedule update only; A: ConfigMap line; C: ConfigMap + pod restart; B: new YAML file |
-| Debuggability | 2 | 2 | 2 | 4 | D: Temporal UI scan history; A/B/C: pod/operation logs require more digging |
+| Debuggability | 2 | 2 | 4 | 4 | C: informer heartbeat pinpoints provider-silent vs watcher-missed with no ambiguity; D: Temporal UI scan history; A/B: logs only, cannot distinguish failure modes |
 | Observability | 2 | 3 | 2 | 4 | D: structured scan output per run in Temporal UI; B: Operations visible in cluster; A/C: logs only |
 | Failure resilience | 2 | 3 | 4 | 2 | C: AddFunc+resync never loses events; B: Operation in etcd survives crash; A/D: small loss window |
 | Deduplication correctness | 4 | 4 | 4 | 4 | All use Temporal workflow ID dedup — expected pass |
-| K8s API load | 3 | 1 | 1 | 2 | B/C: idle watch streams; D: 5 list/min; A: 8 list/min |
+| K8s API load | 3 | 1 | 1 | 2 | B/C: idle watch streams (C bounded by provider rate, not its own schedule); A: independent poll schedule, 8 list/min at 10s interval; D: 5 list/min |
 | Production readiness | 4 | 1 | 4 | 4 | B: blocked on WatchOperations alpha graduation; others production-ready today |
-| **Total** | **30** | **24** | **29** | **34** | |
+| **Total** | **30** | **24** | **31** | **34** | |
 
 ---
 
