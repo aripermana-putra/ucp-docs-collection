@@ -1,14 +1,14 @@
 ---
-title: "Comparison Metrics"
+title: "POC Results"
 space: UCP
 parent_page_id: "../drift-detection-and-handling.md"
 ---
 
-# Drift POC — Comparison Metrics
+# Drift Detection POC — Results
 
-Run all four approaches to completion on their respective branches, then fill in this
-document. The goal is not to pick a "winner" but to understand the trade-off profile of
-each so the right choice can be made for each environment and maturity stage.
+This document is the primary output of the drift detection POC. It covers approach
+benchmarking, key findings discovered during execution, and the recommended production
+architecture.
 
 ---
 
@@ -334,6 +334,66 @@ echo "$POLICIES" | grep -q "Observe" && echo "PASS: Observe restored" || echo "F
 
 echo "=== E2E complete. Record results in Comparison Metrics. ==="
 ```
+
+---
+
+## Findings
+
+Issues and behaviors discovered during POC execution that affect the design.
+
+---
+
+### F-01: Auto-reconciliation is unreliable for deletion drift on complex resources
+
+**Observed during:** GKE Cluster + NodePool deletion recovery test (Approach A).
+
+When a resource is deleted from GCP and Crossplane attempts to recreate it (after switching
+from `Observe` to `Create` management policy), the recreate fails due to stale fields in
+`forProvider` left behind by late initialization.
+
+**What is late initialization:** After Crossplane creates a resource, the provider runs
+`Observe()` and writes GCP's full API response back into `forProvider` — including fields the
+composition never declared. These are cluster- or resource-specific values GCP assigned
+automatically (pod secondary range names, logging component lists, etc.).
+
+**Failure sequence encountered:**
+
+1. GKE Cluster deleted from GCP Console.
+2. Management policy switched to `["Observe", "Create"]`.
+3. Cluster recreate attempted — **failed**: `Error 400: Cannot specify logging_config
+   together with logging_service`. The composition had `loggingService: "none"` (old
+   deprecated field); late initialization had also written `loggingConfig` (new field) into
+   `forProvider` from the original cluster's observed state. GCP rejects requests with both
+   field generations simultaneously.
+4. Composition updated to use only `loggingConfig`/`monitoringConfig` (new style). Cluster
+   recreate retried — **failed again**: `Error 400: SYSTEM_COMPONENTS monitoring must be
+   enabled if any monitoring is enabled`. The late-initialized `forProvider.monitoringConfig`
+   from the old cluster had a component list missing `SYSTEM_COMPONENTS`.
+5. Composition fixed with `enableComponents: []`. Cluster created. NodePool recreate
+   attempted — **failed**: pod secondary range
+   `gke-ari-test-kube-cluster-1-pods-0f92ba7c` not found. The late-initialized
+   `forProvider.networkConfig.podRange` referenced a range that belonged to the deleted
+   cluster and no longer existed.
+
+**Root cause summary:** Late initialization is additive and cumulative. Each `Observe()`
+cycle writes more GCP-managed fields into `forProvider`. When the resource is deleted and
+recreated, those fields reference state that belonged to the old resource and is now gone.
+
+**Scope of impact:**
+
+| Drift type | Auto-reconciliation | Why |
+|---|---|---|
+| Field change (resource still exists) | ✅ Works | Crossplane sends UPDATE to existing resource; late-init values are still valid |
+| Resource deletion | ❌ Unreliable | Crossplane sends CREATE; stale late-init fields reference deleted resource state |
+
+**Recommendation for approval workflow:** When the drift signal is `Synced=False/ReconcileError`
+(deletion), the approval flow should delete the composed MRs before flipping management
+policy. This forces the composition to recreate them from scratch with a clean `forProvider`.
+For field-level drift, no change needed — the existing flow works.
+
+**Raise with team:** Whether Crossplane should clear late-initialized fields from `forProvider`
+when a resource is confirmed deleted (Synced=False/ReconcileError), rather than leaving stale
+values that make recreation fail.
 
 ---
 

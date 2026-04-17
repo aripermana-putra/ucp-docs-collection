@@ -66,14 +66,14 @@ After each test, run for at least 2 full poll cycles with no code changes in GCP
 
 | ID | Summary | How To | A | B | C | D |
 |----|---------|--------|:-:|:-:|:-:|:-:|
-| FP-01 | No false positive on empty desired slice vs nil atProvider | Composition declares `loggingConfig.enableComponents: []` (empty list); GCP omits the field in `atProvider`. Run watcher. Confirm no `DRIFT DETECTED` log appears for `enableComponents`. | — | — | — | — |
-| FP-02 | No false positive on URL-normalized network fields | `forProvider.network = "default"`; GCP returns the full URL (e.g. `https://www.googleapis.com/.../networks/default`) in `atProvider`. Run watcher. Confirm no drift reported on `network`. | — | — | — | — |
+| FP-01 | No false positive on empty desired slice vs nil atProvider | Composition declares `loggingConfig.enableComponents: []` (empty list); GCP omits the field in `atProvider`. Run watcher. Confirm no `DRIFT DETECTED` log appears for `enableComponents`. | ✅ | — | — | — |
+| FP-02 | No false positive on URL-normalized network fields | `forProvider.network = "default"`; GCP returns the full URL (e.g. `https://www.googleapis.com/.../networks/default`) in `atProvider`. Run watcher. Confirm no drift reported on `network`. | ✅ | — | — | — |
 | FP-03 | No false positive on `bootDisk.initializeParams.image` | GCE image family `debian-cloud/debian-12` is resolved by GCP to a versioned URL. Run watcher against a real GCE instance MR. Confirm no drift on `bootDisk[0].initializeParams[0].image`. | ✅ | N/A | — | — |
-| FP-04 | No false positive on `clusterRef` and `clusterSelector` (NodePool) | GKE NodePool MR has `clusterRef` and `clusterSelector` in `forProvider`; GCP never reflects these Crossplane-only fields in `atProvider`. Run watcher. Confirm no drift on `clusterRef` or `clusterSelector`. | — | — | — | — |
-| FP-05 | No false positive on absent map field group (nodeConfig on GKE Cluster) | GKE Cluster has `nodeConfig` in `forProvider`; after `removeDefaultNodePool`, GCP stops returning `nodeConfig` in `atProvider`. Run watcher. Confirm no drift reported on `nodeConfig`. | — | — | — | — |
-| FP-06 | No false positive on computed-only `atProvider` fields (id, selfLink, etc.) | Run watcher against a live MR. Confirm fields like `id` and `selfLink` that exist only in `atProvider` do not appear in any drift report (diff iterates `forProvider` keys only). | — | — | — | — |
+| FP-04 | No false positive on `clusterRef` and `clusterSelector` (NodePool) | GKE NodePool MR has `clusterRef` and `clusterSelector` in `forProvider`; GCP never reflects these Crossplane-only fields in `atProvider`. Run watcher. Confirm no drift on `clusterRef` or `clusterSelector`. | ✅ | — | — | — |
+| FP-05 | No false positive on absent map field group (nodeConfig on GKE Cluster) | GKE Cluster has `nodeConfig` in `forProvider`; after `removeDefaultNodePool`, GCP stops returning `nodeConfig` in `atProvider`. Run watcher. Confirm no drift reported on `nodeConfig`. | ✅ | — | — | — |
+| FP-06 | No false positive on computed-only `atProvider` fields (id, selfLink, etc.) | Run watcher against a live MR. Confirm fields like `id` and `selfLink` that exist only in `atProvider` do not appear in any drift report (diff iterates `forProvider` keys only). | ✅ | — | — | — |
 | FP-07 | No drift reported for resource without drift-protection label | Create a second MR of the same type without the `platform.io/drift-protection: "true"` label or with `platform.io/drift-protection: "false"` label. Make a change to it in GCP Console. Confirm the watcher does not report drift for it. | ✅ | — | — | — |
-| FP-08 | No drift reported before atProvider is populated | Apply a new MR with drift protection. Before the provider runs `Observe()`, `atProvider` is empty. Run watcher. Confirm no drift is reported. | — | — | — | — |
+| FP-08 | No drift reported before atProvider is populated | Apply a new MR with drift protection. Before the provider runs `Observe()`, `atProvider` is empty. Run watcher. Confirm no drift is reported. | ✅ | — | — | — |
 
 ---
 
@@ -121,7 +121,7 @@ These cases require `DriftApprovalWorkflow` to be implemented.
 |----|---------|--------|:-:|
 | A-01 | Poll interval is respected | Set `DRIFT_POLL_INTERVAL=10s` in `.env`. Run watcher with `DRIFT_VERBOSE=true`. Observe `LIST_REQUEST` log entries. Verify they appear every ~10s, not faster. | ✅ |
 | A-02 | `.env` loaded at runtime — change is reflected on restart | Stop watcher. Change `MR_GVRS` in `.env` (add or remove a GVR). Restart. Verify new GVR list is picked up without recompiling. | ✅ |
-| A-03 | Environment variable overrides `.env` | Export `DRIFT_POLL_INTERVAL=60s` in shell. Start watcher (`.env` has `DRIFT_POLL_INTERVAL=30s`). Verify 60s interval is used (shell var wins). | — |
+| A-03 | Environment variable overrides `.env` | Export `DRIFT_POLL_INTERVAL=60s` in shell. Start watcher (`.env` has `DRIFT_POLL_INTERVAL=30s`). Verify 60s interval is used (shell var wins). | ✅ |
 | A-04 | Restart after crash — already-drifted resource is re-detected | Kill the watcher while a drift event is in flight (before `ExecuteWorkflow` succeeds). Restart. Verify on the next poll the drifted resource is detected again. | — |
 
 ### Approach B — WatchOperations (Crossplane function-python)
