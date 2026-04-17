@@ -66,14 +66,14 @@ After each test, run for at least 2 full poll cycles with no code changes in GCP
 
 | ID | Summary | How To | A | B | C | D |
 |----|---------|--------|:-:|:-:|:-:|:-:|
-| FP-01 | No false positive on empty desired slice vs nil atProvider | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-01` is logged. Restore to `false`/`False`. | — | — | — | — |
-| FP-02 | No false positive on URL-normalized network fields | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-02` is logged. Restore to `false`/`False`. | — | — | — | — |
-| FP-03 | No false positive on `bootDisk.initializeParams.image` | GCE image family `debian-cloud/debian-12` is resolved by GCP to a versioned URL. This path is in `skippedPaths`. Run watcher against a real GCE instance MR. Confirm no drift on `bootDisk[0].initializeParams[0].image`. | ✅ | N/A | — | — |
-| FP-04 | No false positive on `clusterRef` and `clusterSelector` (NodePool) | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-04` is logged. Restore to `false`/`False`. | — | — | — | — |
-| FP-05 | No false positive on absent map field group (nodeConfig on GKE Cluster) | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-05` is logged. Restore to `false`/`False`. | — | — | — | — |
-| FP-06 | No false positive on computed-only `atProvider` fields (id, selfLink, etc.) | Run watcher against a live MR. Confirm fields like `id` and `selfLink` that exist only in `atProvider` do not appear in any drift report (the diff iterates `forProvider` keys only). | — | — | — | — |
+| FP-01 | No false positive on empty desired slice vs nil atProvider | Composition declares `loggingConfig.enableComponents: []` (empty list); GCP omits the field in `atProvider`. Run watcher. Confirm no `DRIFT DETECTED` log appears for `enableComponents`. | — | — | — | — |
+| FP-02 | No false positive on URL-normalized network fields | `forProvider.network = "default"`; GCP returns the full URL (e.g. `https://www.googleapis.com/.../networks/default`) in `atProvider`. Run watcher. Confirm no drift reported on `network`. | — | — | — | — |
+| FP-03 | No false positive on `bootDisk.initializeParams.image` | GCE image family `debian-cloud/debian-12` is resolved by GCP to a versioned URL. Run watcher against a real GCE instance MR. Confirm no drift on `bootDisk[0].initializeParams[0].image`. | ✅ | N/A | — | — |
+| FP-04 | No false positive on `clusterRef` and `clusterSelector` (NodePool) | GKE NodePool MR has `clusterRef` and `clusterSelector` in `forProvider`; GCP never reflects these Crossplane-only fields in `atProvider`. Run watcher. Confirm no drift on `clusterRef` or `clusterSelector`. | — | — | — | — |
+| FP-05 | No false positive on absent map field group (nodeConfig on GKE Cluster) | GKE Cluster has `nodeConfig` in `forProvider`; after `removeDefaultNodePool`, GCP stops returning `nodeConfig` in `atProvider`. Run watcher. Confirm no drift reported on `nodeConfig`. | — | — | — | — |
+| FP-06 | No false positive on computed-only `atProvider` fields (id, selfLink, etc.) | Run watcher against a live MR. Confirm fields like `id` and `selfLink` that exist only in `atProvider` do not appear in any drift report (diff iterates `forProvider` keys only). | — | — | — | — |
 | FP-07 | No drift reported for resource without drift-protection label | Create a second MR of the same type without the `platform.io/drift-protection: "true"` label or with `platform.io/drift-protection: "false"` label. Make a change to it in GCP Console. Confirm the watcher does not report drift for it. | ✅ | — | — | — |
-| FP-08 | No drift reported before atProvider is populated | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-08` is logged. Restore to `false`/`False`. | — | — | — | — |
+| FP-08 | No drift reported before atProvider is populated | Apply a new MR with drift protection. Before the provider runs `Observe()`, `atProvider` is empty. Run watcher. Confirm no drift is reported. | — | — | — | — |
 
 ---
 
