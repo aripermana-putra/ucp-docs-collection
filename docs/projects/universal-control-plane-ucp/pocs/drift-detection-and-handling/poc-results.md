@@ -107,7 +107,7 @@ ManagementPolicy mechanism). The trigger extension overhead is what differs.
 
 | Scenario | A | B | C | D |
 |----------|---|---|---|---|
-| Drift not detected | Pod logs + XR conditions — cannot tell if watcher missed it or provider never observed | `kubectl describe watchoperation` + `kubectl get operations` | Informer heartbeat distinguishes two failure modes: no `INFORMER_UPDATE` = provider not observing; update fired but no drift log = watcher ran clean | Temporal scan workflow result |
+| Drift not detected | Pod logs + XR conditions — cannot tell if watcher missed it or provider never observed | `kubectl describe watchoperation` + `kubectl get operations` | Informer heartbeat distinguishes two failure modes for GKE (container provider writes unconditionally): no `INFORMER_UPDATE` = provider not observing; update fired but no drift log = watcher ran clean. For CloudSQL/Compute/Storage: silent in steady state — same ambiguity as A | Temporal scan workflow result |
 | Workflow fires but stalls | Temporal UI | Temporal UI | Temporal UI | Temporal UI |
 | ManagementPolicy not flipping | `kubectl get xr -o yaml` + Temporal events | Same | Same | Same |
 
@@ -117,7 +117,7 @@ ManagementPolicy mechanism). The trigger extension overhead is what differs.
 |----------|:-----:|-------|
 | A | 2 | Pod logs + `kubectl get xr -o yaml`; cannot distinguish provider-silent from watcher-missed |
 | B | 2 | `kubectl describe watchoperation` + `kubectl get operations`; structured but more objects to inspect |
-| C | 1 | Informer events act as a provider heartbeat — absence of `INFORMER_UPDATE` pinpoints the problem upstream at the provider, not the watcher; no ambiguity |
+| C | 2 | Informer heartbeat works for GKE (container provider writes unconditionally every cycle); silent for CloudSQL, Compute, Storage in steady state — heartbeat benefit is `provider-upbound-gcp-container`-specific, not general |
 | D | 2 | Temporal UI shows scan results (scanned/drifted counts) but cannot tell if the provider ran Observe(); "drifted: 0" is ambiguous — provider may not have updated atProvider |
 
 ---
@@ -230,13 +230,13 @@ kubectl get --raw /metrics | grep apiserver_request_total | grep list
 | Setup complexity | 4 | 1 | 4 | 4 | B requires alpha flag + Crossplane reinstall + image build + push |
 | Code volume | 3 | 3 | 2 | 4 | D least new code (no binary); C slightly more than A (informer setup); B has Python overhead |
 | Multi-resource extensibility | 3 | 2 | 2 | 4 | D: schedule update only; A: ConfigMap line; C: ConfigMap + pod restart; B: new YAML file |
-| Debuggability | 2 | 2 | 4 | 3 | C: informer heartbeat distinguishes provider-silent from watcher-missed — most actionable; D: Temporal UI shows scan results but cannot tell if provider ran Observe(); A/B: logs only |
+| Debuggability | 2 | 2 | 3 | 3 | C: informer heartbeat works for GKE (container provider) but not for CloudSQL/Compute/Storage — partial advantage; D: Temporal UI shows scan results but cannot tell if provider ran Observe(); A/B: logs only |
 | Observability | 2 | 3 | 2 | 4 | D: structured scan output per run in Temporal UI; B: Operations visible in cluster; A/C: logs only |
 | Failure resilience | 2 | 3 | 4 | 2 | C: AddFunc+resync never loses events; B: Operation in etcd survives crash; A/D: small loss window |
 | Deduplication correctness | 4 | 4 | 4 | 4 | All use Temporal workflow ID dedup — expected pass |
 | K8s API load | 3 | 1 | 1 | 2 | B/C: idle watch streams (C bounded by provider rate, not its own schedule); A: independent poll schedule, 8 list/min at 10s interval; D: 5 list/min |
 | Production readiness | 4 | 1 | 4 | 4 | B: blocked on WatchOperations alpha graduation; others production-ready today |
-| **Total** | **30** | **24** | **31** | **33** | |
+| **Total** | **30** | **24** | **30** | **33** | |
 
 ---
 
@@ -377,41 +377,71 @@ values that make recreation fail.
 
 ---
 
-### F-02: Approach C's informer events are coupled to the provider poll cycle — enabling provider heartbeat detection
+### F-02: Informer heartbeat is specific to `provider-upbound-gcp-container` — not a general Crossplane behavior
 
-**Observed during:** Approach C informer watcher steady-state run.
+**Observed during:** Approach C informer watcher steady-state run. All four resource types
+were deployed with `platform.io/drift-protection=true` and all providers configured at the
+same `--poll=1m --sync=30m` interval.
 
-When the Crossplane provider runs `Observe()`, it writes the result back to `status.atProvider`
-on the MR even if nothing in GCP changed. This increments `resourceVersion`, which triggers a
-`MODIFIED` event on the Kubernetes watch stream. The informer fires `UpdateFunc` on every one
-of these writes.
+**What was expected:** Every provider `Observe()` cycle would increment `resourceVersion` and
+fire an `INFORMER_UPDATE` log for each resource type.
 
-**Implication for K8s API load (corrects Metric 9):** Approach A makes its own LIST calls on
-its own schedule regardless of provider activity. At `DRIFT_POLL_INTERVAL=10s`, that is 6 LIST
-calls per minute per GVR whether the provider observed anything or not. Approach C makes zero
-calls of its own — it only wakes up when the provider writes. C's work is strictly bounded by
-the provider poll rate; A's is not. The "event-driven" label on C is accurate not just for
-drift reaction time but also for steady-state load.
+**What was actually observed across all four resource types:**
 
-**Provider heartbeat as a free side-effect:** Because every `UpdateFunc` event in C corresponds
-directly to a provider `Observe()` cycle, the timestamp of each event is "last time this
-resource was observed by the provider". This is available for free — no extra API calls needed.
+| Provider binary | Resource type | Steady-state informer events |
+|---|---|---|
+| `provider-upbound-gcp-container` | GKE Cluster | `INFORMER_UPDATE` every ~1 min ✅ |
+| `provider-upbound-gcp-container` | GKE NodePool | `INFORMER_UPDATE` every ~1 min ✅ |
+| `provider-upbound-gcp-sql` | CloudSQL DatabaseInstance | Silent ❌ |
+| `provider-upbound-gcp-compute` | Compute Instance | Silent ❌ |
+| `provider-upbound-gcp-storage` | Storage Bucket | Silent ❌ |
 
-Useful signal this enables:
+**Root cause — proven by watch stream inspection:**
 
-- Per-resource "last observed at" metric surfaced from informer event timestamps
-- Health check: if `now - lastObservedAt > 2 × pollInterval`, the provider may be stuck or the
-  MR is no longer being reconciled
-- Provider liveness detection without parsing provider logs
+A watch stream diff (`kubectl get --watch -o json` with `resourceVersion` stripped) confirmed
+that GKE writes are **no-op writes** — the content is byte-for-byte identical on every cycle,
+yet Kubernetes still increments `resourceVersion` and fires a `MODIFIED` watch event. The
+content of `status.atProvider`, `status.conditions`, and `metadata` does not change.
 
-**No other approach provides this signal without extra work:**
+This means `provider-upbound-gcp-container` calls `Status().Update()` **unconditionally** on
+every reconcile cycle. Kubernetes accepts the write, writes it to etcd, and increments
+`resourceVersion` — even when the payload is identical to what is already stored.
+
+The three other provider binaries (`sql`, `compute`, `storage`) do **not** call
+`Status().Update()` unless something actually changed — so in steady state they produce no
+writes, no `resourceVersion` increments, and no informer events.
+
+**This is a `provider-upbound-gcp-container`-specific implementation detail**, not a general
+Crossplane or upjet behavior. Other providers in the same upjet family do not exhibit it.
+
+**Implication for provider heartbeat:** The heartbeat benefit of approach C is real but applies
+only to resources managed by `provider-upbound-gcp-container`. It does not generalize.
 
 | Approach | Provider observation signal | Notes |
 |---|---|---|
 | A | ❌ | Lists on its own schedule, not correlated to provider activity |
 | B | ✅ Partial | Function invoked on MR changes, but no persistent storage across invocations |
-| C | ✅ Native | Each `UpdateFunc` = one provider `Observe()` cycle |
+| C | ✅ Container provider only | Heartbeat works for GKE Cluster/NodePool; silent for CloudSQL, Compute, Storage in steady state |
 | D | ❌ | Scans on Temporal schedule, decoupled from provider activity |
+
+Where the heartbeat does apply (GKE resources), useful signals it enables:
+- Per-resource "last observed at" surfaced from informer event timestamps
+- Health check: if `now - lastObservedAt > 2 × pollInterval`, the provider may be stuck
+
+**Implication for drift re-detection:** Once drift is detected and `Synced=False` stabilizes:
+
+- **Approach A:** Re-detects on every poll regardless. At `DRIFT_POLL_INTERVAL=30s`, it logs
+  `DRIFT DETECTED` repeatedly. Temporal workflow ID dedup prevents duplicate workflows.
+- **Approach C:** Re-fires only when `resourceVersion` changes. For GKE (unconditional writes),
+  re-detection is continuous. For CloudSQL/Compute/Storage, drift may be detected once and go
+  silent until conditions actually change again — meaning a missed Temporal start would not
+  self-recover from the watcher side alone.
+
+**Implication for K8s API load (corrects Metric 9 for Approach C):** C's load is not uniformly
+"bounded by the provider poll rate". For `provider-upbound-gcp-container`, it fires on every
+poll (same rate as provider). For all other providers, C is completely idle in steady state —
+zero calls beyond the persistent watch stream. Approach A generates LIST calls on its own
+schedule regardless of provider behavior.
 
 ---
 

@@ -156,14 +156,14 @@ These cases require `DriftApprovalWorkflow` to be implemented.
 
 | ID | Summary | How To | A | B | C | D | Notes |
 |----|---------|--------|:-:|:-:|:-:|:-:|---------|
-| EC-01 | `atProvider` is empty (provider hasn't observed yet) | Apply a new MR with drift protection but immediately pause `provider-gcp` before it runs `Observe()`. Check `atProvider` is empty. Run watcher. Expected: no drift reported (`atProvider` empty check gates Signal 1). | — | — | — | — | Tested by hardcoding the empty `atProvider` |
+| EC-01 | `atProvider` is empty (provider hasn't observed yet) | Apply a new MR with drift protection but immediately pause `provider-gcp` before it runs `Observe()`. Check `atProvider` is empty. Run watcher. Expected: no drift reported (`atProvider` empty check gates Signal 1). | ✅ | — | — | — | Tested by hardcoding the empty `atProvider` in False Positive TC |
 | EC-02 | `forProvider` is empty (edge case resource) | If a composition produces an MR with an empty `forProvider` (unlikely but defensive). Expected: no diff reported (nothing to compare against). | — | — | — | — | Tested by hardcoding the empty `forProvider` |
 | EC-03 | Resource has drift-protection label but `driftProtection: false` in XR spec | MR is being watched (has label) but is in full management mode (`managementPolicies: ["*"]`). Drift is introduced. Expected: drift is still detected (label-based watch is independent of policy). Note: Crossplane may also auto-heal in this case — verify behavior. | ✅ | — | — | — |
 | EC-04 | Temporal unavailable when watcher tries to fire workflow | Stop Temporal or block network to it while drift is detected. Expected: **A/C** — error logged, next poll retries. **D** — next schedule run retries. Verify no silent data loss. | — | — | — | — |
 | EC-05 | Large number of drifted resources (fan-out) | Have 5+ resources all drifted simultaneously. Expected: one `DriftApprovalWorkflow` fires per XR (not per MR). Multi-MR XRs fire only once. Verify workflow count = number of distinct XRs, not MRs. | — | — | — | — |
-| EC-06 | Field drift and deletion occur simultaneously (both signals fire for same MR) | Externally modify a field AND delete the resource in quick succession. Both Signal 1 and Signal 2 should appear in the same drift report (`changes (2)`). | — | — | — | — |
-| EC-07 | Observed value is `nil` vs desired is a non-empty map | A GCP resource configuration removes a field group from `atProvider` that was present in `forProvider` (e.g. optional feature disabled, GCP stops returning the section). Expected: treated as no-diff (no observed baseline = cannot conclude drift). | — | — | — | — |
-| EC-08 | Desired slice has elements but observed slice is shorter | `forProvider` declares 3 node locations, GCP only reports 2 in `atProvider`. Expected: the missing index is reported as `<missing>` in the drift output. | — | — | — | — |
+| EC-06 | Field drift and deletion occur simultaneously (both signals fire for same MR) | Externally modify a field AND delete the resource in quick succession. Both Signal 1 and Signal 2 should appear in the same drift report (`changes (2)`). | ✅ | — | — | — |
+| EC-07 | Observed value is `nil` vs desired is a non-empty map | A GCP resource configuration removes a field group from `atProvider` that was present in `forProvider` (e.g. optional feature disabled, GCP stops returning the section). Expected: treated as no-diff (no observed baseline = cannot conclude drift). | ✅ | — | — | — |
+| EC-08 | Desired slice has elements but observed slice is shorter | `forProvider` declares 3 node locations, GCP only reports 2 in `atProvider`. Expected: the missing index is reported as `<missing>` in the drift output. | ✅ | — | — | — |
 
 ---
 
