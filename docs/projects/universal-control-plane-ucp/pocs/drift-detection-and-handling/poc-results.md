@@ -391,9 +391,47 @@ recreated, those fields reference state that belonged to the old resource and is
 policy. This forces the composition to recreate them from scratch with a clean `forProvider`.
 For field-level drift, no change needed — the existing flow works.
 
-**Raise with team:** Whether Crossplane should clear late-initialized fields from `forProvider`
+**Discussion point:** Whether Crossplane should clear late-initialized fields from `forProvider`
 when a resource is confirmed deleted (Synced=False/ReconcileError), rather than leaving stale
 values that make recreation fail.
+
+---
+
+### F-02: Approach C's informer events are coupled to the provider poll cycle — enabling provider heartbeat detection
+
+**Observed during:** Approach C informer watcher steady-state run.
+
+When the Crossplane provider runs `Observe()`, it writes the result back to `status.atProvider`
+on the MR even if nothing in GCP changed. This increments `resourceVersion`, which triggers a
+`MODIFIED` event on the Kubernetes watch stream. The informer fires `UpdateFunc` on every one
+of these writes.
+
+**Implication for K8s API load (corrects Metric 9):** Approach A makes its own LIST calls on
+its own schedule regardless of provider activity. At `DRIFT_POLL_INTERVAL=10s`, that is 6 LIST
+calls per minute per GVR whether the provider observed anything or not. Approach C makes zero
+calls of its own — it only wakes up when the provider writes. C's work is strictly bounded by
+the provider poll rate; A's is not. The "event-driven" label on C is accurate not just for
+drift reaction time but also for steady-state load.
+
+**Provider heartbeat as a free side-effect:** Because every `UpdateFunc` event in C corresponds
+directly to a provider `Observe()` cycle, the timestamp of each event is "last time this
+resource was observed by the provider". This is available for free — no extra API calls needed.
+
+Useful signal this enables:
+
+- Per-resource "last observed at" metric surfaced from informer event timestamps
+- Health check: if `now - lastObservedAt > 2 × pollInterval`, the provider may be stuck or the
+  MR is no longer being reconciled
+- Provider liveness detection without parsing provider logs
+
+**No other approach provides this signal without extra work:**
+
+| Approach | Provider observation signal | Notes |
+|---|---|---|
+| A | ❌ | Lists on its own schedule, not correlated to provider activity |
+| B | ✅ Partial | Function invoked on MR changes, but no persistent storage across invocations |
+| C | ✅ Native | Each `UpdateFunc` = one provider `Observe()` cycle |
+| D | ❌ | Scans on Temporal schedule, decoupled from provider activity |
 
 ---
 
