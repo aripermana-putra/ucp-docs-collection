@@ -26,13 +26,13 @@ Where the steps differ per approach, the difference is noted inline under **How 
 
 Pre-conditions that must pass before any drift test is meaningful.
 
-| ID | Summary | How To | A | B | C | D |
-|----|---------|--------|:-:|:-:|:-:|:-:|
-| S-01 | MR has drift-protection label | `kubectl get <mr-resource> -A -l platform.io/drift-protection=true` — should list the expected MR | — | — | — | — |
-| S-02 | MR is in Observe mode | `kubectl get <mr-resource> <name> -o jsonpath='{.spec.managementPolicies}'` — expected: `["Observe"]` | — | — | — | — |
-| S-03 | `atProvider` is populated | `kubectl get <mr-resource> <name> -o jsonpath='{.status.atProvider}'` — must be a non-empty object (Observe() has run at least once; wait up to 2 min after creation) | — | — | — | — |
-| S-04 | XR is Ready | `kubectl wait xdatabase/<name> --for=condition=Ready --timeout=30m` (or equivalent for other XR types) | — | — | — | — |
-| S-05 | Watcher / trigger is running | **A/C:** `kubectl get pod -l app=drift-watcher` — Running. **B:** `kubectl get watchoperation -A` — entries present. **D:** `temporal schedule describe --schedule-id drift-scan` — Running | — | — | — | — |
+| ID | Summary | How To | Result |
+|----|---------|--------|:-:|
+| S-01 | MR has drift-protection label | `kubectl get <mr-resource> -A -l platform.io/drift-protection=true` — should list the expected MR | ✅ |
+| S-02 | MR is in Observe mode | `kubectl get <mr-resource> <name> -o jsonpath='{.spec.managementPolicies}'` — expected: `["Observe"]` | — |
+| S-03 | `atProvider` is populated | `kubectl get <mr-resource> <name> -o jsonpath='{.status.atProvider}'` — must be a non-empty object (Observe() has run at least once; wait up to 2 min after creation) | ✅ | 
+| S-04 | XR is Ready | `kubectl wait xdatabase/<name> --for=condition=Ready --timeout=30m` (or equivalent for other XR types) | ✅ |
+| S-05 | Watcher / trigger is running | **A/C:** `kubectl get pod -l app=drift-watcher` — Running. **B:** `kubectl get watchoperation -A` — entries present. **D:** `temporal schedule describe --schedule-id drift-scan` — Running | — |
 
 ---
 
@@ -42,20 +42,20 @@ Pre-conditions that must pass before any drift test is meaningful.
 
 | ID | Summary | How To | A | B | C | D |
 |----|---------|--------|:-:|:-:|:-:|:-:|
-| D-01 | CloudSQL tier change detected | 1. In GCP Console → SQL → edit instance → change machine type. 2. Wait up to 2 min for provider poll (`--poll=1m`). 3. Check watcher output for `DRIFT DETECTED` with field `settings.tier`. | — | — | — | — |
-| D-02 | GCE instance machineType change detected | 1. Stop VM in console. 2. Edit → change machine type. 3. Start VM. 4. Wait up to 2 min. 5. Confirm `machineType` appears in drift output. | — | — | — | — |
-| D-03 | GKE Cluster autoscaling profile change detected | 1. GCP Console → GKE → cluster → edit → Cluster Autoscaler → change profile (BALANCED ↔ OPTIMIZE_UTILIZATION). 2. Wait up to 2 min. 3. Confirm `clusterAutoscaling.autoscalingProfile` in drift output. | — | — | — | — |
-| D-04 | GKE NodePool autoRepair toggle detected | 1. GCP Console → GKE → cluster → node pools → select pool → edit → disable auto-repair. 2. Wait up to 2 min. 3. Confirm `management.autoRepair` in drift output. | — | — | — | — |
-| D-05 | GCS Bucket storageClass change detected | 1. GCP Console → Storage → bucket → edit storage class (STANDARD ↔ NEARLINE). 2. Wait up to 2 min. 3. Confirm `storageClass` in drift output. | — | — | — | — |
-| D-06 | Multiple drifted fields reported in one event | Change two independent fields on the same resource simultaneously. Verify both fields appear in the same drift report under `changes (2):`. | — | — | — | — |
+| D-01 | CloudSQL tier change detected | 1. In GCP Console → SQL → edit instance → change machine type. 2. Wait up to 2 min for provider poll (`--poll=1m`). 3. Check watcher output for `DRIFT DETECTED` with field `settings.tier`. | ✅ | — | — | — |
+| D-02 | GCE instance machineType change detected | 1. Stop VM in console. 2. Edit → change machine type. 3. Start VM. 4. Wait up to 2 min. 5. Confirm `machineType` appears in drift output. | ✅ | — | — | — |
+| D-03 | GKE Cluster autoscaling profile change detected | 1. GCP Console → GKE → cluster → edit → Cluster Autoscaler → change profile (BALANCED ↔ OPTIMIZE_UTILIZATION). 2. Wait up to 2 min. 3. Confirm `clusterAutoscaling.autoscalingProfile` in drift output. | ✅ | — | — | — |
+| D-04 | GKE NodePool autoRepair toggle detected | 1. GCP Console → GKE → cluster → node pools → select pool → edit → disable auto-repair. 2. Wait up to 2 min. 3. Confirm `management.autoRepair` in drift output. | ✅ | — | — | — |
+| D-05 | GCS Bucket storageClass change detected | 1. GCP Console → Storage → bucket → edit storage class (STANDARD ↔ NEARLINE). 2. Wait up to 2 min. 3. Confirm `storageClass` in drift output. | ✅ | — | — | — |
+| D-06 | Multiple drifted fields reported in one event | Change two independent fields on the same resource simultaneously. Verify both fields appear in the same drift report under `changes (2):`. | ✅ | — | — | — |
 
 ### Resource deletion drift (Signal 2)
 
 | ID | Summary | How To | A | B | C | D |
 |----|---------|--------|:-:|:-:|:-:|:-:|
-| D-07 | CloudSQL deletion detected via Synced=False | 1. Delete the CloudSQL instance from GCP Console (do not touch K8s). 2. Wait for `kubectl get databaseinstance <name> -o jsonpath='{.status.conditions}'` to show `Synced=False, reason=ReconcileError`. 3. Confirm drift output shows `.status.conditions[Synced]` drift entry. | — | — | — | — |
-| D-08 | Resource deletion is detected even though field diff is empty | After deletion, `atProvider` retains stale values that match `forProvider` (Signal 1 would return no diff). Verify that only the `Synced=False` signal triggers the alert, not a field diff. Check drift output: `changes (1): .status.conditions[Synced]`. | — | — | — | — |
-| D-09 | GKE NodePool deletion detected | Delete the node pool from GCP Console. Wait for `Synced=False`. Confirm drift fires for the NodePool MR. | — | — | — | — |
+| D-07 | CloudSQL deletion detected via Synced=False | 1. Delete the CloudSQL instance from GCP Console. 2. Wait for `kubectl get databaseinstance <name> -o jsonpath='{.status.conditions}'` to show `Synced=False, reason=ReconcileError`. 3. Confirm drift output shows `.status.conditions[Synced]` drift entry. | ✅ | — | — | — |
+| D-08 | Resource deletion is detected even though field diff is empty | After deletion, `atProvider` retains stale values that match `forProvider` (Signal 1 would return no diff). Verify that only the `Synced=False` signal triggers the alert, not a field diff. Check drift output: `changes (1): .status.conditions[Synced]`. | ✅ | — | — | — |
+| D-09 | GKE NodePool deletion detected | Delete the node pool from GCP Console. Wait for `Synced=False`. Confirm drift fires for the NodePool MR. | ✅ | — | — | — |
 
 ---
 
@@ -66,14 +66,14 @@ After each test, run for at least 2 full poll cycles with no code changes in GCP
 
 | ID | Summary | How To | A | B | C | D |
 |----|---------|--------|:-:|:-:|:-:|:-:|
-| FP-01 | No false positive on empty desired slice vs nil atProvider | The GKE Cluster composition declares `loggingConfig.enableComponents: []`. GCP omits this field entirely in `atProvider`. Run watcher with a healthy cluster for 2 cycles. Confirm no drift on `loggingConfig.enableComponents`. | — | — | — | — |
-| FP-02 | No false positive on URL-normalized network fields | `forProvider.network = "default"`, `atProvider.network = "https://.../networks/default"`. Run watcher with no changes. Confirm no drift on `network` or `subnetwork` fields. | — | — | — | — |
-| FP-03 | No false positive on `bootDisk.initializeParams.image` | GCE image family `debian-cloud/debian-12` is resolved by GCP to a versioned URL. This path is in `skippedPaths`. Run watcher. Confirm no drift on `bootDisk[0].initializeParams[0].image`. | — | N/A | — | — |
-| FP-04 | No false positive on `clusterRef` and `clusterSelector` (NodePool) | Crossplane reference fields `clusterRef` and `clusterSelector` exist in `forProvider` but are never reflected in `atProvider` (GCP has no concept of them). Run watcher. Confirm no drift on either field. | — | — | — | — |
-| FP-05 | No false positive on absent map field group (nodeConfig on GKE Cluster) | GKE Cluster composition declares `nodeConfig.shieldedInstanceConfig.enableSecureBoot: true`. After `removeDefaultNodePool: true`, GCP stops returning `nodeConfig` in `atProvider`. The watcher treats a desired map with no observed baseline as no-diff. Run watcher. Confirm no drift on `nodeConfig`. | — | — | — | — |
-| FP-06 | No false positive on computed-only `atProvider` fields (id, selfLink, etc.) | Fields like `id`, `selfLink`, `connectionName`, `privateIpAddress` exist only in `atProvider` (not in `forProvider`). The watcher only iterates keys from `forProvider`, so these are never compared. Run watcher. Confirm none appear in drift output. | — | — | — | — |
-| FP-07 | No drift reported for resource without drift-protection label | Create a second MR of the same type without the `platform.io/drift-protection: "true"` label. Make a change to it in GCP Console. Confirm the watcher does not report drift for it. | — | — | — | — |
-| FP-08 | No drift reported before atProvider is populated | Apply a new MR with drift protection. Immediately run the watcher. While `atProvider` is still empty (provider hasn't done first Observe() yet), confirm no drift is reported. | — | — | — | — |
+| FP-01 | No false positive on empty desired slice vs nil atProvider | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-01` is logged. Restore to `false`/`False`. | — | — | — | — |
+| FP-02 | No false positive on URL-normalized network fields | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-02` is logged. Restore to `false`/`False`. | — | — | — | — |
+| FP-03 | No false positive on `bootDisk.initializeParams.image` | GCE image family `debian-cloud/debian-12` is resolved by GCP to a versioned URL. This path is in `skippedPaths`. Run watcher against a real GCE instance MR. Confirm no drift on `bootDisk[0].initializeParams[0].image`. | ✅ | N/A | — | — |
+| FP-04 | No false positive on `clusterRef` and `clusterSelector` (NodePool) | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-04` is logged. Restore to `false`/`False`. | — | — | — | — |
+| FP-05 | No false positive on absent map field group (nodeConfig on GKE Cluster) | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-05` is logged. Restore to `false`/`False`. | — | — | — | — |
+| FP-06 | No false positive on computed-only `atProvider` fields (id, selfLink, etc.) | Run watcher against a live MR. Confirm fields like `id` and `selfLink` that exist only in `atProvider` do not appear in any drift report (the diff iterates `forProvider` keys only). | — | — | — | — |
+| FP-07 | No drift reported for resource without drift-protection label | Create a second MR of the same type without the `platform.io/drift-protection: "true"` label or with `platform.io/drift-protection: "false"` label. Make a change to it in GCP Console. Confirm the watcher does not report drift for it. | ✅ | — | — | — |
+| FP-08 | No drift reported before atProvider is populated | Set `runFalsePositiveTests = true` (Go) / `RUN_FP_TESTS = True` (Python), run the binary. Confirm `PASS  FP-08` is logged. Restore to `false`/`False`. | — | — | — | — |
 
 ---
 
@@ -89,10 +89,11 @@ After each test, run for at least 2 full poll cycles with no code changes in GCP
 
 ## Section 5 — Observe Mode Behavior
 
-| ID | Summary | How To | A | B | C | D |
-|----|---------|--------|:-:|:-:|:-:|:-:|
-| OB-01 | No auto-heal while resource is in Observe mode | After drift is detected (e.g. tier changed in GCP Console), wait 5 min. Confirm the GCP resource still shows the drifted value and has not been corrected by Crossplane. `kubectl get <mr> <name> -o jsonpath='{.spec.managementPolicies}'` must still show `["Observe"]`. | — | — | — | — |
-| OB-02 | Crossplane still updates `atProvider` in Observe mode | While MR is in `managementPolicies: ["Observe"]`, GCP-side Observe() continues to run. Change a field. Verify `status.atProvider` is updated within 2 min even though Crossplane does not correct the resource. | — | — | — | — |
+| ID | Summary | How To | Result |
+|----|---------|--------|:-:|
+| OB-01 | No auto-heal while resource is in Observe mode | After drift is detected (e.g. tier changed in GCP Console), wait 5 min. Confirm the GCP resource still shows the drifted value and has not been corrected by Crossplane. `kubectl get <mr> <name> -o jsonpath='{.spec.managementPolicies}'` must still show `["Observe"]`. | ✅ |
+| OB-02 | Crossplane still updates `atProvider` in Observe mode | While MR is in `managementPolicies: ["Observe"]`, GCP-side Observe() continues to run. Change a field. Verify `status.atProvider` is updated within 2 min even though Crossplane does not correct the resource. | ✅ |
+| OB-03 | Crossplane should resume auto-heal resource when `["Create"]` or `["Update"]` is added to `managementPolicies` | While MR is in `managementPolicies: ["Observe"]`, and resource is modified or deleted (in GCP), add `["Create"]` or `["Update"]` into `managementPolicies`. | ✅ |
 
 ---
 
@@ -117,9 +118,9 @@ These cases require `DriftApprovalWorkflow` to be implemented.
 ### Approach A — Polling Watcher
 
 | ID | Summary | How To | Result |
-|----|---------|--------|--------|
-| A-01 | Poll interval is respected | Set `DRIFT_POLL_INTERVAL=10s` in `.env`. Run watcher with `DRIFT_VERBOSE=true`. Observe `LIST_REQUEST` log entries. Verify they appear every ~10s, not faster. | — |
-| A-02 | `.env` loaded at runtime — change is reflected on restart | Stop watcher. Change `MR_GVRS` in `.env` (add or remove a GVR). Restart. Verify new GVR list is picked up without recompiling. | — |
+|----|---------|--------|:-:|
+| A-01 | Poll interval is respected | Set `DRIFT_POLL_INTERVAL=10s` in `.env`. Run watcher with `DRIFT_VERBOSE=true`. Observe `LIST_REQUEST` log entries. Verify they appear every ~10s, not faster. | ✅ |
+| A-02 | `.env` loaded at runtime — change is reflected on restart | Stop watcher. Change `MR_GVRS` in `.env` (add or remove a GVR). Restart. Verify new GVR list is picked up without recompiling. | ✅ |
 | A-03 | Environment variable overrides `.env` | Export `DRIFT_POLL_INTERVAL=60s` in shell. Start watcher (`.env` has `DRIFT_POLL_INTERVAL=30s`). Verify 60s interval is used (shell var wins). | — |
 | A-04 | Restart after crash — already-drifted resource is re-detected | Kill the watcher while a drift event is in flight (before `ExecuteWorkflow` succeeds). Restart. Verify on the next poll the drifted resource is detected again. | — |
 
@@ -153,11 +154,11 @@ These cases require `DriftApprovalWorkflow` to be implemented.
 
 ## Section 8 — Edge Cases
 
-| ID | Summary | How To | A | B | C | D |
-|----|---------|--------|:-:|:-:|:-:|:-:|
-| EC-01 | `atProvider` is empty (provider hasn't observed yet) | Apply a new MR with drift protection but immediately pause `provider-gcp` before it runs `Observe()`. Check `atProvider` is empty. Run watcher. Expected: no drift reported (`atProvider` empty check gates Signal 1). | — | — | — | — |
-| EC-02 | `forProvider` is empty (edge case resource) | If a composition produces an MR with an empty `forProvider` (unlikely but defensive). Expected: no diff reported (nothing to compare against). | — | — | — | — |
-| EC-03 | Resource has drift-protection label but `driftProtection: false` in XR spec | MR is being watched (has label) but is in full management mode (`managementPolicies: ["*"]`). Drift is introduced. Expected: drift is still detected (label-based watch is independent of policy). Note: Crossplane may also auto-heal in this case — verify behavior. | — | — | — | — |
+| ID | Summary | How To | A | B | C | D | Notes |
+|----|---------|--------|:-:|:-:|:-:|:-:|---------|
+| EC-01 | `atProvider` is empty (provider hasn't observed yet) | Apply a new MR with drift protection but immediately pause `provider-gcp` before it runs `Observe()`. Check `atProvider` is empty. Run watcher. Expected: no drift reported (`atProvider` empty check gates Signal 1). | — | — | — | — | Tested by hardcoding the empty `atProvider` |
+| EC-02 | `forProvider` is empty (edge case resource) | If a composition produces an MR with an empty `forProvider` (unlikely but defensive). Expected: no diff reported (nothing to compare against). | — | — | — | — | Tested by hardcoding the empty `forProvider` |
+| EC-03 | Resource has drift-protection label but `driftProtection: false` in XR spec | MR is being watched (has label) but is in full management mode (`managementPolicies: ["*"]`). Drift is introduced. Expected: drift is still detected (label-based watch is independent of policy). Note: Crossplane may also auto-heal in this case — verify behavior. | ✅ | — | — | — |
 | EC-04 | Temporal unavailable when watcher tries to fire workflow | Stop Temporal or block network to it while drift is detected. Expected: **A/C** — error logged, next poll retries. **D** — next schedule run retries. Verify no silent data loss. | — | — | — | — |
 | EC-05 | Large number of drifted resources (fan-out) | Have 5+ resources all drifted simultaneously. Expected: one `DriftApprovalWorkflow` fires per XR (not per MR). Multi-MR XRs fire only once. Verify workflow count = number of distinct XRs, not MRs. | — | — | — | — |
 | EC-06 | Field drift and deletion occur simultaneously (both signals fire for same MR) | Externally modify a field AND delete the resource in quick succession. Both Signal 1 and Signal 2 should appear in the same drift report (`changes (2)`). | — | — | — | — |
