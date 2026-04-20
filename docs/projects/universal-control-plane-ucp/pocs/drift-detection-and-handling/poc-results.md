@@ -480,6 +480,49 @@ Crossplane will reconcile during the recovery window:
 
 ---
 
+### F-04: Approach C fires events during recovery — `DRIFT_CLEAN` confirms reconciliation progress
+
+**Observed during:** Drift recovery test on approach C with `DRIFT_VERBOSE=true`.
+
+**Concern:** Since approach C is event-driven, there was a question of whether it would go
+silent after drift was first detected — providing no visibility into whether recovery actually
+succeeded, unlike approach A which re-detects on every poll.
+
+**What was actually observed:** Recovery produces a clear sequence of events:
+
+1. **Management policy flip** (`spec.managementPolicies` changes from `["Observe"]` to
+   `["Create", "Observe", "Update"]`) — this is a spec write, which fires a `MODIFIED` event
+   for all provider types → `DRIFT_CLEAN` logged (drift condition is now gone or changing)
+2. **Crossplane reconciling** — as Crossplane creates or reverts the GCP resource, it updates
+   `status.conditions` repeatedly (Synced=False/Creating → Synced=True, Ready=False → Ready=True)
+   — each condition write fires a `MODIFIED` event → `DRIFT_CLEAN` logged on each
+3. **Reconcile complete** — final condition update to Synced=True/Ready=True fires a last
+   `MODIFIED` → `DRIFT_CLEAN` logged
+4. **Stable** — silence (for non-container providers in steady state)
+
+**Key insight:** Condition changes fire `MODIFIED` events for all provider types — not just
+`provider-upbound-gcp-container`. The F-02 finding (unconditional writes are container-provider-
+specific) applies to steady-state heartbeat only. During active reconciliation, every provider
+writes conditions, so approach C receives events throughout the full recovery window regardless
+of provider type.
+
+**Recovery visibility comparison:**
+
+| Signal | A | C |
+|--------|---|---|
+| Drift present | `DRIFT DETECTED` every poll | `DRIFT DETECTED` on first event |
+| Recovery in progress | `DRIFT DETECTED` continues while `Synced=False/ReconcileError` | `DRIFT_CLEAN` on each condition change (verbose) |
+| Recovery complete | Silence — no log on clean poll (by design, to avoid noise) | Silence — no more events with drift conditions |
+| Stable (no drift) | Silence | Silence (non-container) or `DRIFT_CLEAN` every poll (container) |
+
+Both approaches use silence to signal recovery completion — neither logs an explicit "drift
+resolved" entry. The difference is in the recovery window: A keeps re-detecting as long as
+`Synced=False/ReconcileError` is present (every poll); C emits `DRIFT_CLEAN` events as
+conditions change during reconciliation (visible only with `DRIFT_VERBOSE=true`), giving a
+live trace of the recovery progression that A does not provide.
+
+---
+
 ## Recommended Production Architecture
 
 Based on expected POC results, the likely outcome:
