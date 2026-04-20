@@ -60,6 +60,55 @@ MR changes (event-driven, Crossplane watch stream)
               (see Shared Design)
 ```
 
+Both `spec.forProvider` and `status.atProvider` are stored in **etcd** as fields of the MR
+Kubernetes object. Crossplane reads the full MR object from etcd (via the K8s API server)
+when creating an Operation and injects it into the function — the function itself never
+communicates with K8s or etcd. **Staleness comes entirely from the provider poll interval**,
+not from etcd or API server read latency.
+
+---
+
+## Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant GCP
+    participant Provider as Crossplane Provider
+    participant K8s as K8s API Server
+    participant etcd
+    participant Crossplane as Crossplane Controller
+    participant Function as function-python (Operation pod)
+    participant Temporal
+
+    loop Every ~1 min (provider poll — independent of WatchOperation)
+        Provider->>GCP: Observe()
+        GCP-->>Provider: current state
+        Provider->>K8s: PATCH MR.status.atProvider
+        K8s->>etcd: persist MR object (spec.forProvider + status.atProvider)
+    end
+
+    K8s-->>Crossplane: MODIFIED event (from etcd-backed watch cache)
+    Note over Crossplane: WatchOperation matches MR change
+    K8s->>etcd: read full MR object to inject into Operation
+    Crossplane->>K8s: Create Operation object
+
+    K8s-->>Function: Pod scheduled and started (Crossplane injects MR read from etcd)
+    Function->>Function: mr = request.get_required_resource(req, "ops.crossplane.io/watched-resource") [function-sdk-go]
+    Note over Function: mr is a dict — no K8s client needed
+    Function->>Function: is_drifted(mr) — mr.get("spec",{}).get("forProvider",{}) vs mr.get("status",{}).get("atProvider",{})
+    alt Drift detected
+        Function->>Function: resolve_controller_owner(mr) → XR name
+        Function->>Temporal: await client.start_workflow(DriftApprovalWorkflow) [Temporal Python SDK]
+        Temporal-->>Function: started (or AlreadyStarted → dedup)
+    else No drift
+        Note over Function: return rsp — no-op
+    end
+    Function->>K8s: Operation completes (pod exits)
+```
+
+> After `DriftApprovalWorkflow` starts, the approval and recovery flow is shared across all
+> approaches — see [Shared Design](shared-design.md).
+
 ---
 
 ## Crossplane Features Required

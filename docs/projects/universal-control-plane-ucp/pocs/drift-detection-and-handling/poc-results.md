@@ -216,7 +216,7 @@ cost is minimal. However, the cost model has a server side that polling approach
 | API server | Processes each LIST independently | Maintains watcher state + fans out every event to all registered watchers |
 | Failure recovery | Next scheduled poll catches up cleanly | Reconnect triggers a full LIST + re-watch burst per GVR |
 | Predictability | Uniform, scheduled load | Mostly idle, but bursty on pod restart or network blip |
-| **Watcher memory** | **Flat — LIST, process, discard** | **Linear — every labeled MR cached in heap permanently** |
+| **Watcher memory** | **Periodic spike during poll → GC → near zero** | **Linear steady-state — every labeled MR cached in heap permanently** |
 
 The reconnect LIST burst is the main API server concern. However, for large-scale platforms
 the **memory footprint of the local cache is the harder constraint** — see below.
@@ -256,6 +256,58 @@ Resync is also confirmed local-only: `threadSafeMap.Resync()` is literally `// N
 
 ---
 
+## Metric 11: Scalability
+
+**Definition:** How does each approach behave as the number of labeled MRs and GVRs grows?
+Covers memory model, scale-out mechanism, and per-component peak load.
+
+**Memory models differ fundamentally across approaches:**
+
+| Approach | Memory pattern | Peak per poll/event | Average over time |
+|----------|---------------|--------------------|--------------------|
+| A | Periodic spike during poll → GC → near zero | `GVRs × MRs_per_GVR × obj_size` | Low (near-zero between polls) |
+| B | No persistent process — Operation pod exits after each event | ~obj_size per event | Near-zero (ephemeral pods) |
+| C | Constant steady-state — every labeled MR cached in heap forever | `total_labeled_MRs × obj_size` | High (never GC'd) |
+| D | Periodic spike distributed across Temporal worker fleet | `~obj_size × MRs_per_GVR` per worker | Low (GC'd after each activity) |
+
+```
+At 20 GVRs × 1,000 MRs × 50 KB:
+
+Approach A:  1 pod, ~1 GB spike per poll cycle → GC
+Approach B:  no persistent state; ~50 KB per Operation pod, exits after event
+Approach C:  1 pod, ~1 GB permanent heap (never collected)
+Approach D:  ~50 MB per worker pod per GVR activity, distributed across fleet → GC
+```
+
+**Scale-out mechanism:**
+
+| Approach | How to scale out | Manual coordination required |
+|----------|-----------------|------------------------------|
+| A | Split GVRs across multiple watcher pods via separate ConfigMaps, or shard by namespace | Yes — you manage the split manually |
+| B | Crossplane manages Operation pod scheduling; increase `spec.concurrencyPolicy` if needed | No — Crossplane schedules pods |
+| C | Shard watchers by namespace/provider/GVR group across pods | Yes — you manage the split manually |
+| D | Add more Temporal worker pods; Temporal distributes activities automatically | No — Temporal routes to available workers |
+
+**Scale projection at 20 GVRs × 1,000 MRs (realistic platform scale):**
+
+| Approach | Pod count | Per-pod memory | Total cluster memory | Scale-out path |
+|----------|:---------:|:--------------:|:--------------------:|----------------|
+| A | 1 | ~1 GB (spike) | ~1 GB | Manual sharding |
+| B | 1 per event (ephemeral) | ~50 KB | Negligible | Automatic (Crossplane concurrency) |
+| C | 1 | ~1 GB (steady) | ~1 GB | Manual sharding |
+| D | N workers (existing fleet) | ~50 MB (spike, distributed) | ~50 MB × GVRs / workers | Automatic (Temporal routing) |
+
+**Score:** 4=best scalability, 1=worst
+
+| Approach | Score | Notes |
+|----------|:-----:|-------|
+| A | 2 | Periodic spike avoids persistent cache; but no built-in scale-out — manual sharding required at high GVR×MR counts |
+| B | 3 | No persistent memory accumulation; Operation pods are ephemeral and K8s-scheduled; scale limited by Crossplane concurrency policy and cluster pod capacity |
+| C | 1 | Worst at scale — linear heap growth with no GC, single pod; sharding adds operational complexity without solving the fundamental cache model |
+| D | 4 | Best natural scale-out — Temporal distributes activity execution across the worker fleet automatically; distributed spikes instead of concentrated ones; no manual pod-to-GVR mapping |
+
+---
+
 ## Decision Scorecard
 
 **Scoring:** 4=best for this metric, 1=worst. Ties allowed.
@@ -274,7 +326,8 @@ Resync is also confirmed local-only: `threadSafeMap.Resync()` is literally `// N
 | Deduplication correctness | 4 | 4 | 4 | 4 | All use Temporal workflow ID dedup — expected pass |
 | K8s API load | 3 | 1 | 2 | 2 | B/C: fewest API calls (idle watch streams); A: 8 list/min independent of provider. C scores 2 not 1: low API call volume but trades it for linear memory growth — every labeled MR cached in heap permanently. At 10,000+ labeled resources C's memory footprint becomes a harder constraint than A/D's periodic LIST calls. B shares the same watch model but is not a long-running binary so cache concern is lower. |
 | Production readiness | 4 | 1 | 4 | 4 | B: blocked on WatchOperations alpha graduation; others production-ready today |
-| **Total** | **30** | **24** | **31** | **33** | |
+| Scalability | 2 | 3 | 1 | 4 | D: Temporal distributes activities across worker fleet automatically — best natural scale-out; B: ephemeral Operation pods, no persistent cache; A: periodic spikes but manual sharding only; C: linear persistent heap growth, single pod, hardest to scale |
+| **Total** | **32** | **27** | **32** | **37** | |
 
 ---
 
@@ -558,6 +611,100 @@ resolved" entry. The difference is in the recovery window: A keeps re-detecting 
 `Synced=False/ReconcileError` is present (every poll); C emits `DRIFT_CLEAN` events as
 conditions change during reconciliation (visible only with `DRIFT_VERBOSE=true`), giving a
 live trace of the recovery progression that A does not provide.
+
+---
+
+## Post-POC Design Considerations
+
+> Out of scope for this POC. Captured here for the production design discussion.
+
+---
+
+### Drift action modes
+
+Two modes should be supported per resource, controlled via XRD parameter:
+
+| Mode | Behaviour |
+|---|---|
+| `notify` | Detect drift, send notification, no approval workflow, no reconciliation |
+| `approve` | Detect drift, send notification, wait for human approval, reconcile if approved |
+
+Propagated as a label on the composed MR by the composition:
+
+```
+platform.io/drift-protection: "true"
+platform.io/drift-action: "notify" | "approve"
+```
+
+---
+
+### The chatty notification problem
+
+Drift is **continuously re-detected** on every poll cycle (A, D) or on every provider write (B, C). Without a debounce mechanism, the same drift event generates a notification every 30s–1min indefinitely.
+
+**For `approve` mode** — already solved. Temporal's workflow ID dedup (`AlreadyStartedError`) suppresses re-fires as long as the approval workflow is running. After rejection or timeout, a cooldown is needed before the workflow terminates so re-detection is suppressed during that window.
+
+**For `notify` mode** — Temporal is not involved, so a separate snooze mechanism is required.
+
+---
+
+### Snooze mechanism
+
+Store the snooze state as an **annotation on the MR itself**, not in a separate database:
+
+```
+platform.io/drift-snoozed-until: "2026-04-20T11:30:00Z"
+```
+
+**Why annotation and not a DB column:**
+The MR object is already fetched in the watcher's `List()` call. Checking the annotation costs nothing — it is already in memory. A DB read per MR per poll cycle would be N × poll_rate queries, which is expensive at scale.
+
+**Why annotation and not a label:**
+Labels are indexed in etcd and intended for selection. A high-cardinality timestamp value is a bad fit. Annotations carry metadata and have no indexing concern.
+
+**Default snooze: 30 minutes.** Configurable per tenant in the tenant config table.
+
+---
+
+### Who writes the snooze annotation
+
+| Mode | Written by | When |
+|---|---|---|
+| `notify` | Watcher (directly after notification fires) | Immediately after sending notification |
+| `approve` | Temporal `SetSnoozeActivity` | On workflow rejection or timeout |
+
+For `approve` mode, clearing the snooze annotation after a successful reconciliation is handled by the same activity (`SetSnoozeActivity(duration=0)`).
+
+The watcher only needs PATCH permission on MR annotations — it remains read-only for everything else.
+
+---
+
+### User controls (UI / CLI)
+
+Snooze state is just a K8s annotation — the UI patches it directly via the K8s API:
+
+```bash
+# Extend snooze
+kubectl annotate mr <name> platform.io/drift-snoozed-until="<timestamp>" --overwrite
+
+# Cancel snooze immediately (re-arms on next poll)
+kubectl annotate mr <name> platform.io/drift-snoozed-until-
+
+# Disable drift protection entirely
+kubectl label mr <name> platform.io/drift-protection=false --overwrite
+```
+
+No custom backend endpoint needed. The web UI wraps the same K8s API calls.
+
+---
+
+### State storage summary
+
+| Store | Owns | Notes |
+|---|---|---|
+| **etcd** (via K8s API) | Drift signal (`forProvider`/`atProvider`) + snooze annotation | Read for free in existing `List()` call |
+| **DB** | Audit log | Written async (fire-and-forget) from both watcher and Temporal activities |
+| **Temporal** | Approval workflow state | `approve` mode only |
 
 ---
 

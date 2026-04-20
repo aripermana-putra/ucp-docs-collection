@@ -71,6 +71,12 @@ ScanDriftActivity (running inside temporal-worker pod)
   diff → if mismatch → resolve ownerRef → ExecuteWorkflow
 ```
 
+Both `spec.forProvider` and `status.atProvider` are stored in **etcd** as fields of the MR
+Kubernetes object. The K8s API server is the access layer — `ScanDriftActivity` never
+communicates with etcd directly. Each `List()` call goes to the K8s API server, which reads
+from etcd and returns the current MR state. **Staleness comes entirely from the provider poll
+interval**, not from etcd or API server read latency.
+
 The temporal-worker pod already has a `ServiceAccount` with K8s API access (for existing
 `ApplyYAMLActivity`, `WaitDatabaseClaimReadyActivity`, etc.). `ScanDriftActivity` reuses
 the same in-cluster kubeconfig — no additional auth setup required.
@@ -109,6 +115,58 @@ GCP / Omnia                provider-gcp / provider-roc pod
                            DriftApprovalWorkflow
                            (see Shared Design)
 ```
+
+---
+
+## Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant GCP
+    participant Provider as Crossplane Provider
+    participant K8s as K8s API Server
+    participant etcd
+    participant Schedule as Temporal Schedule
+    participant Workflow as DriftScanWorkflow
+    participant Activity as ScanDriftActivity (temporal-worker pod)
+    participant Temporal as Temporal Server
+
+    loop Every ~1 min (provider poll — independent of schedule)
+        Provider->>GCP: Observe()
+        GCP-->>Provider: current state
+        Provider->>K8s: PATCH MR.status.atProvider
+        K8s->>etcd: persist MR object (spec.forProvider + status.atProvider)
+    end
+
+    loop Every 1 min (Temporal Schedule trigger)
+        Schedule->>Temporal: trigger DriftScanWorkflow
+        Temporal->>Workflow: start DriftScanWorkflow
+        Workflow->>Temporal: schedule ScanDriftActivity
+        Temporal->>Activity: execute ScanDriftActivity
+
+        loop Per GVR
+            Activity->>K8s: dc.Resource(gvr).Namespace("").List(ctx, metav1.ListOptions{LabelSelector}) [k8s.io/client-go/dynamic]
+            K8s->>etcd: read labeled MR objects
+            K8s-->>Activity: *unstructured.UnstructuredList (no persistent cache — discarded after loop)
+            loop Per MR (*unstructured.Unstructured)
+                Activity->>Activity: isDrifted(obj) — unstructured.NestedMap(obj.Object, "spec","forProvider") vs ("status","atProvider")
+                alt Drift detected
+                    Activity->>Activity: resolveControllerOwner(obj) → XR name
+                    Activity->>Temporal: tc.ExecuteWorkflow(DriftApprovalWorkflow) [Temporal Go SDK]
+                    Temporal-->>Activity: started (or AlreadyStarted → dedup)
+                else No drift
+                    Note over Activity: skip — no-op
+                end
+            end
+        end
+
+        Activity-->>Workflow: DriftScanOutput (scanned/drifted/fired counts)
+        Workflow-->>Temporal: complete with structured output
+    end
+```
+
+> After `DriftApprovalWorkflow` starts, the approval and recovery flow is shared across all
+> approaches — see [Shared Design](shared-design.md).
 
 ---
 
@@ -385,3 +443,61 @@ availability for drift *detection* (not just handling).
 - **Unusual pattern** — `ScanDriftActivity` calls back into Temporal to start `DriftApprovalWorkflow`; requires injecting a Temporal client into the activity
 - **Scan history accumulates** — 1 `DriftScanWorkflow` entry per minute; requires a Temporal workflow retention policy to avoid unbounded storage growth
 - **Potential rate limiting at scale** — if many resources drift simultaneously, all `DriftApprovalWorkflow` starts happen within one activity execution; may hit Temporal API rate limits with very large resource counts
+
+---
+
+## Scaling Considerations
+
+**Approach D has the strongest natural scale-out story of the four approaches.**
+
+**Memory model — distributed spikes:**
+
+Like Approach A, each scan activity fetches a LIST response and holds it in memory while
+processing, then discards it. Unlike A, individual activities run on separate Temporal worker
+pods — the memory spike is distributed across the worker fleet rather than concentrated in
+one pod.
+
+```
+DriftScanWorkflow fans out per GVR:
+  ├── DriftScanActivity(databaseinstances) → worker pod 1, ~50MB spike → GC
+  ├── DriftScanActivity(instances)         → worker pod 2, ~50MB spike → GC
+  ├── DriftScanActivity(clusters)          → worker pod 3, ~50MB spike → GC
+  └── ...
+
+Per-pod peak: ~50MB (one GVR)
+Total across fleet: 20 GVRs × 50MB = ~1GB (distributed)
+```
+
+This is a key advantage over A at large scale: A concentrates the full burst in one pod;
+D distributes it across the worker fleet automatically.
+
+**Scale-out mechanism — Temporal worker fleet:**
+
+Scaling D requires no sharding logic, no ConfigMap splitting, no coordination between pods:
+
+1. Add more Temporal worker pods polling the same task queue
+2. Temporal automatically distributes activity execution across available workers
+3. Fan-out parallelism in the workflow controls how many activities run concurrently
+
+To increase throughput, increase either worker pod count or workflow parallelism:
+
+```go
+// Workflow fan-out — all GVRs scanned in parallel, each on a separate worker
+for _, gvr := range gvrs {
+    workflow.Go(ctx, func(ctx workflow.Context) {
+        workflow.ExecuteActivity(ctx, DriftScanActivity, gvr)
+    })
+}
+```
+
+**Namespace/tenant sharding:**
+
+For multi-tenant platforms, the schedule can pass a namespace filter to each activity. To
+isolate tenant scan load, run separate schedules per namespace — Temporal routes them to
+whichever workers are available without any manual pod-to-namespace mapping.
+
+**The trade-off:**
+
+Scale-out in D is natural but requires Temporal to be healthy. If Temporal is unavailable,
+all scanning stops — there is no fallback. A and C continue scanning independently of Temporal
+(only the workflow-start call fails).

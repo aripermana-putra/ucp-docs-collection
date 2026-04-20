@@ -29,10 +29,9 @@ Pre-conditions that must pass before any drift test is meaningful.
 | ID | Summary | How To | Result |
 |----|---------|--------|:-:|
 | S-01 | MR has drift-protection label | `kubectl get <mr-resource> -A -l platform.io/drift-protection=true` — should list the expected MR | ✅ |
-| S-02 | MR is in Observe mode | `kubectl get <mr-resource> <name> -o jsonpath='{.spec.managementPolicies}'` — expected: `["Observe"]` | — |
+| S-02 | MR is in Observe mode | `kubectl get <mr-resource> <name> -o jsonpath='{.spec.managementPolicies}'` — expected: `["Observe"]` | ✅ |
 | S-03 | `atProvider` is populated | `kubectl get <mr-resource> <name> -o jsonpath='{.status.atProvider}'` — must be a non-empty object (Observe() has run at least once; wait up to 2 min after creation) | ✅ | 
 | S-04 | XR is Ready | `kubectl wait xdatabase/<name> --for=condition=Ready --timeout=30m` (or equivalent for other XR types) | ✅ |
-| S-05 | Watcher / trigger is running | **A/C:** `kubectl get pod -l app=drift-watcher` — Running. **B:** `kubectl get watchoperation -A` — entries present. **D:** `temporal schedule describe --schedule-id drift-scan` — Running | — |
 
 ---
 
@@ -42,20 +41,20 @@ Pre-conditions that must pass before any drift test is meaningful.
 
 | ID | Summary | How To | A | B | C | D |
 |----|---------|--------|:-:|:-:|:-:|:-:|
-| D-01 | CloudSQL tier change detected | 1. In GCP Console → SQL → edit instance → change machine type. 2. Wait up to 2 min for provider poll (`--poll=1m`). 3. Check watcher output for `DRIFT DETECTED` with field `settings.tier`. | ✅ | — | — | — |
-| D-02 | GCE instance machineType change detected | 1. Stop VM in console. 2. Edit → change machine type. 3. Start VM. 4. Wait up to 2 min. 5. Confirm `machineType` appears in drift output. | ✅ | — | — | — |
-| D-03 | GKE Cluster autoscaling profile change detected | 1. GCP Console → GKE → cluster → edit → Cluster Autoscaler → change profile (BALANCED ↔ OPTIMIZE_UTILIZATION). 2. Wait up to 2 min. 3. Confirm `clusterAutoscaling.autoscalingProfile` in drift output. | ✅ | — | — | — |
-| D-04 | GKE NodePool autoRepair toggle detected | 1. GCP Console → GKE → cluster → node pools → select pool → edit → disable auto-repair. 2. Wait up to 2 min. 3. Confirm `management.autoRepair` in drift output. | ✅ | — | — | — |
-| D-05 | GCS Bucket storageClass change detected | 1. GCP Console → Storage → bucket → edit storage class (STANDARD ↔ NEARLINE). 2. Wait up to 2 min. 3. Confirm `storageClass` in drift output. | ✅ | — | — | — |
-| D-06 | Multiple drifted fields reported in one event | Change two independent fields on the same resource simultaneously. Verify both fields appear in the same drift report under `changes (2):`. | ✅ | — | — | — |
+| D-01 | CloudSQL tier change detected | 1. In GCP Console → SQL → edit instance → change machine type. 2. Wait up to 2 min for provider poll (`--poll=1m`). 3. Check watcher output for `DRIFT DETECTED` with field `settings.tier`. | ✅ | — | ✅ | — |
+| D-02 | GCE instance machineType change detected | 1. Stop VM in console. 2. Edit → change machine type. 3. Start VM. 4. Wait up to 2 min. 5. Confirm `machineType` appears in drift output. | ✅ | — | ✅ | — |
+| D-03 | GKE Cluster autoscaling profile change detected | 1. GCP Console → GKE → cluster → edit → Cluster Autoscaler → change profile (BALANCED ↔ OPTIMIZE_UTILIZATION). 2. Wait up to 2 min. 3. Confirm `clusterAutoscaling.autoscalingProfile` in drift output. | ✅ | — | ✅ | — |
+| D-04 | GKE NodePool max node count update | 1. GCP Console → GKE → cluster → node pools → select pool → edit → edit max node count. 2. Wait up to 2 min. 3. Confirm `autoscaling.maxNodeCount` in drift output. | ✅ | — | ✅ | — |
+| D-05 | GCS Bucket storageClass change detected | 1. GCP Console → Storage → bucket → edit storage class (STANDARD ↔ NEARLINE). 2. Wait up to 2 min. 3. Confirm `storageClass` in drift output. | ✅ | - | ✅ | — |
+| D-06 | Multiple drifted fields reported in one event | Change two independent fields on the same resource simultaneously. Verify both fields appear in the same drift report under `changes (2):`. | ✅ | — | ✅ | — |
 
 ### Resource deletion drift (Signal 2)
 
 | ID | Summary | How To | A | B | C | D |
 |----|---------|--------|:-:|:-:|:-:|:-:|
-| D-07 | CloudSQL deletion detected via Synced=False | 1. Delete the CloudSQL instance from GCP Console. 2. Wait for `kubectl get databaseinstance <name> -o jsonpath='{.status.conditions}'` to show `Synced=False, reason=ReconcileError`. 3. Confirm drift output shows `.status.conditions[Synced]` drift entry. | ✅ | — | — | — |
-| D-08 | Resource deletion is detected even though field diff is empty | After deletion, `atProvider` retains stale values that match `forProvider` (Signal 1 would return no diff). Verify that only the `Synced=False` signal triggers the alert, not a field diff. Check drift output: `changes (1): .status.conditions[Synced]`. | ✅ | — | — | — |
-| D-09 | GKE NodePool deletion detected | Delete the node pool from GCP Console. Wait for `Synced=False`. Confirm drift fires for the NodePool MR. | ✅ | — | — | — |
+| D-07 | CloudSQL deletion detected via Synced=False | 1. Delete the CloudSQL instance from GCP Console. 2. Wait for `kubectl get databaseinstance <name> -o jsonpath='{.status.conditions}'` to show `Synced=False, reason=ReconcileError`. 3. Confirm drift output shows `.status.conditions[Synced]` drift entry. | ✅ | — | ✅ | — |
+| D-08 | Resource deletion is detected even though field diff is empty | After deletion, `atProvider` retains stale values that match `forProvider` (Signal 1 would return no diff). Verify that only the `Synced=False` signal triggers the alert, not a field diff. Check drift output: `changes (1): .status.conditions[Synced]`. | ✅ | — | ✅ | — |
+| D-09 | GKE NodePool deletion detected | Delete the node pool from GCP Console. Wait for `Synced=False`. Confirm drift fires for the NodePool MR. | ✅ | — | ✅ | — |
 
 ---
 

@@ -68,11 +68,18 @@ drift-watcher reads both fields from the K8s API response
   diff forProvider vs atProvider → fire workflow if mismatch
 ```
 
+Both `spec.forProvider` and `status.atProvider` are stored in **etcd** as fields of the
+MR Kubernetes object. The K8s API server is the access layer — the drift-watcher never
+communicates with etcd directly. Each `List()` call goes to the K8s API server, which
+reads from etcd and returns the current MR state.
+
 `spec.forProvider` is written once when the MR is created by the composition.
 `status.atProvider` is updated by the provider pod on every `Observe()` call.
 The watcher sees the most recent observed state from the last provider poll — not
-real-time GCP state. Maximum staleness = provider poll interval (~1 min, configured
-via `DeploymentRuntimeConfig`; default is 10 min — see crossplane-reconcile-behavior.md).
+real-time GCP state. **Staleness comes entirely from the provider poll interval** (~1 min,
+configured via `DeploymentRuntimeConfig`; default is 10 min — see crossplane-reconcile-behavior.md),
+not from etcd or K8s API server read latency. Once the provider writes `status.atProvider`,
+the data is immediately available in etcd on the next read.
 
 ---
 
@@ -105,6 +112,47 @@ GCP / Omnia                provider-gcp / provider-roc pod
                            DriftApprovalWorkflow
                            (see Shared Design)
 ```
+
+---
+
+## Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant GCP
+    participant Provider as Crossplane Provider
+    participant K8s as K8s API Server
+    participant etcd
+    participant Watcher as drift-watcher
+    participant Temporal
+
+    loop Every ~1 min (provider poll — independent of watcher)
+        Provider->>GCP: Observe()
+        GCP-->>Provider: current state
+        Provider->>K8s: PATCH MR.status.atProvider
+        K8s->>etcd: persist MR object (spec.forProvider + status.atProvider)
+    end
+
+    loop Every 30s (drift poll)
+        par Per GVR goroutine
+            Watcher->>K8s: dc.Resource(gvr).Namespace("").List(ctx, metav1.ListOptions{LabelSelector}) [k8s.io/client-go/dynamic]
+            K8s->>etcd: read labeled MR objects
+            K8s-->>Watcher: *unstructured.UnstructuredList
+            loop Per MR (*unstructured.Unstructured)
+                Watcher->>Watcher: isDrifted(obj) — unstructured.NestedMap(obj.Object, "spec","forProvider") vs ("status","atProvider")
+                alt Drift detected
+                    Watcher->>Temporal: tc.ExecuteWorkflow(DriftApprovalWorkflow) [Temporal Go SDK]
+                    Temporal-->>Watcher: started (or AlreadyStarted → dedup)
+                else No drift
+                    Note over Watcher: no-op — *UnstructuredList GC'd after loop
+                end
+            end
+        end
+    end
+```
+
+> After `DriftApprovalWorkflow` starts, the approval and recovery flow is shared across all
+> approaches — see [Shared Design](shared-design.md).
 
 ---
 
@@ -339,3 +387,44 @@ func fireWorkflow(ctx context.Context, tc client.Client, in DriftApprovalInput) 
 - **Polling latency:** up to `DRIFT_POLL_INTERVAL` (30s) added on top of Crossplane's atProvider refresh cycle.
 - **Stateless:** a crash window exists between detecting drift and calling `ExecuteWorkflow`.
 - **K8s API load:** grows linearly with resource count. At 50 resources × 5 MR GVRs ≈ 10 list calls/min. Low.
+
+---
+
+## Scaling Considerations
+
+**Memory model — periodic spike, not flat:**
+
+Approach A does not maintain a persistent cache, but it is not free of memory pressure. On
+every poll cycle, each goroutine fetches a full LIST response from the API server. All fetched
+objects live in memory while the goroutine runs, then get GC'd after the poll completes.
+
+```
+20 GVRs × 1000 MRs × ~50KB = ~1GB spike per poll cycle
+                               ↓ GC after poll completes
+                               ~near-zero until next poll
+```
+
+The peak during a poll is similar in magnitude to Approach C's steady-state. The difference:
+- **Approach A:** burst headroom required; average memory over time is low
+- **Approach C:** constant steady-state; easier to size but never reclaimed
+
+**Scale-out mechanism — manual sharding:**
+
+A single watcher pod processes all configured GVRs sequentially per goroutine. To scale out:
+- Split GVRs across multiple watcher pods via separate ConfigMaps
+- Or shard by namespace (run one watcher per team/namespace)
+- No built-in distribution — you manage the split manually
+
+At 20 GVRs × 1000 MRs, the poll goroutines each hold ~50MB for a few seconds. This is
+manageable from a single pod. At 100,000+ resources the spike per pod becomes a hard limit
+and sharding is required.
+
+**API call load at scale:**
+
+```
+20 GVRs × 1000 MRs = 20 LIST calls per poll
+With pagination (500 objects/page): 20 GVRs × 2 pages = 40 HTTP calls per poll
+At poll=1m: 40 calls/min to the API server
+```
+
+Predictable and schedulable — the API server sees a uniform burst every minute, then silence.

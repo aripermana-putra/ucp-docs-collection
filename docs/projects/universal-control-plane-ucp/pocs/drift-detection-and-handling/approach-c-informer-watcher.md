@@ -70,6 +70,14 @@ SharedInformerFactory (local in-process cache)
 event handler: diff forProvider vs atProvider → fire workflow if mismatch
 ```
 
+Both `spec.forProvider` and `status.atProvider` are stored in **etcd** as fields of the MR
+Kubernetes object. The K8s API server is the access layer — the informer never communicates
+with etcd directly. On startup, the initial `LIST` reads from etcd via the API server to
+populate the local `threadSafeMap` cache. Subsequent `WATCH` events are pushed from the API
+server's etcd-backed watch cache. **Staleness comes entirely from the provider poll interval**,
+not from etcd or API server latency. Once the provider writes `status.atProvider`, the data is
+immediately visible in etcd and triggers a MODIFIED event to the informer.
+
 The critical point: the watch event fires the moment the provider pod writes `status.atProvider`
 to the K8s API server — **not** when GCP state changes. The provider pod is the bridge between
 GCP and K8s. Reaction time for the watcher = time between provider pod writing `atProvider`
@@ -112,6 +120,54 @@ GCP / Omnia                provider-gcp / provider-roc pod
                            DriftApprovalWorkflow
                            (see Shared Design)
 ```
+
+---
+
+## Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant GCP
+    participant Provider as Crossplane Provider
+    participant K8s as K8s API Server
+    participant etcd
+    participant Informer as SharedInformerFactory (drift-watcher)
+    participant Temporal
+
+    Note over Informer: Startup: dynamicinformer.NewFilteredDynamicSharedInformerFactory(dc, resyncPeriod, ...) [k8s.io/client-go/dynamic/dynamicinformer]
+    Note over Informer: factory.ForResource(gvr).Informer() per GVR → cache.SharedIndexInformer
+    Note over Informer: inf.AddEventHandler(cache.ResourceEventHandlerFuncs{UpdateFunc, AddFunc})
+    Informer->>K8s: LIST per GVR to populate threadSafeMap cache [k8s.io/client-go/dynamic]
+    K8s->>etcd: read all labeled MR objects
+    K8s-->>Informer: *unstructured.UnstructuredList → stored in threadSafeMap.items (permanent copy from etcd)
+    Note over Informer: AddFunc(*unstructured.Unstructured) fires for each cached MR — checks existing drift
+
+    loop Every ~1 min (provider poll — independent of watcher)
+        Provider->>GCP: Observe()
+        GCP-->>Provider: current state
+        Provider->>K8s: PATCH MR.status.atProvider
+        K8s->>etcd: persist MR object (spec.forProvider + status.atProvider)
+    end
+
+    K8s-->>Informer: MODIFIED event (pushed from etcd-backed watch cache — no new LIST)
+    Informer->>Informer: UpdateFunc(_, newObj *unstructured.Unstructured) fires
+    Informer->>Informer: isDrifted(obj) — unstructured.NestedMap(obj.Object, "spec","forProvider") vs ("status","atProvider")
+    alt Drift detected
+        Informer->>Temporal: tc.ExecuteWorkflow(DriftApprovalWorkflow) [Temporal Go SDK]
+        Temporal-->>Informer: started (or AlreadyStarted → dedup)
+    else No drift
+        Note over Informer: DRIFT_CLEAN log (verbose) — no-op
+    end
+
+    loop Every 10 min (resync — local only, zero API calls)
+        Note over Informer: threadSafeMap.Resync() = "Nothing to do" — re-enqueues from local map, no network
+        Informer->>Informer: UpdateFunc(*unstructured.Unstructured) fires for each cached MR
+        Note over Informer: Safety net for any events missed during transient failures
+    end
+```
+
+> After `DriftApprovalWorkflow` starts, the approval and recovery flow is shared across all
+> approaches — see [Shared Design](shared-design.md).
 
 ---
 
@@ -432,8 +488,16 @@ func (c *threadSafeMap) Resync() error {
 Resync makes zero API calls — confirmed. It re-enqueues items from the local map through the
 event queue so your `UpdateFunc` fires, but no network round trip is involved.
 
-Approaches A and D do not have the memory constraint — they LIST, process results, and discard.
-Memory usage is essentially flat regardless of resource count.
+Approaches A and D do not have this permanent cache — they LIST, process results, and discard.
+However, they are not flat either: during each poll cycle, all fetched objects live in memory
+until the goroutines finish and the GC collects them. The pattern differs:
+
+| | A / D | C |
+|---|---|---|
+| Memory pattern | Periodic spike during poll → GC → near zero | Constant steady-state |
+| Peak per cycle | Similar order of magnitude (same objects fetched) | Same order of magnitude (same objects cached) |
+| Average over time | Lower (near-zero between polls) | Higher (cache never GC'd) |
+| Sizing | Needs burst headroom | Predictable constant |
 
 **Memory projection at scale:**
 

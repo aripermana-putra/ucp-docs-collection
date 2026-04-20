@@ -59,14 +59,20 @@ GCP resource drifted (e.g. tier changed in GCP Console)
         ▼
 [Provider reconciler — managementPolicies: Observe]
   Calls GCP API → reads actual state
-  Writes actual state to MR.status.atProvider
+  Writes actual state to MR.status.atProvider via K8s API server → persisted in etcd
   Skips Update() — Observe mode blocks auto-heal
   Sets MR: Synced=True/ReconcileSuccess (drift is silent at condition level)
         │
+        │  [etcd — source of truth for drift detection]
+        │   MR.spec.forProvider  = desired state (written by composition at creation)
+        │   MR.status.atProvider = actual state  (updated by provider on every Observe())
+        │
         │  seconds (B/C) / up to 30s (A) / up to 1 min (D)
         │  — depends on approach detection mechanism
+        │  — staleness = provider poll interval, not etcd read latency
         ▼
 [Drift watcher / WatchOperation / Temporal schedule]
+  Reads MR data from etcd via K8s API server
   Diffs MR.spec.forProvider vs MR.status.atProvider
   → e.g. "settings.tier: db-n1-standard-2 → db-n1-standard-4"
   Resolves MR.metadata.ownerReferences → XR name
@@ -98,6 +104,58 @@ Wait for "approval-signal" — 24h timeout
                               NotifyDriftActivity(event=APPROVAL_TIMEOUT)
                               workflow terminates
                               MR stays in Observe mode (watcher re-detects next cycle)
+```
+
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant GCP
+    participant Provider as Crossplane Provider
+    participant K8s as K8s API Server
+    participant etcd
+    participant Detector as Drift Detector (A / B / C / D)
+    participant Workflow as DriftApprovalWorkflow
+    participant Operator
+
+    GCP->>GCP: Resource drifted (manual change in GCP Console)
+
+    loop Every ~1 min (provider poll)
+        Provider->>GCP: Observe()
+        GCP-->>Provider: actual current state
+        Provider->>K8s: PATCH MR.status.atProvider
+        K8s->>etcd: persist MR object (spec.forProvider + status.atProvider)
+        Note over etcd: both fields live here — this is the source of truth for drift detection
+    end
+
+    Detector->>K8s: read MR.spec.forProvider + MR.status.atProvider
+    K8s->>etcd: read MR object
+    K8s-->>Detector: MR data (forProvider + atProvider — staleness = provider poll interval, not etcd latency)
+    Note over Detector: diff forProvider vs atProvider (or check Synced=False/ReconcileError)
+    alt Drift detected
+        Detector->>K8s: resolve MR.metadata.ownerReferences → XR name
+        Detector->>Workflow: ExecuteWorkflow(DriftApprovalWorkflow, mrFields + xrFields)
+        Note over Workflow: deduped by workflow ID keyed on XR name
+    end
+
+    Workflow->>Operator: NotifyDriftActivity — DRIFT_DETECTED (log stub / Slack / PagerDuty)
+    Note over Workflow: wait for "approval-signal" — 24h timeout
+
+    alt APPROVED
+        Workflow->>K8s: FlipManagementPolicyActivity — patch MR.spec.managementPolicies=["*"]
+        Note over K8s: Crossplane resumes full management — Update() unblocked
+        Provider->>GCP: Update() — reverts drift to desired state
+        GCP-->>Provider: resource restored
+        Provider->>K8s: PATCH MR.status (Ready=True, Synced=True)
+        Workflow->>K8s: WaitXRReadyActivity — poll XR until Ready=True
+        Workflow->>K8s: FlipManagementPolicyActivity — restore MR.spec.managementPolicies=["Observe"]
+        Note over Workflow: always runs — MR never left in full management
+    else REJECTED
+        Note over Workflow: workflow terminates — MR stays in Observe, drift accepted as-is
+    else 24h TIMEOUT
+        Workflow->>Operator: NotifyDriftActivity — APPROVAL_TIMEOUT
+        Note over Workflow: workflow terminates — watcher re-detects on next cycle
+    end
 ```
 
 ### Why `managementPolicies: ["Observe"]` on the MR
