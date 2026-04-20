@@ -389,4 +389,6 @@ For the POC, Approach A is faster to implement. For production, migrate to Appro
 - **More complex than A** — informer factory setup adds ~30 lines vs a simple loop; slightly harder to debug
 - **New K8s Deployment** — same operational cost as A
 - **Pod restart required for new GVRs** — informers are created at startup; adding a new resource type needs a pod restart
-- **Informer event buffer can overflow** — under extremely high change rates the K8s API server may close the stream; mitigated by resync, but possible in theory
+- **API server-side fan-out pressure** — watch streams use HTTP/2 (all GVR streams multiplexed over a single TCP connection), so client-side cost is low. But the API server must maintain watcher state and fan out every matching event to all registered watchers. At scale with many watcher replicas, this server-side cost compounds. Polling approaches (A, D) have no equivalent server-side overhead.
+- **Reconnect triggers LIST burst** — if the watcher pod restarts (crash loop, rolling deploy) or the watch stream is closed (`"too old resource version"`), client-go automatically does a full LIST per GVR before re-establishing the watch. In a stable deployment this is negligible, but in an unstable one it can generate more API load than approach A would at the same interval.
+- **Watch ring buffer overflow** — under extremely high change rates the API server's event ring buffer can fill, causing the stream to close and forcing a re-list. Mitigated by the 10-min resync, but the re-list burst is unscheduled and unpredictable.

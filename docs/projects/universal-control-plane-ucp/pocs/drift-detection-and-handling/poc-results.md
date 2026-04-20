@@ -204,6 +204,23 @@ kubectl get --raw /metrics | grep apiserver_request_total | grep list
 
 > **Note:** Rates above are theoretical at steady state with 0 drift and 5 GVRs configured. Actual measurement pending.
 
+**Watch stream cost model for B and C:**
+
+Watch streams use HTTP/2 — all GVR streams are multiplexed over a single TCP connection to
+the API server, so 5 GVR watches = 1 TCP connection with 5 HTTP/2 streams. The client-side
+cost is minimal. However, the cost model has a server side that polling approaches do not:
+
+| Cost | Polling (A, D) | Watch stream (B, C) |
+|------|---------------|---------------------|
+| Network | Periodic request/response | TCP keepalives when idle; event push on change |
+| API server | Processes each LIST independently | Maintains watcher state + fans out every event to all registered watchers |
+| Failure recovery | Next scheduled poll catches up cleanly | Reconnect triggers a full LIST + re-watch burst per GVR |
+| Predictability | Uniform, scheduled load | Mostly idle, but bursty on pod restart or network blip |
+
+The reconnect LIST burst is the main production concern: if the watcher pod restarts
+frequently (crash loop, rolling deploy), it hammers the API server harder than approach A
+would at the same poll interval. In a stable deployment this is negligible.
+
 ---
 
 ## Metric 10: Production Readiness Path
