@@ -445,6 +445,41 @@ schedule regardless of provider behavior.
 
 ---
 
+### F-03: Not all `managementPolicies` combinations are valid — only specific sets are supported
+
+**Observed during:** Drift recovery testing — attempting to flip a `DatabaseInstance` from
+`["Observe"]` back to an active management mode.
+
+Setting `spec.managementPolicies: ["Observe", "Update"]` was rejected immediately:
+
+```
+`spec.managementPolicies` is set to a value([Observe Update]) which is not supported.
+Check docs for supported policies  reason=ReconcileError  status=False  type=Synced
+```
+
+The error surfaces at reconcile time, not at admission — the policy is written to etcd
+successfully but Crossplane rejects it when it tries to act on it.
+
+**Known valid combinations (empirically confirmed):**
+
+| Value | Meaning | Use case |
+|---|---|---|
+| `["*"]` | Full management — Create, Observe, Update, Delete | Default full management |
+| `["Observe"]` | Read-only — no create, update, or delete | Drift protection mode |
+| `["Create", "Observe"]` | Create if missing, then observe — no update or delete | Recover deleted resources without touching field drift |
+| `["Create", "Observe", "Update"]` | Create and update but no delete | Full drift recovery without deletion risk |
+
+**Impact on `FlipManagementPolicyActivity`:** The choice of target policy determines what
+Crossplane will reconcile during the recovery window:
+
+- Use `["Create", "Observe"]` when the drift signal is deletion only (`Synced=False/ReconcileError`)
+  and field changes should not be overwritten.
+- Use `["Create", "Observe", "Update"]` for full drift recovery (both deletion and field drift).
+- Use `["*"]` only if deletion of the resource by Crossplane is also acceptable.
+- Always flip back to `["Observe"]` after recovery completes.
+
+---
+
 ## Recommended Production Architecture
 
 Based on expected POC results, the likely outcome:
