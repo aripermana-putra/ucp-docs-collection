@@ -216,10 +216,31 @@ cost is minimal. However, the cost model has a server side that polling approach
 | API server | Processes each LIST independently | Maintains watcher state + fans out every event to all registered watchers |
 | Failure recovery | Next scheduled poll catches up cleanly | Reconnect triggers a full LIST + re-watch burst per GVR |
 | Predictability | Uniform, scheduled load | Mostly idle, but bursty on pod restart or network blip |
+| **Watcher memory** | **Flat — LIST, process, discard** | **Linear — every labeled MR cached in heap permanently** |
 
-The reconnect LIST burst is the main production concern: if the watcher pod restarts
-frequently (crash loop, rolling deploy), it hammers the API server harder than approach A
-would at the same poll interval. In a stable deployment this is negligible.
+The reconnect LIST burst is the main API server concern. However, for large-scale platforms
+the **memory footprint of the local cache is the harder constraint** — see below.
+
+**⚠️ In-memory cache scaling concern (Approach C specific):**
+
+The SharedInformer caches every watched object in the watcher pod's heap. This is fundamental
+to the informer model and cannot be opted out of. Approaches A and D do not cache anything.
+
+| Labeled MR count | Avg object size | Approach C heap | Approach A/D heap |
+|-----------------|----------------|-----------------|------------------|
+| 1,000 | 50 KB | ~50 MB | ~flat |
+| 10,000 | 50 KB | ~500 MB | ~flat |
+| 50,000 | 50 KB | ~2.5 GB | ~flat |
+
+At platform scale serving a large organisation with drift protection enabled broadly, this
+becomes a hard memory ceiling per watcher pod. Mitigation options: label discipline (opt-in
+only for critical resources), sharding watchers by namespace/provider, or switching to
+Approach A/D at that scale.
+
+Confirmed from client-go v0.30.0 source — every object is stored in
+`threadSafeMap.items map[string]interface{}` (`tools/cache/thread_safe_store.go:379`).
+Resync is also confirmed local-only: `threadSafeMap.Resync()` is literally `// Nothing to do`
+(`tools/cache/thread_safe_store.go:371`). No API calls in the resync path.
 
 ---
 
@@ -251,9 +272,9 @@ would at the same poll interval. In a stable deployment this is negligible.
 | Observability | 2 | 3 | 2 | 4 | D: structured scan output per run in Temporal UI; B: Operations visible in cluster; A/C: logs only |
 | Failure resilience | 2 | 3 | 4 | 2 | C: AddFunc+resync never loses events; B: Operation in etcd survives crash; A/D: small loss window |
 | Deduplication correctness | 4 | 4 | 4 | 4 | All use Temporal workflow ID dedup — expected pass |
-| K8s API load | 3 | 1 | 1 | 2 | B/C: idle watch streams (C bounded by provider rate, not its own schedule); A: independent poll schedule, 8 list/min at 10s interval; D: 5 list/min |
+| K8s API load | 3 | 1 | 2 | 2 | B/C: fewest API calls (idle watch streams); A: 8 list/min independent of provider. C scores 2 not 1: low API call volume but trades it for linear memory growth — every labeled MR cached in heap permanently. At 10,000+ labeled resources C's memory footprint becomes a harder constraint than A/D's periodic LIST calls. B shares the same watch model but is not a long-running binary so cache concern is lower. |
 | Production readiness | 4 | 1 | 4 | 4 | B: blocked on WatchOperations alpha graduation; others production-ready today |
-| **Total** | **30** | **24** | **30** | **33** | |
+| **Total** | **30** | **24** | **31** | **33** | |
 
 ---
 

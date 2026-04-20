@@ -391,4 +391,73 @@ For the POC, Approach A is faster to implement. For production, migrate to Appro
 - **Pod restart required for new GVRs** — informers are created at startup; adding a new resource type needs a pod restart
 - **API server-side fan-out pressure** — watch streams use HTTP/2 (all GVR streams multiplexed over a single TCP connection), so client-side cost is low. But the API server must maintain watcher state and fan out every matching event to all registered watchers. At scale with many watcher replicas, this server-side cost compounds. Polling approaches (A, D) have no equivalent server-side overhead.
 - **Reconnect triggers LIST burst** — if the watcher pod restarts (crash loop, rolling deploy) or the watch stream is closed (`"too old resource version"`), client-go automatically does a full LIST per GVR before re-establishing the watch. In a stable deployment this is negligible, but in an unstable one it can generate more API load than approach A would at the same interval.
-- **Watch ring buffer overflow** — under extremely high change rates the API server's event ring buffer can fill, causing the stream to close and forcing a re-list. Mitigated by the 10-min resync, but the re-list burst is unscheduled and unpredictable.
+- **Watch ring buffer overflow** — under extremely high change rates the API server's event ring buffer can fill, causing the stream to close and forcing a re-list. The re-list burst is unscheduled and unpredictable.
+- **In-memory cache grows linearly with labeled resource count** ⚠️ — the SharedInformer caches every watched object in the watcher pod's heap permanently. This is fundamental to how informers work and cannot be opted out of. At large scale this becomes a hard memory ceiling. See [Scaling Considerations](#scaling-considerations) below. Confirmed from client-go v0.30.0 source: every object is stored in `threadSafeMap.items map[string]interface{}` (`tools/cache/thread_safe_store.go:379`).
+
+---
+
+## Scaling Considerations
+
+**This is the most critical architectural constraint of Approach C.**
+
+The SharedInformer always maintains a full in-memory copy of every watched object — every
+labeled MR, with its full `spec.forProvider` and `status.atProvider`. The cache lives in the
+watcher pod's heap for the entire lifetime of the process.
+
+This is confirmed from **client-go v0.30.0 source code** — not an assumption:
+
+```
+shared_informer.go:272
+  sharedIndexInformer.indexer = NewIndexer(...)
+      ↓
+store.go:290
+  NewIndexer → NewThreadSafeStore()
+      ↓
+thread_safe_store.go:378-384
+  return &threadSafeMap{
+      items: map[string]interface{}{},  // ← every object stored here, forever
+  }
+```
+
+And the periodic resync timer (`reflector.go:386`) calls `r.store.Resync()`, which is:
+
+```go
+// thread_safe_store.go:371
+func (c *threadSafeMap) Resync() error {
+    // Nothing to do
+    return nil
+}
+```
+
+Resync makes zero API calls — confirmed. It re-enqueues items from the local map through the
+event queue so your `UpdateFunc` fires, but no network round trip is involved.
+
+Approaches A and D do not have the memory constraint — they LIST, process results, and discard.
+Memory usage is essentially flat regardless of resource count.
+
+**Memory projection at scale:**
+
+| Labeled MR count | Avg object size | Estimated heap |
+|-----------------|----------------|---------------|
+| 1,000 | 50 KB | ~50 MB |
+| 10,000 | 50 KB | ~500 MB |
+| 50,000 | 50 KB | ~2.5 GB |
+| 10,000 | 150 KB (GKE-scale atProvider) | ~1.5 GB |
+
+These numbers matter for a platform serving a large organisation — if drift protection is
+enabled broadly across all services and providers, the watcher pod's memory requirement
+scales directly with adoption.
+
+**Mitigations:**
+
+| Option | Trade-off |
+|--------|-----------|
+| Make drift protection opt-in (label discipline) | Keeps labeled count low; relies on teams not over-labeling |
+| Shard watchers by namespace / provider / GVR group | Distributes cache across pods; adds operational complexity |
+| Switch to raw `Watch()` without SharedInformer | Near-zero memory; loses resync safety net and startup `AddFunc` |
+| Use Approach A or D at scale | No cache at all; trade event-driven latency for flat memory profile |
+
+**Recommendation:** If the platform is expected to manage tens of thousands of labeled
+resources, Approach A or D is a better fit at that scale. Approach C is optimal when the
+labeled resource count is bounded (e.g. drift protection is a premium opt-in for critical
+resources only).
