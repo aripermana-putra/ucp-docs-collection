@@ -16,10 +16,10 @@ architecture.
 
 | Approach | Branch |
 |----------|--------|
-| A — Polling Watcher | `feature/drift-poc-approach-a-watcher` |
-| B — WatchOperations | `feature/drift-poc-approach-b-watchoperations` |
-| C — Informer Watcher | `feature/drift-poc-approach-c-informer` |
-| D — Temporal Schedule | `feature/drift-poc-approach-d-temporal-schedule` |
+| A — Polling Watcher | `feature/MCUUCP-125-drift-poc-approach-a-watcher` |
+| B — WatchOperations | `feature/MCUUCP-125-drift-poc-approach-b-watchoperations` |
+| C — Informer Watcher | `feature/MCUUCP-125-drift-poc-approach-c-informer` |
+| D — Temporal Schedule | `feature/MCUUCP-125-drift-poc-approach-d-temporal-schedule` |
 
 ---
 
@@ -41,14 +41,15 @@ Both signals must be implemented in each approach. Neither alone is sufficient.
 bottleneck — the watcher can only react once `atProvider` is updated or `Synced` flips.
 Configured to `--poll=1m` (default is 10m) and `--sync=30m` (default is 1h) via
 `DeploymentRuntimeConfig` in `crossplane/providers/gcp/provider-gcp-sql.yaml`.
-See crossplane-reconcile-behavior.md.
+See [crossplane-reconcile-behavior](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6595619547).
+
 
 | Approach | Expected gap after signal | Total expected latency |
 |----------|--------------------------|-----------------------|
 | A | 0–30s (poll interval) | 60–90s |
 | B | <1s (event-driven) | ~60s |
 | C | <1s (event-driven) | ~60s |
-| D | 0–60s (schedule interval) | 60–120s |
+| D | 0–30s (schedule interval) | 60–90s |
 
 ---
 
@@ -331,80 +332,9 @@ Approach D:  ~50 MB per worker pod per GVR activity, distributed across fleet �
 
 ---
 
-## E2E Test Script
+## Test Cases
 
-Run identically on all four branches:
-
-```bash
-#!/bin/bash
-# Usage: ./drift-e2e-test.sh [xr-name] [namespace]
-set -e
-XNAME="${1:-drift-poc-test}"
-NAMESPACE="${2:-default}"
-
-echo "=== [1] Apply XDatabase with driftProtection + label ==="
-kubectl apply -f crossplane/examples/dbaas/cloudsql/xdatabase-postgres.yaml
-kubectl wait xdatabase/$XNAME -n $NAMESPACE --for=condition=Ready --timeout=30m
-
-echo "=== [2] Confirm Observe mode ==="
-kubectl get databaseinstance -A -o jsonpath='{.items[0].spec.managementPolicies}'
-# Expected: ["Observe"]
-
-echo "=== [3] Simulate drift — delete from GCP Console, then press Enter ==="
-read -p "Press Enter after GCP deletion..."
-T0=$(date +%s)
-
-echo "=== [4] Wait for Synced=False ==="
-until kubectl get xdatabase $XNAME -n $NAMESPACE \
-  -o jsonpath='{.status.conditions}' 2>/dev/null | grep -q '"reason":"ReconcileError"'; do
-  sleep 5
-done
-T_SYNCED=$(date +%s)
-echo "Synced=False at +$((T_SYNCED - T0))s"
-
-echo "=== [5] Wait for DriftApprovalWorkflow to start ==="
-until temporal workflow list \
-  --query 'WorkflowType="DriftApprovalWorkflow" AND ExecutionStatus="Running"' \
-  2>/dev/null | grep -q "drift-approval"; do
-  sleep 2
-done
-T1=$(date +%s)
-echo ">>> Total detection latency: $((T1 - T0))s"
-echo ">>> Gap after Synced=False:  $((T1 - T_SYNCED))s"
-
-echo "=== [6] Verify no auto-heal after 2 minutes ==="
-sleep 120
-POLICIES=$(kubectl get databaseinstance -A -o jsonpath='{.items[0].spec.managementPolicies}')
-echo "$POLICIES" | grep -q "Observe" && echo "PASS: still in Observe" || echo "FAIL: $POLICIES"
-
-echo "=== [7] Test rejection ==="
-WF_ID="drift-approval-${NAMESPACE}-xdatabase-${XNAME}"
-temporal workflow signal --workflow-id "$WF_ID" --name "approval-signal" \
-  --input '{"approved": false}'
-sleep 5
-echo "Workflow terminated on rejection."
-
-echo "=== [8] Trigger drift again for approval path ==="
-read -p "Delete from GCP Console again, then press Enter..."
-T0=$(date +%s)
-until temporal workflow list \
-  --query 'WorkflowType="DriftApprovalWorkflow" AND ExecutionStatus="Running"' \
-  2>/dev/null | grep -q "drift-approval"; do sleep 2; done
-T1=$(date +%s)
-echo "New workflow started (+$((T1 - T0))s)"
-
-echo "=== [9] Approve ==="
-temporal workflow signal --workflow-id "$WF_ID" --name "approval-signal" \
-  --input '{"approved": true}'
-
-echo "=== [10] Wait for reconciliation + Observe restore ==="
-kubectl wait xdatabase/$XNAME -n $NAMESPACE --for=condition=Ready --timeout=35m
-sleep 15
-POLICIES=$(kubectl get databaseinstance -A -o jsonpath='{.items[0].spec.managementPolicies}')
-echo "$POLICIES" | grep -q "Observe" && echo "PASS: Observe restored" || echo "FAIL: $POLICIES"
-
-echo "=== E2E complete. Record results in Comparison Metrics. ==="
-```
+Check [here](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6597720300) for the test cases used for this PoC and results on each approach.
 
 ---
 
@@ -611,6 +541,127 @@ resolved" entry. The difference is in the recovery window: A keeps re-detecting 
 `Synced=False/ReconcileError` is present (every poll); C emits `DRIFT_CLEAN` events as
 conditions change during reconciliation (visible only with `DRIFT_VERBOSE=true`), giving a
 live trace of the recovery progression that A does not provide.
+
+---
+
+### F-05: Approach D scan cost is negligible — Temporal workflow history is a free audit log
+
+**Observed during:** Approach D testing — running `DriftScanWorkflow` manually and via schedule.
+
+**Scan cost breakdown:**
+
+| Factor | Cost | Notes |
+|--------|------|-------|
+| K8s API | Negligible | One LIST per GVR per scan, served from the API server's watch cache — not a direct etcd read |
+| Memory | Negligible | Activity receives the LIST response, iterates, discards — periodic spike then GC'd, no persistent cache |
+| CPU | Negligible | Simple map diff per MR |
+| Temporal DB | Grows at `scan_rate × retention_days` | The only cost that accumulates — managed with Temporal's retention policy |
+
+With 5 GVRs at 1-min interval: 5 LIST calls/min, ~1,440 workflow executions/day. Each run is a
+single small activity returning a count struct. At POC scale this is negligible. In production,
+configure a Temporal retention policy (e.g. 30 days) to bound DB growth.
+
+**Workflow history as audit log:**
+
+Every `DriftScanWorkflow` execution records in Temporal's event history:
+
+- **What was scanned** — `ScanDriftInput` with GVR list
+- **What drifted** — `ScanDriftOutput` with `scannedResources` and `driftedResources` counts, plus
+  `DRIFT DETECTED` log entries in the activity event history
+- **When** — workflow start timestamp
+- **Outcome** — activity result, any errors
+
+This is true for **all drift action modes** — even `notify` mode where no `DriftApprovalWorkflow`
+is started, the scan workflow itself records that drift was found. The Temporal UI shows the full
+history queryable by time, workflow ID, and status.
+
+**Contrast with Approaches A and C:** Detection happens outside Temporal in both. For `notify` mode
+(no approval workflow started), there is no Temporal record of the drift event — only pod logs.
+Any audit trail requires a separate log aggregator or DB write. Approach D gets a structured,
+queryable audit log for free by virtue of the scan being a workflow.
+
+---
+
+### F-06: Approach D POC worker deployment conflicts with Temporal's internal worker service
+
+**Observed during:** Approach D testing — Temporal schedules were created but never fired.
+
+---
+
+#### Issue 1: Deployment name collision kills Temporal's internal worker
+
+The Temporal Helm chart deploys four server-side services: `temporal-frontend`, `temporal-history`,
+`temporal-matching`, and `temporal-worker`. The last one — `temporal-worker` — is Temporal's own
+internal worker service. It runs Temporal's system workflows, including the **schedule management
+workflow** that fires `DriftScanWorkflow` on the configured interval.
+
+`k8s/temporal-worker/deploy.sh` runs:
+
+```bash
+kubectl delete deployment temporal-worker -n temporal-system --ignore-not-found=true
+kubectl apply -k .
+```
+
+`k8s/temporal-worker/deployment.yaml` uses `name: temporal-worker` — the same name as Temporal's
+internal service. The deploy script explicitly deletes the existing deployment before applying,
+which means every `make deploy-worker` or `make dev` run silently kills Temporal's internal worker
+and replaces it with the app binary.
+
+**Consequence:** Schedules are registered in Temporal's database but never executed. The matching
+service logs show `temporal-sys-per-ns-tq` (the queue the schedule system workflow runs on) going
+idle immediately — no consumer is running. `temporal schedule trigger` acknowledges the request but
+no workflow execution appears.
+
+**Fix:** Rename the app worker deployment to avoid collision:
+
+- `k8s/temporal-worker/deployment.yaml` — `name: temporal-worker` → `name: ucp-worker`
+- `k8s/temporal-worker/serviceaccount.yaml` — all references to `temporal-worker` → `ucp-worker`
+- `k8s/temporal-worker/configmap.yaml` — `name: temporal-worker-config` → `ucp-worker-config`
+- `k8s/temporal-worker/deploy.sh` — update `kubectl delete` and label selectors to `ucp-worker`
+
+After the rename, Temporal's internal `temporal-worker` deployment is left intact and schedules
+fire correctly.
+
+---
+
+#### Issue 2: Drift detection merged into the provisioning worker binary
+
+`cmd/worker/main.go` registers `DriftScanWorkflow` and `ScanDriftActivity` alongside all
+provisioning workflows (`RequestDatabaseWorkflow`, `RequestComputeWorkflow`, etc.) in a single
+binary, polling a single task queue (`db-provisioning`). This was a POC shortcut.
+
+**Problems with this in production:**
+
+- Drift detection and provisioning have different resource profiles, scaling requirements, and
+  deployment cadences — they should be independently deployable
+- A crash or redeploy of the provisioning worker kills drift scanning and vice versa
+- Drift scanning for a schedule-based approach should poll its own task queue (`drift-detection`),
+  not share one with provisioning workflows
+
+**Correct production structure:**
+
+```
+backend/temporal-worker/
+  cmd/
+    provisioning-worker/main.go   ← registers provisioning workflows, polls db-provisioning
+    drift-worker/main.go          ← registers DriftScanWorkflow + DriftApprovalWorkflow, polls drift-detection
+  internal/
+    workflows/                    ← shared — imported by both
+    activities/                   ← shared — imported by both
+
+k8s/
+  provisioning-worker/
+    deployment.yaml               ← image: provisioning-worker, TEMPORAL_TASK_QUEUE: db-provisioning
+    configmap.yaml
+    deploy.sh
+  drift-worker/
+    deployment.yaml               ← image: drift-worker, TEMPORAL_TASK_QUEUE: drift-detection
+    configmap.yaml
+    deploy.sh
+```
+
+Both binaries import shared types and activities from `internal/`. The Temporal schedule's
+`--task-queue` is set to `drift-detection` to match the drift worker exclusively.
 
 ---
 

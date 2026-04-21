@@ -294,12 +294,12 @@ Two layers:
 
 ```
 k8s/deploy-crossplane.sh                                       MODIFY (--enable-operations)
-crossplane/providers/function-python.yaml                      NEW
+crossplane/providers/function-drift-notifier.yaml              NEW
 crossplane/watchoperations/*.yaml (5 files)                    NEW
 crossplane/functions/drift-notifier/main.py                    NEW
 crossplane/functions/drift-notifier/requirements.txt           NEW
 crossplane/functions/drift-notifier/Dockerfile                 NEW
-crossplane/functions/drift-notifier/package/crossplane.yaml    NEW
+crossplane/functions/drift-notifier/package/package.yaml       NEW
 backend/temporal-worker/internal/workflows/drift_approval.go   NEW (shared)
 backend/temporal-worker/internal/activities/drift.go           NEW (shared)
 backend/temporal-worker/cmd/worker/main.go                     MODIFY
@@ -308,32 +308,114 @@ k8s/temporal-worker/serviceaccount.yaml                        MODIFY (RBAC)
 
 ---
 
+## Function Package Structure
+
+In Crossplane v2.x, a function is a **plain Docker image** — no `.xpkg` build tool
+needed. The image must contain `/package/package.yaml` so Crossplane's package
+manager can read the function metadata.
+
+### `package/package.yaml`
+
+```yaml
+apiVersion: meta.pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-drift-notifier
+spec:
+  capabilities:
+    - operation        # required: opts this function in for Operation pipelines
+  crossplane:
+    version: ">=v2.0.0-0"
+```
+
+Key requirements:
+- `apiVersion` must be `meta.pkg.crossplane.io/v1` (not `v1alpha1`)
+- `capabilities: [operation]` is required — functions without it are rejected when called from an Operation pipeline
+- Filename must be `package.yaml` (not `crossplane.yaml`)
+
+### Dockerfile
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY main.py .
+COPY package/ /package/        # embeds package.yaml at /package/package.yaml
+ENTRYPOINT ["python", "/app/main.py"]
+```
+
+### main.py — gRPC server boilerplate
+
+```python
+import os
+from google.protobuf import json_format
+import crossplane.function.proto.v1.run_function_pb2 as fnv1
+import crossplane.function.proto.v1.run_function_pb2_grpc as grpcv1
+from crossplane.function import logging as fn_logging, response, request
+from crossplane.function.runtime import serve, load_credentials
+
+
+async def run(req: fnv1.RunFunctionRequest, _) -> fnv1.RunFunctionResponse:
+    rsp = response.to(req)
+    watched = request.get_required_resource(req, "ops.crossplane.io/watched-resource")
+
+    # req.input is a google.protobuf.Struct — must convert before calling .get()
+    config = json_format.MessageToDict(req.input).get("spec", {})
+
+    # ... drift detection logic ...
+    return rsp
+
+
+class DriftNotifierFunction(grpcv1.FunctionRunnerServiceServicer):
+    # serve() requires a FunctionRunnerServiceServicer subclass, not a bare async def
+    async def RunFunction(self, req, context):  # noqa: N802
+        return await run(req, context)
+
+
+tls_dir = os.environ.get("TLS_SERVER_CERTS_DIR")
+serve(
+    DriftNotifierFunction(),
+    "0.0.0.0:9443",          # ":9443" is invalid — gRPC C core rejects it
+    creds=load_credentials(tls_dir),
+    insecure=tls_dir is None,
+)
+```
+
+Key notes:
+- `serve` is at `crossplane.function.runtime`, not `crossplane.function`
+- `req.input` is `google.protobuf.Struct` — use `json_format.MessageToDict()` before `.get()`
+- `request.get_required_resource()` already returns a plain `dict`
+- The watched resource key is `"ops.crossplane.io/watched-resource"` (injected automatically by WatchOperation)
+
+---
+
 ## Additional Setup Required
 
 ```bash
 # 1. Re-install Crossplane with Operations enabled
+# args= sets EXTRA args appended to the existing "crossplane core start" command.
+# Do NOT include "core" or "start" — that causes a startup error.
 helm upgrade crossplane crossplane-stable/crossplane \
-  --set "args={--enable-operations}" -n crossplane-system
+  -n crossplane-system \
+  --version 2.2.0 \
+  --set "args={--enable-operations}"
 
-# 2. Build and push function package (requires Crossplane CLI)
-# A Crossplane function is an .xpkg package, not a plain Docker image.
+# 2. Build and push function image (plain Docker — no xpkg tool needed)
 cd crossplane/functions/drift-notifier
+docker build -t <registry>/drift-notifier:v0.1.0 .
+docker push <registry>/drift-notifier:v0.1.0
 
-# Step 1: build the runtime image
-docker build . --platform=linux/amd64 --tag drift-notifier-runtime:v0.1.0
+# Update crossplane/providers/function-drift-notifier.yaml with your registry URI
 
-# Step 2: build the Crossplane package embedding the runtime
-crossplane xpkg build \
-  --package-root=package \
-  --embed-runtime-image=drift-notifier-runtime:v0.1.0 \
-  --package-file=drift-notifier.xpkg
+# 3. Apply Function resource and WatchOperations
+kubectl apply -f crossplane/providers/function-drift-notifier.yaml
+kubectl get function function-drift-notifier -w   # wait for HEALTHY=True
 
-# Step 3: push the Crossplane package
-crossplane xpkg push \
-  --package-files=drift-notifier.xpkg \
-  <registry>/drift-notifier:v0.1.0
+kubectl apply -f crossplane/watchoperations/
+kubectl get watchoperation                         # SYNCED=True, WATCHING=True
 
-# 3. Verify Temporal gRPC reachable from crossplane-system
+# 4. Verify Temporal gRPC reachable from crossplane-system
 kubectl run test --rm -it --image=alpine -n crossplane-system \
   -- sh -c "nc -zv temporal-frontend.temporal-system 7233"
 ```
@@ -373,5 +455,7 @@ kubectl run test --rm -it --image=alpine -n crossplane-system \
 - **Alpha dependency** — WatchOperations and Operations are alpha. Not production-ready until graduation.
 - **Python in a Go codebase** — adds a new language and runtime to maintain.
 - **Higher per-type extension cost** — all approaches require something when adding a new resource type; B requires a full new WatchOperation YAML file per type, whereas A/C only need one ConfigMap line and D only needs a `temporal schedule update` command.
-- **Package build pipeline required** — the function is a Crossplane `.xpkg` package, not a plain Docker image. Building it requires `docker build` + `crossplane xpkg build` + `crossplane xpkg push`, plus a `package/crossplane.yaml` metadata file. This CI/CD step is absent from all other approaches.
+- **Image build pipeline required** — the function image must be built and pushed before anything works. This CI/CD step is absent from all other approaches. The image is a plain Docker image (no `.xpkg` tool needed in Crossplane v2.x).
 - **Detection floor is still ~10 min** — gated by Crossplane's own `atProvider` refresh cycle (poll interval), same as all other approaches.
+- **`capabilities: [operation]` required** — functions must explicitly declare `operation` capability in `package/package.yaml` or Crossplane rejects them at pipeline validation time.
+- **Helm `--enable-operations` args format** — pass only the flag itself, not the full command. `--set "args={--enable-operations}"` is correct; `--set "args={core,start,--enable-operations}"` causes a startup crash.
