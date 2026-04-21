@@ -7,8 +7,7 @@ parent_page_id: "../drift-detection-and-handling.md"
 # Drift Detection POC — Results
 
 This document is the primary output of the drift detection POC. It covers approach
-benchmarking, key findings discovered during execution, and the recommended production
-architecture.
+benchmarking, key findings discovered during execution, and the POC summary and decision.
 
 ---
 
@@ -759,17 +758,44 @@ No custom backend endpoint needed. The web UI wraps the same K8s API calls.
 
 ---
 
-## Recommended Production Architecture
+## Summary
 
-Based on expected POC results, the likely outcome:
+### Winner: Approach D
 
-- **C wins overall** — event-driven, Go, no alpha deps, resync safety net, lowest K8s API load
-- **D is a strong second** — richest observability, fewest moving parts, but Temporal-availability-coupled
-- **A proves the concept fastest** — implement A first, migrate to C for production
-- **B is the future** — most architecturally elegant once WatchOperations graduates from alpha
+Approach D (Temporal Schedule) is the clear winner with a total score of **37/44** — ahead
+of A and C (both 32) and B (27).
 
-**Recommended hybrid** if C and D are close:
+Key reasons D wins:
+- **No new infrastructure.** The Temporal worker already exists. Drift scanning is just a
+  new workflow + activity registered in the same binary.
+- **Richest observability out of the box.** Every scan run is a Temporal workflow with
+  structured output (scanned/drifted counts) visible in the UI, queryable by time and status.
+  A free audit log with zero extra tooling.
+- **Best natural scale-out.** Temporal distributes activity execution across the worker fleet
+  automatically. No manual pod-to-GVR mapping, no sharding strategy to design.
+- **Production-ready today.** No alpha dependencies, no new languages, no new K8s objects.
 
-> Use Approach C for detection (informer-based, event-driven) and leverage Temporal's
-> workflow history (from D) for observability by ensuring `DriftScanWorkflow`-equivalent
-> metrics are emitted as Temporal workflow signals or search attributes.
+### Future: Approach B
+
+Once WatchOperations graduates from alpha, **Approach B is technically superior** on the
+metrics that matter for a platform at scale:
+
+- **Event-driven with sub-second reaction time** after Crossplane updates `atProvider` — no
+  poll delay.
+- **No persistent process.** Operation pods are ephemeral — no heap accumulation, no crash
+  recovery strategy needed.
+- **Lowest K8s API load.** Idle watch streams instead of periodic LIST calls.
+
+The only blocker is the alpha flag. When the feature graduates, B becomes the natural
+replacement for D with minimal code changes.
+
+### Interchangeability
+
+All four approaches share the same detection logic at the core — two complementary signals:
+
+1. `forProvider vs atProvider` field diff
+2. `.status.conditions[Synced]=False/ReconcileError`
+
+The detection layer is a thin wrapper around these two signals. Swapping from one approach to
+another means changing **how** the wrapper is triggered (poll timer, Kubernetes watch stream,
+Temporal schedule, WatchOperation), not **what** it checks.
