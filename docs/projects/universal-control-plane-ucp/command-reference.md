@@ -98,6 +98,33 @@ kubectl get xdatabase <name> -o jsonpath='{.spec.crossplane.resourceRefs}' | jq 
 # Watch XR until ready
 kubectl get xdatabase <name> -w
 
+# Delete MR directly (bypasses Crossplane — use with caution)
+kubectl delete databaseinstance <name>
+
+# Patch managementPolicies on an MR
+kubectl patch databaseinstance <name> \
+  --type merge \
+  -p '{"spec":{"managementPolicies":["Observe"]}}'
+
+# Unlock MR for recovery (Create + Observe + Update)
+kubectl patch databaseinstance <name> \
+  --type merge \
+  -p '{"spec":{"managementPolicies":["Create","Observe","Update"]}}'
+
+# Add or modify a label on an MR
+kubectl label databaseinstance <name> platform.io/drift-protection=true
+kubectl label databaseinstance <name> platform.io/drift-protection=true --overwrite
+
+# Remove a label from an MR
+kubectl label databaseinstance <name> platform.io/drift-protection-
+
+# Add or modify an annotation on an MR
+kubectl annotate databaseinstance <name> example.io/key=value
+kubectl annotate databaseinstance <name> example.io/key=value --overwrite
+
+# Remove an annotation from an MR
+kubectl annotate databaseinstance <name> example.io/key-
+
 # Delete XR (also cleans up composed MRs)
 kubectl delete xdatabase <name>
 ```
