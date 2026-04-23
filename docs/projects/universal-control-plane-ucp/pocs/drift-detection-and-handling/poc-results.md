@@ -664,6 +664,73 @@ Both binaries import shared types and activities from `internal/`. The Temporal 
 
 ---
 
+### F-07: Some drifts are non-recoverable — Crossplane cannot reverse all GCP changes
+
+**Observed during:** Approach D drift approval workflow testing (MCUCP-158 implementation).
+
+Certain GCP-side changes cannot be automatically reversed by Crossplane even after management
+policies are restored to `["Create", "Observe", "Update"]`. The recovery approval workflow
+completes, Crossplane attempts reconciliation, and GCP refuses the update. The workflow
+correctly times out and flips back to `["Observe"]`, but the drift remains.
+
+**Confirmed non-recoverable cases:**
+
+**Case 1 — Immutable field modification (CloudSQL disk size increase)**
+
+GCP Cloud SQL does not allow decreasing `settings.disk_size`. When a disk is manually increased
+in the GCP Console (e.g. 50 GB → 150 GB), approving drift recovery causes Crossplane to attempt
+setting `disk_size` back to 50 GB. GCP rejects this:
+
+```
+update failed: async update failed: refuse to update the external resource because the
+following update requires replacing it: cannot change the value of the argument
+"settings.0.disk_size" from "150" to "50"
+```
+
+The MR condition: `Synced=False, reason=ReconcileError, type=LastAsyncOperation: AsyncUpdateFailure`.
+
+This persists indefinitely — `isDrifted()` keeps returning true, `WaitMRReadyActivity` times out
+after 30 min (or now after the grace period with `RECONCILE_FAILED`), R3 flips back to Observe.
+
+**Case 2 — Resource deletion with stale late-initialized fields (GKE Cluster / NodePool)**
+
+See F-01 for the full failure sequence. Summary: when a GKE Cluster or NodePool is deleted from
+GCP and Crossplane attempts recreation, late-initialized fields in `forProvider` reference
+state that belonged to the deleted resource (pod secondary range names, deprecated
+`loggingService` + new `loggingConfig` conflict, etc.). Crossplane's recreate fails
+permanently; the drift cannot be auto-resolved.
+
+**General pattern — when auto-recovery fails:**
+
+| Root cause | Examples | Recoverable? |
+|---|---|---|
+| GCP enforces immutable fields | `disk_size` reduction, zone change, database version downgrade | ❌ Requires manual change or resource replacement |
+| Late-initialized `forProvider` references deleted state | GKE pod secondary ranges, deprecated field conflicts | ❌ Requires MR deletion and XR-level recreation |
+| Field requires resource replacement | Changing CloudSQL `databaseVersion` to a lower version | ❌ GCP only supports version upgrades in-place |
+| Transient GCP error | API quota, temporary outage | ✅ Retries on next scan cycle after recovery |
+
+**Impact on `WaitMRReadyActivity`:**
+
+When non-recoverable drift is detected, the activity now:
+1. Waits a 2-minute grace period (allows Crossplane to start reconciling)
+2. If `Synced=False/ReconcileError` persists past the grace period → returns early with the
+   GCP error message (type: `RECONCILE_FAILED`, non-retryable)
+3. R3 (`FlipManagementPolicyActivity` back to `["Observe"]`) always runs regardless
+
+The operator receives the exact GCP error message in the Temporal UI and can decide
+whether to accept the drift, manually fix the GCP resource, or delete and recreate.
+
+**Not handled in this POC — future considerations:**
+
+- Detecting specific non-recoverable conditions early and surfacing them before approval
+  (so the operator knows recovery is impossible before approving)
+- Automated deletion + recreation path for deletion drift with stale `forProvider`
+  (see F-01 recommendation)
+- Distinguishing "immutable field change" from "transient failure" in the notification
+  to give operators clearer recovery guidance
+
+---
+
 ## Post-POC Design Considerations
 
 > Out of scope for this POC. Captured here for the production design discussion.
