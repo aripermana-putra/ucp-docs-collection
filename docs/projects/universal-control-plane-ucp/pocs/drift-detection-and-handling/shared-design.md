@@ -32,10 +32,12 @@ Watching at MR level and resolving to XR via `ownerReferences` is the correct ap
 because:
 - `spec.forProvider` and `status.atProvider` only exist on MRs, not XRs
 - XRs only carry aggregated conditions — the actual field values are on MRs
-- The workflow is keyed on XR name (one approval per resource, not per MR)
+- The workflow is keyed on **MR name** — each drifted MR gets its own independent approval
+workflow. A multi-MR XR (e.g. GKE = Cluster + NodePool) produces two separate workflows
+if both MRs drift simultaneously.
 
-For multi-MR XRs (e.g. GKE = Cluster + NodePool), both MRs resolve to the same XR.
-The `AlreadyStarted` check in the watcher deduplicates — only one workflow runs per XR.
+For multi-MR XRs, the `AlreadyStarted` check deduplicates at the MR level — if the same
+MR is still drifted on the next scan cycle, no duplicate workflow is started.
 
 | Resource type | XR kind | MR kind(s) watched |
 |---|---|---|
@@ -153,17 +155,26 @@ Files to modify:
 
 ## 5. Drift Detection Criteria
 
-A resource is considered **drifted** when ALL of:
+A resource is considered **drifted** when it satisfies **either** of two signals:
 
+**Signal 1 — Field diff** (forProvider vs atProvider)
 1. MR has label `platform.io/drift-protection: "true"`
 2. MR `status.atProvider` is non-empty (Observe() has run at least once)
 3. At least one field in `spec.forProvider` does not match the corresponding field
    in `status.atProvider`
 
-### Comparison algorithm
+**Signal 2 — Reconcile error** (fast path)
+1. MR condition `Synced=False` with `reason=ReconcileError`
+
+Signal 2 is checked first (fast path) because it catches resource deletion — when a
+resource is deleted from GCP, `atProvider` retains stale values (Signal 1 would report
+no diff), but the provider sets `Synced=False/ReconcileError` immediately.
+
+### Comparison algorithm (Signal 1)
 
 ```
 for each key in spec.forProvider:
+    if key is in skipped list: continue
     if status.atProvider[key] != spec.forProvider[key]:
         record as drifted field
 
@@ -171,9 +182,26 @@ fields present in atProvider but absent in forProvider are ignored
 (these are computed/read-only fields: id, selfLink, createTime, etc.)
 ```
 
-This comparison is done recursively for nested objects. The result is a list of
+This comparison is done recursively for nested objects and slices. The result is a list of
 drifted field paths (e.g. `settings.tier`, `settings.diskSize`) passed to the
 workflow as `DriftDetail`.
+
+### Skipped forProvider keys
+
+Some top-level `forProvider` keys are permanently excluded because GCP normalizes them
+at read time, causing persistent false-positive diffs:
+
+| Key | Reason skipped |
+|-----|----------------|
+| `bootDisk` | GCP resolves image family to a versioned URL in `atProvider` |
+| `clusterRef` | Crossplane-only reference selector, never reflected in `atProvider` |
+| `clusterSelector` | Crossplane-only reference selector, never reflected in `atProvider` |
+
+### GCP URL normalization
+
+GCP often returns full resource URLs in `atProvider` where `forProvider` uses short names
+(e.g. `forProvider.network = "default"` vs `atProvider.network = ".../networks/default"`).
+The comparison handles this: a value matches if `actual` has `"/"+desired` as a suffix.
 
 ### Confirmed atProvider coverage per GCP resource type
 
@@ -195,27 +223,24 @@ Verified against official provider CRD schemas in `upbound/provider-gcp`:
 
 ```go
 // DriftApprovalInput carries both MR and XR identification.
-// MR fields are needed to patch managementPolicies (FlipManagementPolicyActivity).
-// XR fields are needed for workflow ID, display, and WaitXRReadyActivity.
+// MR fields drive FlipManagementPolicyActivity and WaitMRReadyActivity.
+// XR fields are used for the workflow ID, display, and logging.
 // The watcher resolves the MR's ownerReferences to populate XR fields.
 type DriftApprovalInput struct {
-    // MR identification — used by FlipManagementPolicyActivity
+    // MR identification — used by FlipManagementPolicyActivity and WaitMRReadyActivity
     MRGroup     string `json:"mrGroup"`     // e.g. "sql.gcp.upbound.io"
     MRVersion   string `json:"mrVersion"`   // e.g. "v1beta2"
     MRResource  string `json:"mrResource"`  // e.g. "databaseinstances"
     MRName      string `json:"mrName"`      // e.g. "my-postgres-db-instance"
-    MRNamespace string `json:"mrNamespace"`
+    MRNamespace string `json:"mrNamespace"` // empty for cluster-scoped MRs (current)
 
-    // XR identification — used for workflow ID, display, and WaitXRReadyActivity
-    XRGroup     string `json:"xrGroup"`    // e.g. "platform.example.io"
-    XRVersion   string `json:"xrVersion"`  // e.g. "v1alpha1"
-    XRResource  string `json:"xrResource"` // e.g. "xdatabases"
-    XRKind      string `json:"xrKind"`     // e.g. "XDatabase" (for display/logging)
+    // XR identification — used for workflow ID, display, and logging
+    XRKind      string `json:"xrKind"`      // e.g. "XDatabase" (for display/logging)
     XRName      string `json:"xrName"`
-    XRNamespace string `json:"xrNamespace"`
+    XRNamespace string `json:"xrNamespace"` // empty for cluster-scoped XRs (current)
 
     DetectedAt  string `json:"detectedAt"`  // RFC3339
-    DriftDetail string `json:"driftDetail"` // human-readable diff, e.g. "settings.tier: db-n1-standard-2 → db-n1-standard-4"
+    DriftDetail string `json:"driftDetail"` // human-readable diff, e.g. "settings.tier: want="db-n1-standard-2" got="db-n1-standard-4""
 }
 ```
 
@@ -223,30 +248,30 @@ type DriftApprovalInput struct {
 
 ```go
 // FlipManagementPolicyInput targets the MR directly.
-// Enable=true  → managementPolicies: ["Observe"]  (block auto-heal, keep observing)
-// Enable=false → managementPolicies: ["*"]         (full management, allow auto-heal)
+// Pass Policies: ["Create","Observe","Update"] to unlock; ["Observe"] to re-lock.
 type FlipManagementPolicyInput struct {
-    MRGroup     string `json:"mrGroup"`
-    MRVersion   string `json:"mrVersion"`
-    MRResource  string `json:"mrResource"`
-    MRName      string `json:"mrName"`
-    MRNamespace string `json:"mrNamespace"`
-    Enable      bool   `json:"enable"`
+    MRGroup     string   `json:"mrGroup"`
+    MRVersion   string   `json:"mrVersion"`
+    MRResource  string   `json:"mrResource"`
+    MRName      string   `json:"mrName"`
+    MRNamespace string   `json:"mrNamespace"` // empty for cluster-scoped MRs (current)
+    Policies    []string `json:"policies"`
 }
 ```
 
-### WaitXRReadyInput
+### WaitMRReadyInput
 
 ```go
-// WaitXRReadyInput waits at XR level — XR conditions (Ready, Synced) are valid
-// once managementPolicies is restored to full management and Crossplane reconciles.
-// Works for any XR type — all share the same Crossplane condition schema.
-type WaitXRReadyInput struct {
-    XRGroup     string        `json:"xrGroup"`
-    XRVersion   string        `json:"xrVersion"`
-    XRResource  string        `json:"xrResource"`
-    XRName      string        `json:"xrName"`
-    XRNamespace string        `json:"xrNamespace"`
+// WaitMRReadyInput waits at MR level using the same drift detection logic as
+// ScanDriftActivity. Recovery is confirmed when isDrifted() returns false —
+// meaning Crossplane successfully reconciled the MR back to desired state.
+// Works for any MR type — no deletion side effects.
+type WaitMRReadyInput struct {
+    MRGroup     string        `json:"mrGroup"`
+    MRVersion   string        `json:"mrVersion"`
+    MRResource  string        `json:"mrResource"`
+    MRName      string        `json:"mrName"`
+    MRNamespace string        `json:"mrNamespace"` // empty for cluster-scoped MRs (current)
     Timeout     time.Duration `json:"timeout"`
 }
 ```
@@ -257,11 +282,14 @@ type WaitXRReadyInput struct {
 
 **File:** `backend/temporal-worker/internal/workflows/drift_approval.go`
 
-**Workflow ID convention:** `drift-approval-<xrNamespace>-<xrKind>-<xrName>`
+**Workflow ID convention:**
+- Cluster-scoped XR (current): `drift-approval-<xrkind>-<xrname>-<mrname>`
+- Namespace-scoped XR (future): `drift-approval-<xrnamespace>-<xrkind>-<xrname>-<mrname>`
 
-Keyed on XR, not MR — one approval workflow per resource regardless of how many MRs
-drifted underneath it. AlreadyStarted errors from multi-MR XRs are silently ignored
-by all watchers.
+Keyed on **MR name** — one approval workflow per drifted MR. A multi-MR XR (e.g. GKE
+Cluster + NodePool) produces two independent workflows if both MRs drift. Dedup is
+enforced by Temporal: if the same MR is still drifted on the next scan cycle, the
+`AlreadyStarted` error is silently swallowed and no duplicate is started.
 
 The MR is already in `managementPolicies: ["Observe"]` when the workflow starts —
 no flip is needed on entry.
@@ -271,7 +299,7 @@ STATE MACHINE
 ═════════════
 
 NOTIFYING
-  Action: NotifyDriftActivity(event=DRIFT_DETECTED)
+  Action: NotifyDriftActivity (log stub — swap for Slack/PD in production)
   Note: failure here is non-blocking, workflow continues
 
 WAITING_FOR_APPROVAL
@@ -280,36 +308,25 @@ WAITING_FOR_APPROVAL
   Timeout: 24h
     │
     ├─ Approved ──────────────────► RECONCILING
-    │                                 R1: FlipManagementPolicyActivity(MR, Enable=false)
-    │                                     [lift Observe → full management]
-    │                                     [Crossplane resumes reconciliation, fixes drift]
-    │                                 R2: WaitXRReadyActivity(XR, timeout=configurable)
+    │                                 R1: FlipManagementPolicyActivity(Policies=["Create","Observe","Update"])
+    │                                     [unlock MR — Crossplane resumes reconciliation]
+    │                                 R2: WaitMRReadyActivity(MR, timeout=30min)
+    │                                     [polls isDrifted() every 10s — no drift = success]
     │                                     [capture error, do not return yet]
-    │                                 R3: FlipManagementPolicyActivity(MR, Enable=true)
+    │                                 R3: FlipManagementPolicyActivity(Policies=["Observe"])
     │                                     [ALWAYS runs — restores Observe mode]
-    │                                 if R2 error:
-    │                                   R4: NotifyDriftActivity(event=RECONCILIATION_FAILED)
-    │                                       ["Approved reconciliation failed — manual check required"]
-    │                                   return R2 error → RECONCILE_FAILED
+    │                                 return R2 error if any → RECONCILE_FAILED
     │
     ├─ Rejected ──────────────────► DRIFT_IGNORED
     │                                 NonRetryableApplicationError("APPROVAL_REJECTED")
     │                                 (MR stays in Observe — drift is accepted/known)
     │
-    └─ 24h timeout ───────────────► NotifyDriftActivity(event=APPROVAL_TIMEOUT)
-                                      ["No approval in 24h — drift still unaddressed"]
-                                      NonRetryableApplicationError("APPROVAL_TIMEOUT")
+    └─ 24h timeout ───────────────► NonRetryableApplicationError("APPROVAL_TIMEOUT")
                                       → DRIFT_TIMEOUT
-                                      (MR stays in Observe — watcher will re-detect)
+                                      (MR stays in Observe — watcher re-detects on next cycle)
 
 SAFETY RULE: R3 executes even if R2 times out or errors. MR is never left in
              full management mode (unprotected) longer than one activity window.
-
-NOTIFICATION EVENTS
-  DRIFT_DETECTED        — initial alert when forProvider vs atProvider diff is found
-  APPROVAL_TIMEOUT      — nobody approved within 24h; watcher re-detects on next cycle
-  RECONCILIATION_FAILED — approved reconciliation timed out or failed;
-                          MR is back in Observe mode but still drifted
 ```
 
 **Reused without modification from existing codebase:**
@@ -325,33 +342,24 @@ NOTIFICATION EVENTS
 
 ### NotifyDriftActivity
 
-Called at three points in the workflow: initial detection, approval timeout, and
-reconciliation failure. The `Event` field distinguishes them.
+Log stub called after drift is detected. Swap the body for Slack/PagerDuty in production —
+the function signature and `NotifyDriftInput` type stay unchanged.
 
 ```go
-// NotifyDriftInput carries context for all three notification events.
 type NotifyDriftInput struct {
+    MRName      string `json:"mrName"`
+    MRNamespace string `json:"mrNamespace"`
     XRKind      string `json:"xrKind"`
     XRName      string `json:"xrName"`
-    Namespace   string `json:"namespace"`
-    DetectedAt  string `json:"detectedAt"`   // RFC3339
-    DriftDetail string `json:"driftDetail"`  // e.g. "settings.tier: db-n1-standard-2 → db-n1-standard-4"
-    // Event distinguishes why the notification is being sent.
-    // Values: "DRIFT_DETECTED" | "APPROVAL_TIMEOUT" | "RECONCILIATION_FAILED"
-    Event       string `json:"event"`
+    XRNamespace string `json:"xrNamespace"`
+    DriftDetail string `json:"driftDetail"` // e.g. `settings.tier: want="db-n1-standard-2" got="db-n1-standard-4"`
+    DetectedAt  string `json:"detectedAt"`  // RFC3339
 }
 
-// POC stub. Swap body for Slack + email + PagerDuty in production.
-// Function signature and NotifyDriftInput type remain unchanged.
 func NotifyDriftActivity(ctx context.Context, in NotifyDriftInput) error {
-    activity.GetLogger(ctx).Info("drift notification",
-        "event", in.Event,
-        "xrKind", in.XRKind,
-        "xrName", in.XRName,
-        "namespace", in.Namespace,
-        "detectedAt", in.DetectedAt,
-        "driftDetail", in.DriftDetail,
-    )
+    // structured JSON log — single swap point for real notifications
+    fmt.Printf(`{"level":"warn","event":"drift_detected","mr":"%s","xrKind":"%s","xrName":"%s","detail":"%s","detectedAt":"%s"}`+"\n",
+        in.MRName, in.XRKind, in.XRName, in.DriftDetail, in.DetectedAt)
     return nil
 }
 ```
@@ -359,69 +367,84 @@ func NotifyDriftActivity(ctx context.Context, in NotifyDriftInput) error {
 ### FlipManagementPolicyActivity
 
 Patches the MR's `spec.managementPolicies` directly via the K8s dynamic client.
-Does not touch the XR or XRD parameter.
+Does not touch the XR or XRD parameter. Namespace-aware: uses cluster-scoped client
+when `MRNamespace` is empty (current Crossplane MRs), namespace-scoped when set.
 
 ```go
 // Works for any MR type — DatabaseInstance, Instance, Cluster, NodePool, Bucket, OmniaDatabase.
 func FlipManagementPolicyActivity(ctx context.Context, in FlipManagementPolicyInput) error {
     dc, _ := k8s.NewDynamicClient()
-    gvr := schema.GroupVersionResource{
-        Group:    in.MRGroup,
-        Version:  in.MRVersion,
-        Resource: in.MRResource,
-    }
-    policies := []string{"*"}
-    if in.Enable {
-        policies = []string{"Observe"}
-    }
-    patch := map[string]interface{}{
-        "spec": map[string]interface{}{
-            "managementPolicies": policies,
-        },
-    }
+    gvr := schema.GroupVersionResource{Group: in.MRGroup, Version: in.MRVersion, Resource: in.MRResource}
+    patch := map[string]interface{}{"spec": map[string]interface{}{"managementPolicies": in.Policies}}
     patchBytes, _ := json.Marshal(patch)
-    _, err := dc.Resource(gvr).Namespace(in.MRNamespace).Patch(
-        ctx, in.MRName, types.MergePatchType, patchBytes, metav1.PatchOptions{},
-    )
+    ri := dc.Resource(gvr)
+    if in.MRNamespace != "" {
+        _, err = ri.Namespace(in.MRNamespace).Patch(ctx, in.MRName, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+    } else {
+        _, err = ri.Patch(ctx, in.MRName, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+    }
     return err
 }
 ```
 
-### WaitXRReadyActivity
+Usage in `DriftApprovalWorkflow`:
+- Unlock: `Policies: []string{"Create", "Observe", "Update"}`
+- Re-lock: `Policies: []string{"Observe"}`
 
-Waits at XR level — XR conditions (Ready, Synced) are aggregated from all composed MRs
-by the Crossplane composite reconciler and are valid once full management is restored.
+### WaitMRReadyActivity
+
+Polls the MR directly using the same `isDrifted()` logic as `ScanDriftActivity`.
+Recovery is confirmed when no drift is detected — no deletion side effects.
 
 ```go
-// Generic: works for XDatabase, XComputeInstance, XKubernetesCluster, XObjectStorage.
-func WaitXRReadyActivity(ctx context.Context, in WaitXRReadyInput) error {
+// Works for any MR type — same GVR coordinates used by FlipManagementPolicyActivity.
+func WaitMRReadyActivity(ctx context.Context, in WaitMRReadyInput) error {
     dc, _ := k8s.NewDynamicClient()
-    gvr := schema.GroupVersionResource{
-        Group:    in.XRGroup,
-        Version:  in.XRVersion,
-        Resource: in.XRResource,
-    }
+    ri := dc.Resource(schema.GroupVersionResource{Group: in.MRGroup, Version: in.MRVersion, Resource: in.MRResource})
     deadline := time.Now().Add(in.Timeout)
-    for time.Now().Before(deadline) {
-        obj, _ := dc.Resource(gvr).Namespace(in.XRNamespace).Get(ctx, in.XRName, metav1.GetOptions{})
-        // check obj.status.conditions[Ready].status == "True"
-        // check for ReconcileError → return NonRetryableApplicationError
-        time.Sleep(15 * time.Second)
+    ticker := time.NewTicker(10 * time.Second)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-ticker.C:
+            if time.Now().After(deadline) {
+                return fmt.Errorf("timeout waiting for MR %s to become drift-free", in.MRName)
+            }
+            var obj *unstructured.Unstructured
+            if in.MRNamespace != "" {
+                obj, _ = ri.Namespace(in.MRNamespace).Get(ctx, in.MRName, metav1.GetOptions{})
+            } else {
+                obj, _ = ri.Get(ctx, in.MRName, metav1.GetOptions{})
+            }
+            drifted, _ := isDrifted(obj)
+            if !drifted {
+                return nil // Crossplane reconciled successfully
+            }
+        }
     }
-    return fmt.Errorf("timeout waiting for %s/%s to be ready", in.XRResource, in.XRName)
 }
 ```
 
 ---
 
-## 9. Recommended Wait Timeouts by Resource Type
+## 9. WaitMRReadyActivity Timeout by Resource Type
 
-| Resource | Typical provisioning time | Recommended timeout |
+`WaitMRReadyActivity` polls until `isDrifted()` returns false (drift resolved). Timeouts
+are based on how long Crossplane typically takes to reconcile a resource after management
+policies are restored. Current implementation uses **30 min** for all types (safe default).
+
+| Resource | Typical reconcile time after policy restore | Recommended timeout |
 |---|---|---|
-| CloudSQL | 10–20 min | 35 min |
-| GCE Compute | 2–5 min | 15 min |
+| CloudSQL DatabaseInstance | 10–20 min (recreation) | 35 min |
+| GCE Instance | 2–5 min | 15 min |
 | GKE Cluster | 10–20 min | 35 min |
+| GKE NodePool | 5–10 min | 20 min |
 | GCS Bucket | <1 min | 5 min |
+
+If `WaitMRReadyActivity` times out, R3 (`FlipManagementPolicyActivity` back to `["Observe"]`)
+still runs — the MR is never left in full management mode.
 
 ---
 
