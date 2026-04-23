@@ -268,11 +268,29 @@ temporal schedule trigger --schedule-id drift-scan
 # Check running approval workflows
 temporal workflow list --query 'WorkflowType="DriftApprovalWorkflow" AND ExecutionStatus="Running"'
 
-# Approve drift recovery
+# Workflow ID format:
+#   cluster-scoped XR:   drift-approval-<xrkind>-<xrname>-<mrname>
+#   namespace-scoped XR: drift-approval-<xrnamespace>-<xrkind>-<xrname>-<mrname>
+#
+# Each drifted MR gets its own workflow — a multi-MR XR (e.g. GKE cluster+nodepool)
+# produces two separate approval workflows, one per MR.
+#
+# Examples (current — all XRs are cluster-scoped):
+#   drift-approval-xdatabase-my-db-my-db-instance
+#   drift-approval-xcluster-my-gke-my-gke-cluster
+#   drift-approval-xcluster-my-gke-my-gke-nodepool
+
+# Approve drift recovery (replace <workflow-id> with the full ID from the list above)
 temporal workflow signal \
-  --workflow-id "drift-approval-default-xdatabase-<name>" \
+  --workflow-id "<workflow-id>" \
   --name "approval-signal" \
   --input '{"approved":true}'
+
+# Reject drift recovery
+temporal workflow signal \
+  --workflow-id "<workflow-id>" \
+  --name "approval-signal" \
+  --input '{"approved":false,"rejected":true,"reason":"not approved"}'
 
 # Verify managementPolicies flipped back to Observe after recovery
 kubectl get databaseinstance <name> -o jsonpath='{.spec.managementPolicies}'
