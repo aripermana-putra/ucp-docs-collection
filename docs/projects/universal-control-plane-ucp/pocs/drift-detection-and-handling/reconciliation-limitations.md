@@ -9,129 +9,162 @@ parent_page_id: "../drift-detection-and-handling.md"
 This document lists drift scenarios where the platform **cannot automatically reconcile**
 the cloud resource back to its desired state. Detection still works in all cases — the
 `DriftApprovalWorkflow` is started, the operator is notified, and approval can be given.
-The failure occurs in the recovery phase: after approval, Crossplane attempts to patch the
-resource but the cloud API rejects the change because the field is immutable or the
-operation is not supported.
+The failure occurs in the recovery phase: after approval, Crossplane attempts to patch or
+recreate the resource but either the cloud API rejects the change or stale state in
+`forProvider` prevents successful recreation.
+
+**Related findings:** [F-01](poc-results.md#f-01-auto-reconciliation-is-unreliable-for-deletion-drift-on-complex-resources),
+[F-07](poc-results.md#f-07-some-drifts-are-non-recoverable--crossplane-cannot-reverse-all-gcp-changes)
+
+---
 
 **What the platform does in all failure cases:**
 
 1. Drift detected → `DriftApprovalWorkflow` started, notification sent
 2. Operator approves
 3. Platform flips `managementPolicies` to `[Create, Observe, Update]`
-4. Crossplane attempts to reconcile → GCP API rejects → `Synced=False / ReconcileError`
-5. `WaitMRReadyActivity` detects persistent `ReconcileError` after the grace period
-   and fails the workflow with `RECONCILE_FAILED`
+4. Crossplane attempts to reconcile → cloud API rejects or recreation fails
+5. `WaitMRReadyActivity` detects persistent `ReconcileError` after the 2-minute grace
+   period and fails the workflow early with `RECONCILE_FAILED` (non-retryable), including
+   the exact GCP error message
 6. Platform always flips `managementPolicies` back to `[Observe]` (Step 3c guarantee —
    the MR is never left in full management mode)
 
 The resource remains in a drifted state. Manual intervention is required.
+The exact GCP error message is visible in the Temporal UI under the failed workflow's
+`WaitMRReadyActivity` event.
 
 ---
 
-## Scenario 1 — GCP / Cloud SQL: Machine Type (Tier) Change to Incompatible Target
+## Scenario 1 — GCP / Cloud SQL: Disk Size Reduction
 
 | Field | Value |
 |-------|-------|
 | **Cloud Provider** | GCP |
 | **Service** | Cloud SQL (DatabaseInstance) |
 | **MR Kind** | `DatabaseInstance` (`sql.gcp.upbound.io`) |
-| **Drift Signal** | Signal 1 — field diff (`settings.tier`) |
+| **Drift Signal** | Signal 1 — field diff (`settings.disk_size`) |
 | **Reconcilable** | No |
+| **Confirmed in** | F-07 (MCUCP-158 implementation testing) |
 
 ### What Happens
 
-The Cloud SQL instance's machine type (expressed as `settings.tier`, e.g. `db-n1-standard-1`,
-`db-custom-2-7680`) is changed directly in the GCP Console to a type that is incompatible
-with the current instance configuration — for example, switching between shared-core
-and dedicated-core tiers, or specifying a tier that does not exist in the region.
+The Cloud SQL instance's disk size is manually increased in the GCP Console (e.g. 50 GB
+→ 150 GB). The drift watcher detects the mismatch between `spec.forProvider.settings.disk_size`
+(50) and `status.atProvider.settings.disk_size` (150) and fires a `DriftApprovalWorkflow`.
 
-The drift watcher detects the mismatch between `spec.forProvider.settings.tier` and
-`status.atProvider.settings.tier` and fires a `DriftApprovalWorkflow`.
-
-After approval, Crossplane tries to PATCH the instance. The GCP Cloud SQL API rejects
-the request with an error such as:
+After approval, Crossplane attempts to PATCH the instance to set `disk_size` back to 50 GB.
+The GCP Cloud SQL API rejects this:
 
 ```
-googleapi: Error 400: Invalid request: Invalid tier.
+update failed: async update failed: refuse to update the external resource because the
+following update requires replacing it: cannot change the value of the argument
+"settings.0.disk_size" from "150" to "50"
 ```
 
-The instance stays with the externally set tier. `Synced=False / ReconcileError` persists
-beyond the 2-minute grace period. `WaitMRReadyActivity` fails the workflow.
-
-> **Note:** Changing between compatible tiers of the same class (e.g. `db-n1-standard-1`
-> → `db-n1-standard-2`) IS reconcilable by the platform — this scenario only applies
-> when the target tier is invalid or the change crosses an incompatible tier class boundary.
+The MR condition: `Synced=False, reason=ReconcileError, type=LastAsyncOperation: AsyncUpdateFailure`.
+This persists indefinitely. `WaitMRReadyActivity` hits the grace period and exits early with
+`RECONCILE_FAILED`. Step 3c flips back to `[Observe]`.
 
 ### Root Cause
 
-GCP Cloud SQL validates tier changes at the API level. Not all tier transitions are
-allowed on a live instance without recreation. The Crossplane provider sends the desired
-tier as a PATCH and relies on the GCP API to accept or reject it — there is no client-side
-tier compatibility check.
+GCP Cloud SQL enforces that disk size can only increase, never decrease. This is a hard
+constraint at the GCP API level — disk storage once allocated cannot be reclaimed on a
+live instance. Crossplane has no pre-flight check for this; it sends the PATCH and relies
+on the API response.
 
 ### Suggestion
 
-1. Determine the correct, compatible target tier in GCP documentation.
-2. If the GCP console change was accidental: revert the tier in GCP Console manually
-   to match the desired state in `spec.forProvider`. Crossplane will detect the
-   restoration on the next Observe() cycle and clear the `ReconcileError`.
-3. If the tier change is intentional and valid: update `spec.forProvider.settings.tier`
-   in the XDatabase claim to match the new tier. Crossplane will accept the change
-   as no-diff and clear the error.
-4. For incompatible tier class migrations (shared-core → dedicated-core), a new
-   instance must be created, data migrated, and the old instance decommissioned.
-   Update the XDatabase desired state to reflect the new instance configuration.
+**Option A — Accept the new disk size (recommended):**
+Update `spec.forProvider.settings.disk_size` in the XDatabase claim to `150` (or whatever
+the current GCP value is). Crossplane will see no diff and clear the `ReconcileError`. The
+larger disk is billed accordingly.
+
+**Option B — Revert in GCP (not possible):**
+GCP does not allow reducing disk size on a live instance. This option is unavailable.
+
+**Option C — Recreate the instance (data loss risk):**
+If the smaller disk size is a hard requirement (e.g. cost control), a new Cloud SQL instance
+must be created at the desired size, data migrated from the old instance, and the old instance
+deleted. This involves downtime and should be planned as a maintenance operation.
 
 ---
 
-## Scenario 2 — GCP / GKE: NodePool Machine Type Change
+## Scenario 2 — GCP / GKE: Cluster or NodePool Deleted with Stale Late-Initialized Fields
 
 | Field | Value |
 |-------|-------|
 | **Cloud Provider** | GCP |
-| **Service** | GKE (NodePool) |
-| **MR Kind** | `NodePool` (`container.gcp.upbound.io`) |
-| **Drift Signal** | Signal 1 — field diff (`nodeConfig.machineType`) |
-| **Reconcilable** | No |
+| **Service** | GKE (Cluster, NodePool) |
+| **MR Kind** | `Cluster`, `NodePool` (`container.gcp.upbound.io`) |
+| **Drift Signal** | Signal 2 — `Synced=False / ReconcileError` (resource not found) |
+| **Reconcilable** | No (without manual intervention) |
+| **Confirmed in** | F-01, F-07 (POC testing and MCUCP-158 implementation testing) |
 
 ### What Happens
 
-The node pool's machine type (`spec.forProvider.nodeConfig.machineType`, e.g.
-`n2-standard-4`) is externally modified. Since GKE does not expose a direct "change
-machine type" API on an existing node pool, any GCP-side mutation to this field typically
-reflects a recreation done manually outside of Crossplane (e.g. via `gcloud container
-node-pools create/delete`).
+A GKE Cluster or NodePool is deleted directly from the GCP Console. Crossplane detects the
+deletion via `Synced=False / ReconcileError`. The drift watcher fires a `DriftApprovalWorkflow`.
 
-The drift watcher detects `nodeConfig.machineType` mismatch and fires a
-`DriftApprovalWorkflow`.
+After approval, the platform flips `managementPolicies` to `[Create, Observe, Update]`.
+Crossplane attempts to recreate the resource using the current `spec.forProvider` state.
+The recreation fails at the GCP API level due to **stale late-initialized fields** accumulated
+from the original resource's lifecycle.
 
-After approval, Crossplane attempts to PATCH the NodePool. The GKE API rejects it:
+**Failure sequence observed during testing (GKE Cluster):**
 
-```
-googleapi: Error 400: The resource "nodePool" could not be updated because
-it contains immutable field: nodeConfig.machineType
-```
-
-`Synced=False / ReconcileError` persists. `WaitMRReadyActivity` fails the workflow.
+1. Cluster recreate fails: `Error 400: Cannot specify logging_config together with logging_service`
+   — the composition had `loggingService: "none"` (deprecated field); late initialization had
+   also written `loggingConfig` (new field) into `forProvider` from the original cluster's
+   observed state. GCP rejects requests with both field generations simultaneously.
+2. After fixing the composition: Cluster recreate fails again: `Error 400: SYSTEM_COMPONENTS
+   monitoring must be enabled if any monitoring is enabled` — the late-initialized
+   `forProvider.monitoringConfig` from the old cluster had a component list missing
+   `SYSTEM_COMPONENTS`.
+3. After fixing the composition again: Cluster creates. NodePool recreate fails:
+   pod secondary range `gke-ari-test-kube-cluster-1-pods-0f92ba7c` not found — the
+   late-initialized `forProvider.networkConfig.podRange` referenced a range that belonged
+   to the deleted cluster and no longer exists.
 
 ### Root Cause
 
-`nodeConfig.machineType` is immutable on a GKE NodePool after creation. The GKE API
-does not support in-place machine type changes. A new node pool must be created with
-the desired machine type, workloads must be migrated, and the old pool must be deleted.
-Crossplane has no mechanism to perform this multi-step node pool rotation automatically.
+**Late initialization** is the underlying cause. After Crossplane creates a resource, the
+provider's `Observe()` cycle writes GCP's full API response back into `spec.forProvider` —
+including fields the composition never declared. These are GCP-assigned values specific to
+the resource instance (pod secondary range names, auto-assigned component lists, etc.).
+
+When the resource is deleted and Crossplane attempts recreation from `forProvider`, those
+field values reference state that was specific to the now-deleted resource. GCP rejects the
+request because the referenced state no longer exists or because deprecated and new fields
+conflict.
+
+This is a **deletion-specific failure** — field-level drift (resource still exists) is not
+affected because Crossplane sends an UPDATE to an existing resource where the late-init
+values are still valid.
 
 ### Suggestion
 
-1. **If the change was accidental:** The original node pool was likely deleted and a
-   new one created outside of Crossplane. The desired state in the XR still points to
-   the old spec. Update `spec.forProvider.nodeConfig.machineType` in the XKubernetesCluster
-   claim to match the currently running node pool's machine type to clear the drift.
-2. **If the change is intentional:** Perform a managed node pool rotation:
-   a. Add a new NodePool to the XR composition with the desired machine type.
-   b. Drain and cordon the old node pool.
-   c. Remove the old node pool from the XR composition.
-   d. Let Crossplane delete the old MR.
+**Option A — Delete the MR and let the composition recreate it from a clean state:**
+```bash
+# 1. Delete the composed MR directly — Crossplane will detect the missing MR
+#    and recreate it via the composition, without the stale late-init fields
+kubectl delete cluster.container.gcp.upbound.io <mr-name>
+
+# 2. Watch Crossplane recreate the MR
+kubectl get cluster.container.gcp.upbound.io -w
+```
+This bypasses the stale `forProvider` entirely. The composition generates a clean `forProvider`
+on first create, and `Observe()` re-initializes it from the new resource's state.
+
+**Option B — Manually clean `forProvider` before approving:**
+Before approving the drift workflow, edit the MR to remove late-initialized fields that
+reference the deleted resource (pod secondary range names, conflicting logging/monitoring
+fields). This is error-prone and requires GKE API knowledge.
+
+**Longer-term fix (tracked as post-POC):**
+When the drift signal is `Synced=False / ReconcileError` (deletion), the approval workflow
+should delete the composed MRs before flipping management policy, forcing the composition
+to recreate them from scratch. See F-01 recommendation in poc-results.md.
 
 ---
 
@@ -156,6 +189,7 @@ on GCP API constraints. Each should be validated with a test run.
 | **Cluster network / subnetwork change** | `network`, `subnetwork` | `RECONCILE_FAILED` | Cluster VPC network is set at creation time and is immutable. |
 | **Cluster location change** | `location` | `RECONCILE_FAILED` | Cluster region or zone is immutable after creation. |
 | **Cluster IP range change** | `clusterIpv4Cidr`, `servicesIpv4Cidr` | `RECONCILE_FAILED` | IP ranges are allocated at creation and cannot be changed on a live cluster. |
+| **NodePool machine type change** | `nodeConfig.machineType` | `RECONCILE_FAILED` | Machine type is part of the immutable `nodeConfig` block; changing it requires creating a new node pool. |
 | **NodePool disk type change** | `nodeConfig.diskType` | `RECONCILE_FAILED` | Disk configuration is part of the immutable `nodeConfig` block. |
 | **NodePool image type change** | `nodeConfig.imageType` | Possibly recoverable | Some image type changes (e.g. `COS_CONTAINERD` ↔ `UBUNTU_CONTAINERD`) can be applied via a node pool upgrade. Needs verification. |
 
