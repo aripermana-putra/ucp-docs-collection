@@ -6,20 +6,82 @@ parent_page_id: "../drift-detection-and-handling.md"
 
 # Drift Reconciliation Limitations
 
-This is a living document. It captures every drift scenario where the platform cannot
-automatically reconcile a cloud resource back to its desired state. Each entry is added
-after the scenario has been tested end-to-end against the running platform.
+This is a living document. It captures every drift scenario where the platform either cannot
+**detect** the drift or cannot **recover** from it. Each entry is added after the scenario has
+been tested end-to-end against the running platform.
 
-Drift **detection** works in all cases listed here — the `DriftApprovalWorkflow` fires,
-the operator is notified, and approval can be given. The limitation is in the **recovery
-phase**: after approval, Crossplane attempts to restore the resource but the cloud provider
-permanently rejects the change.
+Two categories of limitation are tracked:
+
+- **Detection Limitations** — the `DriftApprovalWorkflow` never fires; the platform's detection
+  signals do not trigger even though real drift has occurred.
+- **Confirmed Findings (Recovery Failures)** — drift is detected and the operator is notified,
+  but after approval Crossplane attempts to restore the resource and the cloud provider permanently
+  rejects the change.
 
 **What the platform guarantees even when recovery fails:**
 - `WaitMRReadyActivity` detects the persistent `ReconcileError` after a 2-minute grace
   period and surfaces the exact cloud error message in the Temporal UI
 - `managementPolicies` is always flipped back to `[Observe]` — the MR is never left in
   full management mode regardless of recovery outcome
+
+---
+
+## Detection Limitations
+
+These are scenarios where drift **cannot be detected** — the `DriftApprovalWorkflow` never
+fires because the platform's detection signals do not trigger.
+
+---
+
+### DET-01 — Upjet Late Initialization Overwrites Boolean Zero-Value Desired State
+
+| | |
+|---|---|
+| **Cloud Provider** | GCP (all upjet-based providers) |
+| **Service** | Any |
+| **Affected Fields** | Any `boolean` field in `spec.forProvider` where desired state is `false` |
+| **Example** | GCS `uniformBucketLevelAccess: false` |
+| **Detectable** | No |
+| **Source** | MCUCP-181 (drift-reconcile-sim) |
+
+**Scenario**
+
+A GCS bucket has `uniformBucketLevelAccess: false` as the desired state in `spec.forProvider`.
+Someone enables it externally (GCP Console or `gcloud`). Drift is expected to be detected via
+Signal 1 (forProvider vs atProvider diff: `desired=false, actual=true`).
+
+**What actually happens**
+
+Crossplane's `Observe()` cycle runs late initialization on every reconcile loop. For any field in
+`spec.forProvider` that equals the Go zero value (`false` for bool, `0` for int, `""` for string),
+upjet treats it as "unset" and copies the observed `atProvider` value back into `forProvider`.
+
+After the external mutation sets `uniformBucketLevelAccess: true`:
+
+1. `atProvider.uniformBucketLevelAccess = true`
+2. Late init fires: `forProvider.uniformBucketLevelAccess` was `false` (zero value) → overwritten to `true`
+3. Diff: `forProvider=true, atProvider=true` → no drift detected
+
+The correction closes in seconds — before the drift scan has a chance to see the mismatch.
+
+**Why**
+
+In Go, `false` is the zero value for `bool`. upjet cannot distinguish between "user explicitly
+set this to false" and "user never set this field at all". The late-init heuristic assumes zero
+value = unset and fills it in from the observed cloud state.
+
+This affects **any boolean field where the desired state is `false`** across all upjet-based
+Crossplane providers (provider-upjet-gcp, provider-upjet-aws, etc.).
+
+**Impact on Signal 2**
+
+Signal 2 (`Synced=False / ReconcileError`) does not fire in `Observe` mode — Crossplane does not
+attempt writes, so there is no reconcile error to surface.
+
+**Workaround**
+
+None in Observe-mode drift protection. Fields with a `false` desired state are a blind spot: if
+someone enables the feature externally, the platform sees no drift.
 
 ---
 
@@ -131,66 +193,132 @@ failure — field-level drift on a live resource is not affected.
 
 ---
 
-## Candidates to Test
+### LIM-03 — GCP / GCS: Requester Pays — Permanent Observation Failure
 
-The following scenarios have not been tested yet. Each is expected to be non-recoverable
-based on GCP API constraints. Results should be recorded here after testing.
+| | |
+|---|---|
+| **Cloud Provider** | GCP |
+| **Service** | Cloud Storage |
+| **MR Kind** | `Bucket` (`storage.gcp.upbound.io`) |
+| **Drift Signal** | Signal 2 — `Synced=False / ReconcileError` (observe fails with HTTP 400) |
+| **Reconcilable** | No |
+| **Source** | MCUCP-181 (drift-reconcile-sim) |
 
-### GCP / Cloud SQL
+**Scenario**
 
-| ID | Scenario | Field | Expected | Notes |
-|----|----------|-------|----------|-------|
-| C-SQL-01 | Database version downgrade | `databaseVersion` (e.g. `POSTGRES_14` → `POSTGRES_13`) | Non-recoverable | GCP only supports in-place upgrades, never downgrades |
-| C-SQL-02 | Region change | `region` | Non-recoverable | Instances are region-bound; cross-region move requires recreate + data migration |
-| C-SQL-03 | Instance type change | `instanceType` (`CLOUD_SQL_INSTANCE` ↔ `READ_REPLICA_INSTANCE`) | Non-recoverable | Replica promotion has its own GCP API path; cannot be done via PATCH |
-| C-SQL-04 | Database version upgrade | `databaseVersion` (e.g. `POSTGRES_13` → `POSTGRES_14`) | Possibly recoverable | GCP supports in-place upgrades but requires maintenance window; need to verify Crossplane handles this cleanly |
+Requester Pays is enabled on a GCS bucket externally (GCP Console or `gcloud`). Once enabled,
+GCP requires a `userProject` query parameter on every subsequent API call — including `GET`
+(observe), `PATCH` (update), and `DELETE`.
 
-### GCP / GKE
+**Error**
 
-| ID | Scenario | Field | Expected | Notes |
-|----|----------|-------|----------|-------|
-| C-GKE-01 | Cluster network or subnetwork change | `network`, `subnetwork` | Non-recoverable | Set at cluster creation, immutable afterward |
-| C-GKE-02 | Cluster location change | `location` | Non-recoverable | Region/zone is immutable after creation |
-| C-GKE-03 | Cluster IP range change | `clusterIpv4Cidr`, `servicesIpv4Cidr` | Non-recoverable | IP ranges are allocated at creation and cannot be changed on a live cluster |
-| C-GKE-04 | NodePool machine type change | `nodeConfig.machineType` | Non-recoverable | `nodeConfig` is immutable after pool creation; changing machine type requires a new node pool |
-| C-GKE-05 | NodePool disk type change | `nodeConfig.diskType` | Non-recoverable | Part of immutable `nodeConfig` block |
-| C-GKE-06 | NodePool image type change | `nodeConfig.imageType` | Possibly recoverable | Some image type changes can be applied via node pool upgrade; needs verification |
+```
+observe failed: failed to observe the resource: [{0 Error when reading or editing Storage Bucket
+"<name>": googleapi: Error 400: Bucket is a requester pays bucket but no user project provided.,
+required  []}]
+```
 
-### GCP / Compute Engine
+The MR enters `Synced=False, reason=ReconcileError` on **observation itself** — before any drift
+recovery is attempted. This persists indefinitely.
 
-| ID | Scenario | Field | Expected | Notes |
-|----|----------|-------|----------|-------|
-| C-GCE-01 | Zone change | `zone` | Non-recoverable | VMs are zone-bound; cross-zone move requires snapshot + recreate |
-| C-GCE-02 | Boot disk type change | `bootDisk.type` (`pd-standard` ↔ `pd-ssd`) | Non-recoverable | Disk type is set at VM creation and cannot be changed in place |
-| C-GCE-03 | Machine type change | `machineType` | Possibly recoverable | GCP allows this when the VM is stopped; need to verify whether the Crossplane provider handles the stop→update→start cycle |
+**Why**
 
-### GCP / Cloud Storage
+The Crossplane GCP provider (`provider-upjet-gcp`) does not forward a `userProject` parameter on
+any API call. Once Requester Pays is enabled, every GCP API call for that bucket fails with HTTP
+400. Crossplane cannot observe, update, or delete the bucket.
 
-| ID | Scenario | Field | Expected | Notes |
-|----|----------|-------|----------|-------|
-| C-GCS-01 | Bucket location change | `location` | Non-recoverable | Location is immutable after bucket creation; data must be migrated to a new bucket |
-| C-GCS-02 | Storage class change | `storageClass` (`STANDARD` ↔ `NEARLINE` ↔ `COLDLINE`) | Possibly recoverable | GCP supports storage class changes via `UpdateBucket`; need to verify Crossplane handles this |
+Unlike recovery failures (where detection works but restoration fails), this is a complete loss
+of provider access to the resource. The bucket becomes permanently unmanageable from Crossplane.
+
+**Operator Action**
+
+1. **Disable Requester Pays in GCP Console or via `gcloud`:**
+   ```bash
+   gcloud storage buckets update gs://<bucket-name> --no-requester-pays
+   ```
+2. Once disabled, Crossplane observation resumes automatically on the next reconcile cycle.
+3. If drift protection (Observe mode) was active, `managementPolicies` may need to be reset
+   manually if the MR was left in an inconsistent state.
 
 ---
 
 ## Test Procedure
 
-For each candidate above:
+New drift scenarios are tested using the **drift-reconcile-sim** tool (`backend/drift-sim`).
+The tool automates provisioning, mutation, drift detection, reconciliation, and teardown
+end-to-end. See `backend/drift-sim/README.md` for the full flag and config reference.
 
-1. Apply an XR with `driftProtection: true` and confirm the resource is provisioned and
-   `managementPolicies: ["Observe"]` is set on the MR.
-2. Confirm `status.atProvider` is populated (Observe() has run at least once).
-3. Trigger the scenario directly in GCP Console or via `gcloud`.
-4. Wait for a `DriftApprovalWorkflow` to appear in Temporal UI.
-5. Approve via the platform UI or CLI:
-   ```bash
-   temporal workflow signal \
-     --workflow-id <workflow-id> \
-     --name approval-signal \
-     --input '{"approved":true}'
-   ```
-6. Check the `WaitMRReadyActivity` outcome in Temporal UI. If it fails, copy the exact
-   error message from the activity result.
-7. Confirm `managementPolicies` is back to `["Observe"]` regardless of outcome.
-8. Record the result, error message, root cause, and operator action in this document
-   under **Confirmed Findings**, and remove the entry from **Candidates to Test**.
+### 1. Prerequisites
+
+- `kubectl` configured against the target cluster
+- GCP Application Default Credentials: `gcloud auth application-default login`
+- An XR fixture for the resource under test in `crossplane/examples/`
+
+### 2. Create or update a suite config
+
+Add a new YAML file under `backend/drift-sim/config/`, or add attributes to an existing one.
+Each entry under `attributes:` becomes one test run:
+
+```yaml
+name: My Service
+resource:
+  kind: MyResource
+  mr_gvr: <group>/<version>/<plural>
+  xr_gvr: platform.example.io/v1alpha1/<xr-plural>
+  xr_fixture: crossplane/examples/<service>/xr-drift-test.yaml
+  provision_timeout: 5m
+
+attributes:
+  - id: my-field
+    adapter_field: fieldName
+    type: enum          # string | enum | boolean | integer
+    test_values: ["VALUE_A"]
+    reversible: false   # false = reprovision after this test
+```
+
+Set `reversible: false` for any mutation expected to be non-recoverable or that permanently
+alters the resource state.
+
+### 3. Build the binary
+
+```bash
+cd backend/drift-sim
+go build -o /tmp/drift-sim ./cmd/drift-sim
+```
+
+### 4. Run the suite
+
+Run from the **repository root** so that `xr_fixture` paths resolve correctly:
+
+```bash
+# Single suite
+/tmp/drift-sim --config backend/drift-sim/config/<service>.yaml --project <gcp-project-id>
+
+# Multiple suites via plan
+/tmp/drift-sim --plan backend/drift-sim/config/plan.yaml --project <gcp-project-id>
+```
+
+The tool writes a timestamped Markdown report to `output/<config>-<timestamp>.md`.
+
+### 5. Review the output report
+
+Each attribute test shows one of:
+
+| Outcome | Meaning |
+|---------|---------|
+| `reconciled` | Drift detected and Crossplane reconciled it back — recoverable |
+| `failed` | Drift detected but Crossplane could not reconcile — non-recoverable |
+| `drift_not_detected` | Mutation applied but no drift signal fired within the timeout |
+| `error` | GCP API rejected the mutation itself |
+
+For `failed` outcomes, the exact cloud provider error is in the **Error / Detail** block of
+the report.
+
+### 6. Record findings in this document
+
+| Result | Action |
+|--------|--------|
+| `reconciled` | Scenario is recoverable — no entry needed here |
+| `failed` | Add a new `LIM-NN` entry under **Confirmed Findings** with the error, root cause, and operator action |
+| `drift_not_detected` | Investigate root cause; if it is a platform-level limitation (e.g. late initialization), add a `DET-NN` entry under **Detection Limitations** |
+| `error` | If the GCP API permanently rejects the mutation (immutable field), note it in the suite config comment — no doc entry needed unless there is operator impact |
