@@ -40,15 +40,16 @@ fires because the platform's detection signals do not trigger.
 | **Cloud Provider** | GCP (all upjet-based providers) |
 | **Service** | Any |
 | **Affected Fields** | Any `boolean` field in `spec.forProvider` where desired state is `false` |
-| **Example** | GCS `uniformBucketLevelAccess: false` |
+| **Confirmed Examples** | GCS `uniformBucketLevelAccess: false`, GCS `defaultEventBasedHold: false` |
 | **Detectable** | No |
 | **Source** | MCUCP-181 (drift-reconcile-sim) |
 
 **Scenario**
 
-A GCS bucket has `uniformBucketLevelAccess: false` as the desired state in `spec.forProvider`.
-Someone enables it externally (GCP Console or `gcloud`). Drift is expected to be detected via
-Signal 1 (forProvider vs atProvider diff: `desired=false, actual=true`).
+A GCS bucket has `uniformBucketLevelAccess: false` (or `defaultEventBasedHold: false`) as the
+desired state in `spec.forProvider`. Someone enables it externally (GCP Console or `gcloud`).
+Drift is expected to be detected via Signal 1 (forProvider vs atProvider diff:
+`desired=false, actual=true`).
 
 **What actually happens**
 
@@ -56,13 +57,20 @@ Crossplane's `Observe()` cycle runs late initialization on every reconcile loop.
 `spec.forProvider` that equals the Go zero value (`false` for bool, `0` for int, `""` for string),
 upjet treats it as "unset" and copies the observed `atProvider` value back into `forProvider`.
 
-After the external mutation sets `uniformBucketLevelAccess: true`:
+After the external mutation sets the field to `true` (e.g. `uniformBucketLevelAccess: true`):
 
-1. `atProvider.uniformBucketLevelAccess = true`
-2. Late init fires: `forProvider.uniformBucketLevelAccess` was `false` (zero value) → overwritten to `true`
+1. `atProvider.<field> = true`
+2. Late init fires: `forProvider.<field>` was `false` (zero value) → overwritten to `true`
 3. Diff: `forProvider=true, atProvider=true` → no drift detected
 
 The correction closes in seconds — before the drift scan has a chance to see the mismatch.
+
+**Confirmed instances** (from drift-reconcile-sim runs, MCUCP-181):
+
+| Field | GVR | Desired | Mutation | Result |
+|-------|-----|---------|----------|--------|
+| `uniformBucketLevelAccess` | `storage.gcp.upbound.io/v1beta2/buckets` | `false` | set → `true` | `drift_not_detected` |
+| `defaultEventBasedHold` | `storage.gcp.upbound.io/v1beta2/buckets` | `false` | set → `true` | `drift_not_detected` |
 
 **Why**
 
