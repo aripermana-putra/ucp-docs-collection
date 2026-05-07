@@ -162,6 +162,62 @@ namespace-scoped is unblocked today and can be done independently.
 
 ---
 
+## Current Implementation State
+
+The ProviderConfig-per-tenant approach is already partially live. When a tenant admin
+uploads cloud credentials via the UI, the API server automatically creates the
+corresponding ProviderConfig.
+
+### Credential Upload Flow
+
+```
+Tenant admin uploads credential file via UI (CloudCredentials.jsx)
+  -> POST /api/v1/settings/credentials
+  -> API server validates file format
+  -> Stores as K8s Secret in crossplane-system:
+       cloud-credentials-{provider}-{sanitized-tenant-id}-{env}
+       labels:
+         platform.ucp.io/type: cloud-credentials
+         platform.ucp.io/provider: gcp
+         platform.ucp.io/env: production
+         platform.ucp.io/tenant: rns-roc-iam--clsd-ucp
+  -> Automatically creates/updates ProviderConfig:
+       gcp-{sanitized-tenant-id}-{env}
+       spec.projectID: <from service account JSON>
+       spec.credentials.secretRef: <points to above secret>
+```
+
+Only tenant admins (verified via Horizon API) can upload credentials. The raw key
+material is never returned via any API endpoint — only metadata (project ID, client
+email, key ID) is surfaced back to the UI.
+
+### Current State Per Provider
+
+| Provider | Credential UI | K8s Secret | ProviderConfig Auto-Created |
+|---|---|---|---|
+| GCP | Yes | Yes (service account JSON) | Yes — `upsertGCPProviderConfig()` |
+| ROC/Omnia | Yes | Yes (Ed25519 JWK) | No — uses on-demand JWT generation instead |
+| AWS | No | No | No |
+| Azure | No | No | No |
+
+### ROC/Omnia Auth Difference
+
+Omnia uses a different auth pattern. Instead of a long-lived ProviderConfig credential,
+the API server stores the tenant's Ed25519 JWK private key and generates a fresh
+short-lived JWT (10-minute TTL) each time Omnia needs to be called:
+
+```
+K8s Secret (JWK private key)
+  -> generateROCTokenForTenant()
+  -> signs JWT with Ed25519 key
+  -> JWT passed to Temporal workflow -> Omnia API call
+```
+
+This matches Omnia's requirement for short-lived tokens and avoids the token expiry
+problems that come with storing long-lived credentials.
+
+---
+
 ## Isolation Layers with Option A
 
 | Layer | Mechanism | Status |
@@ -170,21 +226,25 @@ namespace-scoped is unblocked today and can be done independently.
 | Tenant identity | `X-Tenant-ID` + Horizon API | Implemented |
 | API-level RBAC | 5-role permission model | Designed, not implemented |
 | Resource ownership | `ucp.platform/tenant` labels + API-layer filtering | Designed, not applied |
-| Cloud isolation | ProviderConfig per tenant -> separate cloud accounts | Anticipated, not yet created |
+| Cloud isolation (GCP) | ProviderConfig per tenant — auto-created on credential upload | Implemented |
+| Cloud isolation (Omnia) | Per-tenant JWK secret + on-demand JWT generation | Implemented |
+| Cloud isolation (AWS/Azure) | ProviderConfig per tenant | Not yet — credential UI needed |
 | K8s defense-in-depth | `ValidatingAdmissionPolicy` (native k8s 1.35, no extra tooling) | Not done |
 
 ---
 
 ## Recommended Path
 
-| Timeframe | Action |
-|---|---|
-| Now | Provision ProviderConfig per tenant at tenant onboarding |
-| Now | Apply `ucp.platform/tenant` labels on all XR creation |
-| Now | Implement RBAC.md role model (replace `isUserTenantAdmin()`) |
-| Now | Add `ValidatingAdmissionPolicy` for tenant label + ProviderConfig enforcement |
-| Short-term | Change `provider-roc` OmniaDatabase to `scope=Namespaced` |
-| Long-term | Resume MCUCP-119 when provider-upjet-gcp and provider-upjet-azure ship namespaced MR support |
+| Timeframe | Action | Status |
+|---|---|---|
+| Now | ProviderConfig per tenant for GCP — auto-created on credential upload | Done |
+| Now | Per-tenant JWK + JWT generation for Omnia | Done |
+| Now | Add credential UI + ProviderConfig provisioning for AWS and Azure | Not done |
+| Now | Apply `ucp.platform/tenant` labels on all XR creation | Not done |
+| Now | Implement RBAC.md role model (replace `isUserTenantAdmin()`) | Not done |
+| Now | Add `ValidatingAdmissionPolicy` for tenant label + ProviderConfig enforcement | Not done |
+| Short-term | Change `provider-roc` OmniaDatabase to `scope=Namespaced` | Not done |
+| Long-term | Resume MCUCP-119 when provider-upjet-gcp and provider-upjet-azure ship namespaced MR support | Blocked on upstream |
 
 ---
 
