@@ -233,6 +233,80 @@ problems that come with storing long-lived credentials.
 
 ---
 
+## Implementation Gaps
+
+The design is correct and does not need a PoC. Cloud-level isolation via ProviderConfig
+per tenant is proven and working for GCP. The following are implementation gaps —
+straightforward code fixes, not design unknowns.
+
+### Gap 1 — List Endpoints Return All Tenants' Resources
+
+Every list handler fetches all cluster resources with no tenant filter:
+
+```go
+// main.go, compute_handler.go, storage_handler.go, kubernetes_handler.go
+list, err := s.k8sClient.Resource(gvr).List(ctx, metav1.ListOptions{})
+```
+
+Any authenticated user calling `GET /api/v1/databases` receives every tenant's resources.
+This is a live cross-tenant data leak via the API.
+
+**Fix:** Add `LabelSelector: "ucp.platform/tenant=<tenantId>"` to all list queries.
+Depends on Gap 2 being fixed first.
+
+### Gap 2 — No `ucp.platform/tenant` Labels on XRs at Creation
+
+No handler sets tenant ownership labels on XRs at creation time. Only these annotations
+are set:
+- `temporal.io/workflow-id`
+- `omnia.roc.rakuten.com/token-secret-ref`
+
+Without the label, there is nothing to filter by in list queries and no way to verify
+ownership on get-by-name requests.
+
+**Fix:** Add the following labels inside each create handler alongside existing annotations:
+
+```go
+labels := map[string]interface{}{
+    "ucp.platform/tenant":     sanitizeTenantID(req.TenantID),
+    "ucp.platform/managed":    "true",
+    "ucp.platform/created-by": userID,
+}
+```
+
+Affected handlers: `main.go` (database), `compute_handler.go`, `storage_handler.go`,
+`kubernetes_handler.go`, `terraform_handler.go`, `blueprint_handler.go`.
+
+### Gap 3 — Terraform Handler Accepts User-Supplied `providerConfig`
+
+Unlike all other resource handlers, the Terraform handler takes `providerConfig` directly
+from the request body:
+
+```go
+// terraform_handler.go
+parameters["providerConfig"] = req.ProviderConfig  // user-controlled
+```
+
+A tenant could pass any arbitrary ProviderConfig name, including another tenant's.
+
+**Fix:** Inject server-side like all other handlers:
+
+```go
+parameters["providerConfig"] = gcpProviderConfigName(req.TenantID, env)
+```
+
+### Gap 4 — GET by Name Has No Tenant Ownership Check
+
+`GET /api/v1/databases/{name}` (and equivalent get-by-name endpoints) fetch the resource
+by name with no verification that it belongs to the requesting tenant. Any authenticated
+user who knows a resource name can read it.
+
+**Fix:** After fetching the resource, verify the `ucp.platform/tenant` label matches the
+`tenantId` from the request. Return 404 (not 403) on mismatch to avoid leaking resource
+existence.
+
+---
+
 ## Recommended Path
 
 | Timeframe | Action | Status |
@@ -240,7 +314,10 @@ problems that come with storing long-lived credentials.
 | Now | ProviderConfig per tenant for GCP — auto-created on credential upload | Done |
 | Now | Per-tenant JWK + JWT generation for Omnia | Done |
 | Now | Add credential UI + ProviderConfig provisioning for AWS and Azure | Not done |
-| Now | Apply `ucp.platform/tenant` labels on all XR creation | Not done |
+| Now | Apply `ucp.platform/tenant` labels on all XR creation (Gap 2) | Not done |
+| Now | Add `LabelSelector` to all list endpoints (Gap 1) | Not done |
+| Now | Fix Terraform handler to inject `providerConfig` server-side (Gap 3) | Not done |
+| Now | Add tenant ownership check on get-by-name endpoints (Gap 4) | Not done |
 | Now | Implement RBAC.md role model (replace `isUserTenantAdmin()`) | Not done |
 | Now | Add `ValidatingAdmissionPolicy` for tenant label + ProviderConfig enforcement | Not done |
 | Short-term | Change `provider-roc` OmniaDatabase to `scope=Namespaced` | Not done |
