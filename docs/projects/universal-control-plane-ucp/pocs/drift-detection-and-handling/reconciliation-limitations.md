@@ -250,6 +250,62 @@ of provider access to the resource. The bucket becomes permanently unmanageable 
 
 ---
 
+### LIM-04 — GCP / GCS: Bucket Deletion — Soft-Delete Retention Blocks Recreation
+
+| | |
+|---|---|
+| **Cloud Provider** | GCP |
+| **Service** | Cloud Storage |
+| **MR Kind** | `Bucket` (`storage.gcp.upbound.io`) |
+| **Drift Signal** | Signal 2 — `Synced=False / ReconcileError` (resource not found) |
+| **Reconcilable** | No |
+| **Source** | MCUCP-181 (drift-reconcile-sim) |
+
+**Scenario**
+
+A GCS bucket is deleted externally (GCP Console or `gcloud`). Crossplane (in Observe mode)
+detects the deletion as Signal 2 (`ReconcileError`: resource not found). After approval, the
+management policy is flipped to `FullPolicies`. Crossplane attempts to recreate the bucket.
+
+**Error**
+
+```
+observe failed: external resource does not exist
+```
+
+Crossplane's `Create()` call is blocked — GCP prevents creating a new bucket with the same
+name during the soft-delete retention window (default 7 days). The name is reserved by the
+soft-deleted bucket, and GCP returns a conflict error. The MR enters a persistent
+`ReconcileError` state.
+
+**Why**
+
+GCS soft-delete retains deleted buckets for a configurable retention period (default 7 days).
+During this window, the original bucket name is still reserved and cannot be reused. Unlike
+Cloud SQL or Compute Engine, there is no API call to "undelete" a GCS bucket into Crossplane
+management — the provider's `Create()` will fail until the retention window expires.
+
+**Operator Action**
+
+- **Wait for soft-delete retention to expire:** After 7 days (or the configured retention
+  period), the bucket name is released and Crossplane can recreate it. Flip management policy
+  back to `FullPolicies` once the window has elapsed.
+- **Restore from soft-delete (recommended):** GCP allows restoring a soft-deleted bucket
+  within the retention window:
+  ```bash
+  gcloud storage buckets restore gs://<bucket-name>
+  ```
+  After restoration, the bucket is live again. Crossplane (in Observe mode) will detect it on
+  the next reconcile cycle and clear the `ReconcileError`.
+- **Reduce soft-delete retention:** If immediate recreation is required, set the retention to
+  the minimum (0 seconds = disabled) before deleting:
+  ```bash
+  gcloud storage buckets update gs://<bucket-name> --soft-delete-duration=0
+  ```
+  Note: this removes data recovery protection for the bucket.
+
+---
+
 ## Test Coverage by Resource Type
 
 This section documents which fields are included in the drift-reconcile-sim test suite and why
@@ -276,16 +332,18 @@ Fixture: `crossplane/examples/objectstorage/gcs/xobjectstorage-drift-test.yaml`
 
 **Tested:**
 
-| Attribute | Field | Expected Outcome |
-|-----------|-------|-----------------|
-| `bucket-location` | `location` | `error` — immutable after creation |
-| `bucket-storage-class` | `storageClass` (NEARLINE, COLDLINE, ARCHIVE) | `reconciled` |
-| `bucket-public-access-prevention` | `publicAccessPrevention` → `inherited` | `reconciled` |
-| `bucket-uniform-bucket-level-access` | `uniformBucketLevelAccess` → `false` | `reconciled` — fixture sets desired=`true`, not DET-01 |
-| `bucket-versioning` | `versioning[0].enabled` → `true` | `reconciled` — nested bool inside explicitly-set object, not DET-01 |
-| `bucket-soft-delete-retention-decrease` | `softDeletePolicy[0].retentionDurationSeconds` → `0` | `reconciled` |
-| `bucket-soft-delete-retention-increase` | `softDeletePolicy[0].retentionDurationSeconds` scale_up (7d → 14d) | `reconciled` |
-| `bucket-default-event-based-hold` | `defaultEventBasedHold` → `true` | `drift_not_detected` — **DET-01** regression test |
+| Attribute | Field | Actual Outcome |
+|-----------|-------|----------------|
+| `bucket-location` | `location` | 🔇 `drift_not_detected` — GCS accepts PATCH without error but silently ignores the immutable field; `atProvider.location` unchanged → no diff (same silent-accept pattern as CloudSQL `region`) |
+| `bucket-storage-class` | `storageClass` (NEARLINE, COLDLINE, ARCHIVE) | ✅ `reconciled` |
+| `bucket-public-access-prevention` | `publicAccessPrevention` → `inherited` | ✅ `reconciled` |
+| `bucket-uniform-bucket-level-access` | `uniformBucketLevelAccess` → `false` | ✅ `reconciled` — fixture sets desired=`true`, not DET-01 |
+| `bucket-versioning` | `versioning[0].enabled` → `true` | ✅ `reconciled` — nested bool inside explicitly-set object, not DET-01 |
+| `bucket-soft-delete-retention-decrease` | `softDeletePolicy[0].retentionDurationSeconds` → `0` | ✅ `reconciled` |
+| `bucket-soft-delete-retention-increase` | `softDeletePolicy[0].retentionDurationSeconds` scale_up (7d → 14d) | ✅ `reconciled` |
+| `bucket-default-event-based-hold` | `defaultEventBasedHold` → `true` | 🔇 `drift_not_detected` — **DET-01** regression test |
+| `bucket-retention-period` | `retentionPolicy[0].retentionPeriod` → `172800` | 🔇 `drift_not_detected` — **NO-BASELINE**: composition does not set `retentionPolicy`; field absent from `forProvider`; `diffMaps` cannot detect the externally-set value |
+| `bucket-deletion` | delete underlying GCP resource | ❌ `failed` — Signal 2 fired (`ReconcileError`: resource not found); Crossplane flipped to FullPolicies but bucket recreation failed — **LIM-04** |
 
 **Not tested:**
 
@@ -295,7 +353,6 @@ Fixture: `crossplane/examples/objectstorage/gcs/xobjectstorage-drift-test.yaml`
 | `labels` | NO-BASELINE | Externally-added label keys don't exist in `forProvider.labels`; `diffMaps` only checks keys already in `forProvider` — additions are invisible |
 | `autoclass.enabled`, `autoclass.terminalStorageClass` | NO-BASELINE + DET-01 | Not set in composition; autoclass is disabled by default (desired=`false`); `terminalStorageClass` is only meaningful when `enabled=true` |
 | `encryption.defaultKmsKeyName` | NO-BASELINE + DET-01 | Not set in composition; desired=`""` (empty string zero value) |
-| `retentionPolicy.retentionPeriod` | NO-BASELINE | Not set in composition; externally-set retention period is invisible to `diffMaps` |
 | `retentionPolicy.isLocked` | DET-01 + GCP-CONSTRAINT | Desired=`false` (zero value); also irreversible — once locked the retention policy can never be shortened or removed |
 | `cors` | ARRAY-TYPE | Multi-value nested array — `buildBody` cannot construct it |
 | `lifecycleRule` | ARRAY-TYPE | Multi-value nested array — `buildBody` cannot construct it |
@@ -515,10 +572,12 @@ dedicated GCP API endpoints not yet implemented.
 
 | Attribute | Field | Expected Outcome |
 |-----------|-------|-----------------|
-| `shielded-secure-boot` | `shieldedInstanceConfig[0].enableSecureBoot` → `false` | `reconciled` — composition sets desired=`true`, not DET-01; GCP records change in API even before restart |
-| `shielded-integrity-monitoring` | `shieldedInstanceConfig[0].enableIntegrityMonitoring` → `false` | `reconciled` — can be toggled on running instance without restart |
-| `machine-type-change` | `machineType` → `e2-small` | `reconciled` — adapter stops instance, calls `setMachineType`, starts instance; Crossplane restores `e2-micro` |
-| `boot-disk-size-increase` | `bootDisk[0].initializeParams[0].size` scale_up (20 GB → 40 GB) | `failed` — drift is detected and reconcile is attempted but GCP permanently rejects disk shrink (same pattern as LIM-01) |
+| `shielded-secure-boot` | `shieldedInstanceConfig[0].enableSecureBoot` → `false` | ✅ `reconciled` (expected — clean run pending; previous run hit GCE 404 due to stale fixture) |
+| `shielded-integrity-monitoring` | `shieldedInstanceConfig[0].enableIntegrityMonitoring` → `false` | ✅ `reconciled` (expected — clean run pending) |
+| `machine-type-change` | `machineType` → `e2-small` | ✅ `reconciled` (expected post `allowStoppingForUpdate: true` fix — clean run pending; previous run failed before fix) |
+| `boot-disk-size-increase` | `bootDisk[0].initializeParams[0].size` scale_up (20 GB → 40 GB) | ❌ `failed` — drift detected; Crossplane refuses ForceNew: "cannot change disk_size from 40 to 20"; same constraint as **LIM-01** |
+| `boot-disk-size-decrease` | `bootDisk[0].initializeParams[0].size` scale_down (20 → 10 GB) | ⚠️ `error` — GCP 400: disk shrink rejected at mutation level; no state change |
+| `instance-deletion` | delete underlying GCP resource | ✅ `reconciled` — Signal 2 (`ReconcileError`: resource not found); FullPolicies recreates instance |
 
 **Not tested:**
 
