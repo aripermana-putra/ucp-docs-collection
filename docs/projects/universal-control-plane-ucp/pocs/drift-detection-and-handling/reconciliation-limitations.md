@@ -250,6 +250,320 @@ of provider access to the resource. The bucket becomes permanently unmanageable 
 
 ---
 
+## Test Coverage by Resource Type
+
+This section documents which fields are included in the drift-reconcile-sim test suite and why
+certain fields are intentionally excluded. Config files live in `backend/drift-sim/config/`.
+
+### Exclusion Reason Codes
+
+| Code | Meaning |
+|------|---------|
+| **DET-01** | Desired state is a Go zero value (`false`, `0`, `""`). Upjet late-init overwrites `forProvider` before the drift scan fires — the drift is undetectable in Observe mode. See [DET-01](#det-01--upjet-late-initialization-overwrites-boolean-zero-value-desired-state). |
+| **IMMUTABLE** | GCP permanently rejects the mutation. Tested as `error` outcome — confirms the constraint is documented. |
+| **NO-BASELINE** | Field is not set by the composition, so it is absent from `forProvider`. The drift detector (`diffMaps`) only iterates keys present in `forProvider`; changes to absent fields are invisible to Signal 1. |
+| **ARRAY-TYPE** | The adapter's `buildBody` helper constructs scalar dot-notation bodies only. Arrays and multi-value nested objects require custom adapter logic not yet implemented. |
+| **ENDPOINT** | Mutation requires a separate GCP API endpoint not yet implemented in the current adapter (e.g. a dedicated POST endpoint instead of the general PATCH/PUT). These are real-world drift scenarios — adapter extension is required to test them, but the drift is detectable once the adapter sends the mutation. |
+| **GCP-CONSTRAINT** | GCP restriction makes the test unsafe, permanently destructive, or inapplicable for the test resource configuration (e.g. feature only valid for a specific region type). |
+| **NOT-API-FIELD** | Field exists in the Crossplane CRD but is not a GCP API resource field — it controls Crossplane's own behavior (e.g. `forceDestroy`, `deletionProtection`, `*Ref`, `*Selector`). |
+
+---
+
+### GCP / Cloud Storage — `Bucket` (`storage.gcp.upbound.io/v1beta2`)
+
+Config: `backend/drift-sim/config/gcs.yaml`
+Fixture: `crossplane/examples/objectstorage/gcs/xobjectstorage-drift-test.yaml`
+
+**Tested:**
+
+| Attribute | Field | Expected Outcome |
+|-----------|-------|-----------------|
+| `bucket-location` | `location` | `error` — immutable after creation |
+| `bucket-storage-class` | `storageClass` (NEARLINE, COLDLINE, ARCHIVE) | `reconciled` |
+| `bucket-public-access-prevention` | `publicAccessPrevention` → `inherited` | `reconciled` |
+| `bucket-uniform-bucket-level-access` | `uniformBucketLevelAccess` → `false` | `reconciled` — fixture sets desired=`true`, not DET-01 |
+| `bucket-versioning` | `versioning[0].enabled` → `true` | `reconciled` — nested bool inside explicitly-set object, not DET-01 |
+| `bucket-soft-delete-retention-decrease` | `softDeletePolicy[0].retentionDurationSeconds` → `0` | `reconciled` |
+| `bucket-soft-delete-retention-increase` | `softDeletePolicy[0].retentionDurationSeconds` scale_up (7d → 14d) | `reconciled` |
+| `bucket-default-event-based-hold` | `defaultEventBasedHold` → `true` | `drift_not_detected` — **DET-01** regression test |
+
+**Not tested:**
+
+| Field | Code | Note |
+|-------|------|------|
+| `project` | IMMUTABLE | Buckets cannot be moved between GCP projects; field is set at creation and never changes |
+| `labels` | NO-BASELINE | Externally-added label keys don't exist in `forProvider.labels`; `diffMaps` only checks keys already in `forProvider` — additions are invisible |
+| `autoclass.enabled`, `autoclass.terminalStorageClass` | NO-BASELINE + DET-01 | Not set in composition; autoclass is disabled by default (desired=`false`); `terminalStorageClass` is only meaningful when `enabled=true` |
+| `encryption.defaultKmsKeyName` | NO-BASELINE + DET-01 | Not set in composition; desired=`""` (empty string zero value) |
+| `retentionPolicy.retentionPeriod` | NO-BASELINE | Not set in composition; externally-set retention period is invisible to `diffMaps` |
+| `retentionPolicy.isLocked` | DET-01 + GCP-CONSTRAINT | Desired=`false` (zero value); also irreversible — once locked the retention policy can never be shortened or removed |
+| `cors` | ARRAY-TYPE | Multi-value nested array — `buildBody` cannot construct it |
+| `lifecycleRule` | ARRAY-TYPE | Multi-value nested array — `buildBody` cannot construct it |
+| `customPlacementConfig.dataLocations` | GCP-CONSTRAINT + ARRAY-TYPE | Only applies to dual-region buckets; test bucket uses `US` (multi-region); `dataLocations` is also an array |
+| `rpo` | GCP-CONSTRAINT | `ASYNC_TURBO` is only valid for dual-region buckets; test bucket uses `US` (multi-region) |
+| `website.mainPageSuffix`, `website.notFoundPage` | DET-01 | Desired=`""` (string zero value) |
+| `logging.logBucket`, `logging.logObjectPrefix` | NO-BASELINE + DET-01 | Not set in composition; desired=`""` (string zero value) |
+| `requesterPays` | DET-01 + GCP-CONSTRAINT | Desired=`false` (zero value); also enabling it permanently breaks Crossplane observation (see LIM-03) |
+| `enableObjectRetention` | DET-01 + GCP-CONSTRAINT | Desired=`false` (zero value); also irreversible — once enabled on a bucket it cannot be disabled |
+| `uniformBucketLevelAccess` (desired=`false` scenario) | DET-01 | The reverse scenario (desired=`false`, externally enabled) is undetectable; the current fixture avoids this by setting desired=`true` |
+| `forceDestroy` | NOT-API-FIELD | Controls Crossplane deletion behaviour only |
+
+---
+
+### GCP / Cloud SQL — `DatabaseInstance` (`sql.gcp.upbound.io/v1beta2`)
+
+Configs: `backend/drift-sim/config/cloudsql-a.yaml`, `cloudsql-b.yaml`
+Fixtures: `crossplane/examples/dbaas/cloudsql/xdatabase-drift-test.yaml` (Suite A),
+`crossplane/examples/dbaas/cloudsql/xdatabase-drift-test-b.yaml` (Suite B)
+
+Composition sets explicitly: `databaseVersion`, `project`, `region`, `deletionProtection: false`
+(TF-only flag), `settings.tier`, `settings.diskSize`, `settings.diskType: PD_SSD`,
+`settings.diskAutoresize: true`, `settings.availabilityType: ZONAL`,
+`settings.deletionProtectionEnabled: false`, `settings.userLabels.ucp-managed: "true"`,
+`settings.ipConfiguration.ipv4Enabled`.
+All other fields are late-initialized from GCP defaults after first provision.
+
+**Tested:**
+
+| Attribute | Field | Actual Outcome |
+|-----------|-------|----------------|
+| `disk-size-increase` | `settings[0].diskSize` scale_up (20 → 40 GB) | ❌ `failed` — drift detected; Crossplane refuses ForceNew: "cannot change disk_size from 40 to 20" — **LIM-01** |
+| `disk-size-decrease` | `settings[0].diskSize` scale_down (20 → 10 GB) | ⚠️ `error` — GCP 400: "The disk size cannot decrease" (mutation rejected at API level) |
+| `db-version-upgrade` | `databaseVersion` → `POSTGRES_16` | ⚠️ `error` — adapter timeout (stale result; 30 min cap hit; fixed to 60 min but not re-run; expected outcome ❌ `failed` — ForceNew same as disk-size-increase) |
+| `db-version-downgrade` | `databaseVersion` → `POSTGRES_13` | ⚠️ `error` — GCP 400: "Not allowed to do major version upgrade from POSTGRES_15 to POSTGRES_13" |
+| `availability-type` → REGIONAL | `settings[0].availabilityType` → `REGIONAL` | ✅ `reconciled` — HA transition takes 12–20 min |
+| `availability-type` → ZONAL | `settings[0].availabilityType` → `ZONAL` | 🔇 `drift_not_detected` — desired=`ZONAL`; mutation matches desired; no diff |
+| `settings-tier` | `settings[0].tier` → `db-g1-small` | ✅ `reconciled` — instance restart required (~12 min) |
+| `disk-autoresize` | `settings[0].diskAutoresize` → `false` | ✅ `reconciled` — composition sets desired=`true`, not DET-01 |
+| `region-change` | `region` → `us-east1` | 🔇 `drift_not_detected` — GCP accepts PATCH without error but silently ignores the immutable field; `atProvider.region` unchanged → no diff |
+| `instance-type-change` | `instanceType` → `READ_REPLICA_INSTANCE` | ⚠️ `error` — GCP 400: "instanceType cannot be updated" |
+| `disk-type-change` | `settings[0].diskType` → `PD_HDD` | ⚠️ `error` — GCP 400: "Storage type cannot be changed" |
+| `deletion-protection-enable` | `settings[0].deletionProtectionEnabled` → `true` | ✅ `reconciled` — composition sets desired=`false`; drift detected via Signal 1; Crossplane restores |
+| `user-label-value-change` | `settings[0].userLabels.ucp-managed` → `"modified"` | ✅ `reconciled` — value-change on an existing key is detectable |
+| `instance-deletion` | delete underlying GCP resource | ✅ `reconciled` — Signal 2 (`ReconcileError`: resource not found); FullPolicies recreates instance |
+
+> **Note on `region-change`:** Unlike `instance-type-change` and `disk-type-change` which GCP
+> rejects with HTTP 400, the `region` field is accepted by the SQL Admin API with no error but
+> the value is not changed. This silent-accept-and-ignore behavior means the platform sees no
+> mutation error and no state change — the field appears consistent even though the desired
+> mutation was effectively a no-op.
+
+> **Note on `deletionProtection` vs `settings.deletionProtectionEnabled`:** The top-level
+> `deletionProtection` field in provider-upjet-gcp is a **Terraform client-side flag only** —
+> it prevents `terraform destroy` but has no GCP API representation and is never reflected in
+> `atProvider`. The actual GCP deletion protection field is `settings.deletionProtectionEnabled`.
+> Use this path for `at_provider_path`, `crossplane_path`, and `adapter_field` in test configs.
+
+**Not tested:**
+
+| Field | Code | Note |
+|-------|------|------|
+| **Top-level** | | |
+| `project` | IMMUTABLE | Composition sets it at creation; GCP does not allow moving instances between projects |
+| `encryptionKeyName` | NO-BASELINE + GCP-CONSTRAINT | Not set in composition; CMEK is immutable after creation |
+| `masterInstanceName` | NOT-API-FIELD | Read replicas only; not applicable to primary instances |
+| `replicaConfiguration` | NOT-API-FIELD | Read replicas only |
+| `onPremisesConfiguration` | NOT-API-FIELD | External server migration only |
+| `maintenanceVersion` | GCP-CONSTRAINT | Minor version selection during maintenance windows; not directly PATCH-able via Admin API |
+| **settings — mutable scalars** | | |
+| `settings.activationPolicy` | NO-BASELINE | Not set in composition; GCP default "ALWAYS" is late-init'd (non-zero); a value-change test is possible but low priority |
+| `settings.storageAutoResizeLimit` | NO-BASELINE | Not set in composition; GCP default `0` after late-init → DET-01 |
+| `settings.connectorEnforcement` | NO-BASELINE | Not set in composition; GCP default "NOT_REQUIRED" after late-init |
+| **settings — immutable after creation** | | |
+| `settings.collation` | NO-BASELINE + GCP-CONSTRAINT | Not set in composition; immutable after instance creation |
+| `settings.timeZone` | NOT-API-FIELD + GCP-CONSTRAINT | SQL Server only; immutable after creation |
+| `settings.pricingPlan` | NO-BASELINE + GCP-CONSTRAINT | Only `PER_USE` valid for second-gen instances; effectively read-only |
+| `settings.replicationType` | NOT-API-FIELD | First-generation instances only; deprecated |
+| **settings — complex objects** | | |
+| `settings.locationPreference` | NO-BASELINE | Not set in composition; `zone` and `secondaryZone` are derived from `region` |
+| `settings.backupConfiguration` | NO-BASELINE | Not set in composition; complex nested object with multiple sub-fields |
+| `settings.maintenanceWindow` | NO-BASELINE | Not set in composition |
+| `settings.insightsConfig` | NO-BASELINE | Not set in composition |
+| `settings.passwordValidationPolicy` | NO-BASELINE | Not set in composition |
+| `settings.dataCacheConfig` | NO-BASELINE + GCP-CONSTRAINT | Enterprise Plus tier only |
+| `settings.activeDirectoryConfig` | NOT-API-FIELD | SQL Server only |
+| `settings.sqlServerAuditConfig` | NOT-API-FIELD | SQL Server only |
+| **settings — arrays** | | |
+| `settings.databaseFlags` | ARRAY-TYPE | Key-value flag array — `buildBody` cannot construct it |
+| **settings.ipConfiguration — sub-fields** | | |
+| `settings.ipConfiguration.ipv4Enabled` → `false` | GCP-CONSTRAINT | Disabling public IP without a private network configured causes GCP 400: "At least one of Public IP or Private IP must be enabled"; test fixture has no private network |
+| `settings.ipConfiguration.authorizedNetworks` | ARRAY-TYPE | CIDR block array |
+| `settings.ipConfiguration.requireSsl` | DET-01 | Desired=`false` (zero value); deprecated in favour of `sslMode` |
+| `settings.ipConfiguration.sslMode` | NO-BASELINE | Not set in composition; default empty string → DET-01 |
+| `settings.ipConfiguration.privateNetwork` | NO-BASELINE + GCP-CONSTRAINT | Not set in composition; VPC peering configuration; largely immutable after creation |
+| `settings.ipConfiguration.enablePrivatePathForGoogleCloudServices` | DET-01 | Desired=`false` (zero value) |
+| `settings.ipConfiguration.allocatedIpRange` | NO-BASELINE | Not set in composition |
+| **userLabels — label-addition scenario** | | |
+| `settings.userLabels` (new key added externally) | NO-BASELINE | `diffMaps` only checks keys present in `forProvider`; adding a brand-new label key externally is invisible to Signal 1 |
+| **Crossplane control fields** | | |
+| `deletionProtection` | NOT-API-FIELD | TF client-side deletion guard — not a GCP API field; never reflected in `atProvider`; use `settings.deletionProtectionEnabled` instead |
+| `rootPassword` | GCP-CONSTRAINT | Mutating root credentials during a live test risks breaking active connections |
+| `*Ref`, `*Selector` fields | NOT-API-FIELD | Crossplane reference resolution — not GCP API fields |
+
+---
+
+### GCP / GKE — `Cluster` (`container.gcp.upbound.io/v1beta2`)
+
+Config: `backend/drift-sim/config/gke-cluster.yaml`
+Fixture: `crossplane/examples/kubernetes/gke/xkubernetescluster-drift-test.yaml`
+
+Composition sets explicitly: `location`, `releaseChannel.channel`, `loggingService: "none"`,
+`monitoringService: "none"`, `deletionProtection: false`. All other fields are late-initialized
+from GCP defaults.
+
+**Tested:**
+
+| Attribute | Field | Expected Outcome |
+|-----------|-------|-----------------|
+| `cluster-network` | `network` | `error` — immutable |
+| `cluster-location` | `location` | `error` — immutable |
+| `cluster-ipv4-cidr` | `clusterIpv4Cidr` | `error` — immutable |
+| `cluster-subnetwork` | `subnetwork` | `error` — immutable |
+| `cluster-release-channel` | `releaseChannel[0].channel` → `RAPID` | `reconciled` (no reprovision — channel downgrade not supported) |
+| `cluster-logging-service` | `loggingService` → `logging.googleapis.com/kubernetes` | `reconciled` — desired=`"none"` (non-empty), not DET-01 |
+| `cluster-monitoring-service` | `monitoringService` → `monitoring.googleapis.com/kubernetes` | `reconciled` — desired=`"none"` (non-empty), not DET-01 |
+| `cluster-pd-csi-driver` | `addonsConfig[0].gcePersistentDiskCsiDriverConfig[0].enabled` → `false` | `reconciled` — enabled by default on GKE 1.14+, desired=`true` late-init, not DET-01 |
+| `cluster-filestore-csi-driver` | `addonsConfig[0].gcpFilestoreCsiDriverConfig[0].enabled` → `false` | `reconciled` — enabled by default on GKE 1.21+, desired=`true` late-init, not DET-01 |
+
+**Not tested:**
+
+| Field | Code | Note |
+|-------|------|------|
+| `enableIntranodeVisibility` | DET-01 | Disabled by default; desired=`false` after late-init |
+| `enableShieldedNodes` | DET-01 | Disabled by default; desired=`false` after late-init |
+| `enableLegacyAbac` | DET-01 | Disabled by default; desired=`false` after late-init |
+| `networkPolicy.enabled` | DET-01 | Disabled by default; desired=`false` after late-init |
+| `costManagementConfig.enabled` | DET-01 | Disabled by default; desired=`false` after late-init |
+| `identityServiceConfig.enabled` | DET-01 | Disabled by default; desired=`false` after late-init |
+| `addonsConfig.horizontalPodAutoscaling.disabled` | DET-01 | `disabled: false` (HPA enabled) is the zero value — externally disabling is undetectable |
+| `addonsConfig.httpLoadBalancing.disabled` | DET-01 | Same as above |
+| `addonsConfig.networkPolicyConfig.disabled` | DET-01 | Same pattern |
+| `addonsConfig.dnsCacheConfig.enabled` | DET-01 | Disabled by default; desired=`false` |
+| `masterAuthorizedNetworksConfig.cidrBlocks` | ARRAY-TYPE | CIDR block array |
+| `loggingConfig.enableComponents` | ARRAY-TYPE | Component name array |
+| `monitoringConfig.enableComponents` | ARRAY-TYPE | Component name array |
+| `nodeLocations` | ARRAY-TYPE | Zone string array |
+| `workloadIdentityConfig` | NO-BASELINE | Not set in composition; complex object |
+| `maintenancePolicy` | NO-BASELINE | Not set in composition |
+| `resourceLabels` | NO-BASELINE | Not set in composition; externally-added keys invisible to `diffMaps` |
+| `networkingMode`, `datapathProvider` | NO-BASELINE | Not set in composition; likely immutable after creation |
+| `ipAllocationPolicy.*` | NO-BASELINE + IMMUTABLE | Not set in composition; most sub-fields are immutable after creation |
+| `deletionProtection` | NOT-API-FIELD | Controls Crossplane deletion behaviour only |
+| `*Ref`, `*Selector` fields | NOT-API-FIELD | Crossplane reference resolution — not GCP API fields |
+
+---
+
+### GCP / GKE — `NodePool` (`container.gcp.upbound.io/v1beta2`)
+
+Config: `backend/drift-sim/config/gke-nodepool.yaml`
+Fixture: `crossplane/examples/kubernetes/gke/xkubernetescluster-drift-test.yaml` (same as Cluster)
+
+Composition sets explicitly: `location`, `initialNodeCount`, `autoscaling.minNodeCount`,
+`autoscaling.maxNodeCount`, `management.autoRepair: true`, `management.autoUpgrade: true`,
+`nodeConfig.machineType`, `nodeConfig.diskSizeGb`, `nodeConfig.oauthScopes`,
+`nodeConfig.shieldedInstanceConfig.enableSecureBoot: true`.
+
+**Tested:**
+
+| Attribute | Field | Expected Outcome |
+|-----------|-------|-----------------|
+| `nodepool-machine-type` | `nodeConfig[0].machineType` | `error` — nodeConfig is immutable after pool creation |
+| `nodepool-disk-type` | `nodeConfig[0].diskType` (pd-ssd, pd-balanced) | `error` — nodeConfig is immutable after pool creation |
+| `nodepool-image-type` | `nodeConfig[0].imageType` (COS_CONTAINERD, UBUNTU_CONTAINERD) | `reconciled` |
+| `nodepool-max-surge` | `upgradeSettings[0].maxSurge` scale_up (1 → 2) | `reconciled` — mutable via `updateNodePool` PUT |
+
+**Not tested:**
+
+| Field | Code | Note |
+|-------|------|------|
+| `autoscaling.minNodeCount`, `autoscaling.maxNodeCount` | ENDPOINT | Require `setAutoscaling` POST endpoint; current adapter only implements `updateNodePool` PUT |
+| `management.autoRepair`, `management.autoUpgrade` | ENDPOINT | Require `setManagement` POST endpoint |
+| `upgradeSettings.maxUnavailable` | DET-01 | Late-initialized to `0` (integer zero value) |
+| `upgradeSettings.strategy` → `BLUE_GREEN` | GCP-CONSTRAINT | Requires `blueGreenSettings` to be populated simultaneously — not expressible as a single scalar mutation |
+| `nodeConfig.diskSizeGb` | ENDPOINT | Not included in `updateNodePool` PUT body; mutation would be silently ignored, producing a false `drift_not_detected` |
+| `nodeConfig.labels` | NO-BASELINE | Not set in composition; externally-added label keys invisible to `diffMaps` |
+| `nodeConfig.taint` | ARRAY-TYPE | Array of `{effect, key, value}` objects |
+| `nodeConfig.preemptible`, `nodeConfig.spot` | DET-01 | Desired=`false` (zero value); also both are immutable after pool creation |
+| `nodeConfig.accelerators` | ARRAY-TYPE + NO-BASELINE | GPU config array; not set in composition |
+| `nodeConfig.kubeletConfig`, `nodeConfig.linuxNodeConfig` | NO-BASELINE | Not set in composition |
+| `nodeConfig.shieldedInstanceConfig.enableIntegrityMonitoring` | DET-01 | Desired=`false` after late-init |
+| `networkConfig.enablePrivateNodes` | DET-01 | Desired=`false` after late-init |
+| `nodeLocations` | ARRAY-TYPE | Zone string array |
+| `version` | GCP-CONSTRAINT | Node version upgrades are slow and depend on available GKE minor versions; tested manually |
+| `placementPolicy` | NO-BASELINE + GCP-CONSTRAINT | Not set in composition; `COMPACT` policy requires homogeneous machine types |
+| `*Ref`, `*Selector`, `clusterRef` | NOT-API-FIELD | Crossplane reference resolution fields |
+
+---
+
+### GCP / Compute Engine — `Instance` (`compute.gcp.upbound.io/v1beta1`)
+
+Config: `backend/drift-sim/config/gce.yaml`
+Fixture: `crossplane/examples/compute/gcp/xcomputeinstance-drift-test.yaml`
+
+Composition sets explicitly: `machineType` (from size/machineType parameter), `zone`, `project`,
+`bootDisk[0].initializeParams[0].image`, `bootDisk[0].initializeParams[0].size`,
+`shieldedInstanceConfig[0].enableSecureBoot: true`, `shieldedInstanceConfig[0].enableVtpm: true`,
+`shieldedInstanceConfig[0].enableIntegrityMonitoring: true`,
+`networkInterface[0].network`, `networkInterface[0].accessConfig[0].networkTier: PREMIUM` (when `publicIp: true`).
+All other fields are late-initialized from GCP defaults after first provision.
+
+Adapter note: the GCE adapter implements `instances.setShieldedInstanceConfig` (PATCH). Mutations to
+other field groups (`machineType`, `tags`, `labels`, `metadata`, `scheduling`) each require separate
+dedicated GCP API endpoints not yet implemented.
+
+**Tested:**
+
+| Attribute | Field | Expected Outcome |
+|-----------|-------|-----------------|
+| `shielded-secure-boot` | `shieldedInstanceConfig[0].enableSecureBoot` → `false` | `reconciled` — composition sets desired=`true`, not DET-01; GCP records change in API even before restart |
+| `shielded-integrity-monitoring` | `shieldedInstanceConfig[0].enableIntegrityMonitoring` → `false` | `reconciled` — can be toggled on running instance without restart |
+| `machine-type-change` | `machineType` → `e2-small` | `reconciled` — adapter stops instance, calls `setMachineType`, starts instance; Crossplane restores `e2-micro` |
+| `boot-disk-size-increase` | `bootDisk[0].initializeParams[0].size` scale_up (20 GB → 40 GB) | `failed` — drift is detected and reconcile is attempted but GCP permanently rejects disk shrink (same pattern as LIM-01) |
+
+**Not tested:**
+
+| Field | Code | Note |
+|-------|------|------|
+| **shieldedInstanceConfig** | | |
+| `shieldedInstanceConfig[0].enableVtpm` | GCP-CONSTRAINT | GCP rejects disabling vTPM while `enableSecureBoot=true`; would require disabling Secure Boot first in the same request — not expressible as a single-field mutation |
+| **bootDisk** | | |
+| `bootDisk[0].initializeParams[0].image` | IMMUTABLE | Boot disk image is immutable after creation; any change requires reprovisioning |
+| **machineType and zone** | | |
+| `zone` | IMMUTABLE | Zone is immutable after instance creation |
+| `project` | IMMUTABLE | Project is immutable after instance creation |
+| **networkInterface — immutable after creation** | | |
+| `networkInterface[0].network` | IMMUTABLE | Network is immutable after creation |
+| `networkInterface[0].subnetwork` | IMMUTABLE | Subnetwork is immutable after creation |
+| `networkInterface[0].networkIp` | IMMUTABLE | Internal IP is immutable after creation (though ephemeral) |
+| `networkInterface[0].accessConfig[0].networkTier` | ENDPOINT | Changing network tier requires deleting and re-adding the access config via `accessConfigs.delete` + `accessConfigs.insert` — not a single PATCH |
+| `networkInterface[0].aliasIpRanges` | ARRAY-TYPE + ENDPOINT | Array of IP ranges; uses `updateNetworkInterface` endpoint |
+| **fields needing dedicated endpoints** | | |
+| `tags` | ENDPOINT | `instances.setTags` (POST); requires current tag fingerprint |
+| `labels` | NO-BASELINE + ENDPOINT | Not set in composition; `instances.setLabels` (POST) requires current label fingerprint |
+| `metadata` | NO-BASELINE + ENDPOINT | Not set in composition; `instances.setMetadata` (POST) requires current metadata fingerprint; array of key-value items |
+| `scheduling.automaticRestart` | NO-BASELINE + ENDPOINT | Not set in composition; `instances.setScheduling` endpoint |
+| `scheduling.onHostMaintenance` | NO-BASELINE + ENDPOINT | Not set in composition; `instances.setScheduling` endpoint |
+| `scheduling.preemptible` | NO-BASELINE + GCP-CONSTRAINT + ENDPOINT | Not set in composition; immutable after creation (cannot change between preemptible and standard) |
+| **DET-01 fields** | | |
+| `canIpForward` | DET-01 + IMMUTABLE | Desired=`false` (zero value); also immutable after creation |
+| `description` | DET-01 | Desired=`""` (string zero value) |
+| `minCpuPlatform` | DET-01 | Desired=`""` (string zero value) |
+| `hostname` | DET-01 + GCP-CONSTRAINT | Desired=`""` (zero value); custom hostname is immutable after creation |
+| `advancedMachineFeatures.enableNestedVirtualization` | DET-01 + GCP-CONSTRAINT | Desired=`false`; immutable after creation |
+| **complex objects and arrays** | | |
+| `serviceAccount` | NO-BASELINE + ENDPOINT + ARRAY-TYPE | Not set in composition; requires `instances.setServiceAccount` endpoint |
+| `guestAccelerators` | NO-BASELINE + ARRAY-TYPE + GCP-CONSTRAINT | Not set in composition; GPU config; immutable after creation |
+| `attachedDisk` | NO-BASELINE + ARRAY-TYPE + ENDPOINT | Additional disks; `disks.attachDisk` / `disks.detachDisk` endpoints |
+| `scratchDisk` | NO-BASELINE + GCP-CONSTRAINT + ARRAY-TYPE | Not set in composition; local SSDs are immutable after creation |
+| `resourcePolicies` | NO-BASELINE + ARRAY-TYPE | Not set in composition; maintenance policies |
+| `reservationAffinity` | NO-BASELINE | Not set in composition |
+| `confidentialInstanceConfig.enableConfidentialCompute` | GCP-CONSTRAINT + IMMUTABLE | Immutable after creation; requires a compatible machine type |
+| **Crossplane control fields** | | |
+| `deletionProtection` | NOT-API-FIELD | Controls Crossplane deletion behaviour only |
+| `*Ref`, `*Selector` fields | NOT-API-FIELD | Crossplane reference resolution — not GCP API fields |
+
+---
+
 ## Test Procedure
 
 New drift scenarios are tested using the **drift-reconcile-sim** tool (`backend/drift-sim`).
@@ -300,10 +614,10 @@ Run from the **repository root** so that `xr_fixture` paths resolve correctly:
 
 ```bash
 # Single suite
-/tmp/drift-sim --config backend/drift-sim/config/<service>.yaml --project <gcp-project-id>
+/tmp/drift-sim --config backend/drift-sim/config/<service>.yaml
 
 # Multiple suites via plan
-/tmp/drift-sim --plan backend/drift-sim/config/plan.yaml --project <gcp-project-id>
+/tmp/drift-sim --plan backend/drift-sim/config/plan.yaml
 ```
 
 The tool writes a timestamped Markdown report to `output/<config>-<timestamp>.md`.
