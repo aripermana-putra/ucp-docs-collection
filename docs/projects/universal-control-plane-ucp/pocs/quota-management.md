@@ -69,6 +69,8 @@ Quota enforcement only works correctly once tenant isolation is in place. Specif
 
 ## Sub-Documents
 
+- [PoC Plan](quota-management/poc-plan.md) — scope, technical approach, provider-agnostic
+  checklist, success criteria
 - [GCP Quota Concepts](quota-management/gcp-quota-concepts.md) — quota vs limit, types,
   defaults, error surfacing, billing effects
 - [GCP Quota APIs](quota-management/gcp-quota-apis.md) — Cloud Quotas API, ServiceUsage
