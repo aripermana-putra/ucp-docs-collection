@@ -31,7 +31,10 @@ concern. This PoC is about communicating with the cloud provider's own quota sys
 - **Provider interface** — define a `QuotaProvider` interface in the API server so the
   GCP implementation is one concrete implementation, not hardcoded logic. This is the
   extensibility contract for future providers.
-- **Resource type**: Cloud SQL instances only.
+- **Resource type**: Cloud SQL instances for this PoC. The `QuotaProvider` interface and
+  resource type mapping table are designed to be extensible — adding a new resource type
+  requires only adding an entry to the mapping and wiring `CheckPreProvision` to the
+  corresponding handler.
 - **Quota UI** — a new Quotas page in the frontend sidebar. Displays a filterable table
   of all quota metrics for the tenant's GCP project (service, quota name, limit, usage,
   usage percentage). Filter by service type (e.g. Cloud SQL, Compute Engine). Data is
@@ -42,7 +45,8 @@ concern. This PoC is about communicating with the cloud provider's own quota sys
 - UCP platform-level soft quotas (`quota_policies` table, `CheckQuota` middleware).
 - Quota increase requests (Cloud Quotas API `QuotaPreference`) — triggering increases is
   not part of this PoC.
-- Other resource types beyond Cloud SQL instances.
+- Pre-provision gates for resource types other than Cloud SQL (Compute, GKE, Storage,
+  Terraform) — deferred, not excluded permanently.
 - Other cloud providers (AWS, Azure, Omnia) — covered by the provider checklist below.
 - Quota alerting or threshold notifications.
 
@@ -97,8 +101,9 @@ implementation:
 | UCP resource type | GCP quota metric |
 |---|---|
 | `database` | `sqladmin.googleapis.com/quota/instances` |
-| `compute` | `compute.googleapis.com/quota/cpus` (regional — out of PoC scope) |
-| `k8s-cluster` | `container.googleapis.com/quota/clusters` (out of PoC scope) |
+| `compute` | `compute.googleapis.com/quota/cpus` (regional — deferred) |
+| `k8s-cluster` | `container.googleapis.com/quota/clusters` (deferred) |
+| `storage` | `storage.googleapis.com/quota/buckets` (deferred) |
 
 ### Quota UI
 
