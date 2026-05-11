@@ -557,24 +557,27 @@ Composition sets explicitly: `location`, `initialNodeCount`, `autoscaling.minNod
 Config: `backend/drift-sim/config/gce.yaml`
 Fixture: `crossplane/examples/compute/gcp/xcomputeinstance-drift-test.yaml`
 
-Composition sets explicitly: `machineType` (from size/machineType parameter), `zone`, `project`,
+Composition sets explicitly: `machineType` (from size/machineType parameter; drift test fixture uses `size: medium` → `e2-medium`), `zone`, `project`, `allowStoppingForUpdate: true`,
 `bootDisk[0].initializeParams[0].image`, `bootDisk[0].initializeParams[0].size`,
 `shieldedInstanceConfig[0].enableSecureBoot: true`, `shieldedInstanceConfig[0].enableVtpm: true`,
 `shieldedInstanceConfig[0].enableIntegrityMonitoring: true`,
 `networkInterface[0].network`, `networkInterface[0].accessConfig[0].networkTier: PREMIUM` (when `publicIp: true`).
 All other fields are late-initialized from GCP defaults after first provision.
 
-Adapter note: the GCE adapter implements `instances.setShieldedInstanceConfig` (PATCH). Mutations to
-other field groups (`machineType`, `tags`, `labels`, `metadata`, `scheduling`) each require separate
+Adapter note: the GCE adapter implements `instances.updateShieldedInstanceConfig` (PATCH) with a
+stop → update → start cycle — GCP requires the instance to be in STOPPED state for this operation.
+`machineType` changes use the same stop → `setMachineType` → start pattern.
+Mutations to other field groups (`tags`, `labels`, `metadata`, `scheduling`) each require separate
 dedicated GCP API endpoints not yet implemented.
 
 **Tested:**
 
-| Attribute | Field | Expected Outcome |
-|-----------|-------|-----------------|
-| `shielded-secure-boot` | `shieldedInstanceConfig[0].enableSecureBoot` → `false` | ✅ `reconciled` (expected — clean run pending; previous run hit GCE 404 due to stale fixture) |
-| `shielded-integrity-monitoring` | `shieldedInstanceConfig[0].enableIntegrityMonitoring` → `false` | ✅ `reconciled` (expected — clean run pending) |
-| `machine-type-change` | `machineType` → `e2-small` | ✅ `reconciled` (expected post `allowStoppingForUpdate: true` fix — clean run pending; previous run failed before fix) |
+| Attribute | Field | Actual Outcome |
+|-----------|-------|----------------|
+| `shielded-secure-boot` | `shieldedInstanceConfig[0].enableSecureBoot` → `false` | ✅ `reconciled` — drift detected (`desired=true, actual=false`); Crossplane restores via stop → updateShieldedInstanceConfig → start |
+| `shielded-integrity-monitoring` | `shieldedInstanceConfig[0].enableIntegrityMonitoring` → `false` | ⚠️ `error` — GCP 412: org policy `constraints/compute.requireShieldedVm` enforced on this project prevents disabling integrity monitoring — **GCP-CONSTRAINT** |
+| `shielded-vtpm` | `shieldedInstanceConfig[0].enableVtpm` → `false` | ⚠️ `error` — GCP 400: "vTPM should be enabled with integrity monitoring" — GCP coupling constraint prevents disabling vTPM while integrity monitoring is enabled — **GCP-CONSTRAINT** |
+| `machine-type-change` | `machineType` → `e2-small` | ✅ `reconciled` — stop → setMachineType → start via adapter; Crossplane restores to `e2-medium` (~3m44s) |
 | `boot-disk-size-increase` | `bootDisk[0].initializeParams[0].size` scale_up (20 GB → 40 GB) | ❌ `failed` — drift detected; Crossplane refuses ForceNew: "cannot change disk_size from 40 to 20"; same constraint as **LIM-01** |
 | `boot-disk-size-decrease` | `bootDisk[0].initializeParams[0].size` scale_down (20 → 10 GB) | ⚠️ `error` — GCP 400: disk shrink rejected at mutation level; no state change |
 | `instance-deletion` | delete underlying GCP resource | ✅ `reconciled` — Signal 2 (`ReconcileError`: resource not found); FullPolicies recreates instance |
@@ -583,8 +586,6 @@ dedicated GCP API endpoints not yet implemented.
 
 | Field | Code | Note |
 |-------|------|------|
-| **shieldedInstanceConfig** | | |
-| `shieldedInstanceConfig[0].enableVtpm` | GCP-CONSTRAINT | GCP rejects disabling vTPM while `enableSecureBoot=true`; would require disabling Secure Boot first in the same request — not expressible as a single-field mutation |
 | **bootDisk** | | |
 | `bootDisk[0].initializeParams[0].image` | IMMUTABLE | Boot disk image is immutable after creation; any change requires reprovisioning |
 | **machineType and zone** | | |
