@@ -32,6 +32,10 @@ concern. This PoC is about communicating with the cloud provider's own quota sys
   GCP implementation is one concrete implementation, not hardcoded logic. This is the
   extensibility contract for future providers.
 - **Resource type**: Cloud SQL instances only.
+- **Quota UI** — a new Quotas page in the frontend sidebar. Displays a filterable table
+  of all quota metrics for the tenant's GCP project (service, quota name, limit, usage,
+  usage percentage). Filter by service type (e.g. Cloud SQL, Compute Engine). Data is
+  fetched from the quota listing endpoint above.
 
 ### Out of Scope
 
@@ -40,7 +44,6 @@ concern. This PoC is about communicating with the cloud provider's own quota sys
   not part of this PoC.
 - Other resource types beyond Cloud SQL instances.
 - Other cloud providers (AWS, Azure, Omnia) — covered by the provider checklist below.
-- Frontend quota UI.
 - Quota alerting or threshold notifications.
 
 ---
@@ -96,6 +99,30 @@ implementation:
 | `database` | `sqladmin.googleapis.com/quota/instances` |
 | `compute` | `compute.googleapis.com/quota/cpus` (regional — out of PoC scope) |
 | `k8s-cluster` | `container.googleapis.com/quota/clusters` (out of PoC scope) |
+
+### Quota UI
+
+A new **Quotas** entry in the frontend sidebar navigation. When opened, it shows a full-page
+table of quota metrics fetched from `GET /api/v1/quota`.
+
+**Table columns:**
+
+| Column | Description |
+|---|---|
+| Service | GCP service name (e.g. `Cloud SQL`, `Compute Engine`) |
+| Quota name | Human-readable quota name (e.g. `Cloud SQL instances`) |
+| Limit | The GCP-granted limit value |
+| Usage | Current consumption |
+| Usage % | `usage / limit * 100`, displayed as a percentage bar |
+
+**Filter:** a dropdown above the table to filter rows by service type. Only services
+present in the fetched quota list appear as filter options. Default: show all.
+
+**Visual cues:**
+- Usage % bar turns yellow at ≥ 80%
+- Usage % bar turns red at ≥ 100% (at limit)
+
+The page is read-only. No quota modification actions are included.
 
 ---
 
@@ -159,6 +186,9 @@ The PoC is considered complete when:
 3. When quota is available, `POST /api/v1/databases` behaves identically to today.
 4. The `QuotaProvider` interface exists and the GCP implementation is one concrete struct
    behind it — no GCP-specific logic leaks into the handler.
+5. The Quotas page is accessible from the sidebar, displays a table of quota metrics with
+   service, name, limit, usage, and usage percentage columns, and the service filter
+   correctly narrows the visible rows.
 
 ---
 
@@ -167,5 +197,5 @@ The PoC is considered complete when:
 - Whether UCP will add its own platform-level soft quotas on top of provider quotas.
 - Whether quota management will be integrated into the Crossplane layer (admission webhook
   or composition function) rather than the API server.
-- The final shape of the quota UI.
 - Cross-provider quota aggregation (e.g. a single limit across GCP + AWS resources).
+- Whether the quota UI will support quota increase requests or admin management actions.
