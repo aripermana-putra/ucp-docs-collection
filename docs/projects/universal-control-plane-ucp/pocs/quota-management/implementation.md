@@ -96,7 +96,7 @@ sequenceDiagram
     Handler->>Handler: extractBearerToken(r)<br/>→ reads Principal.AccessToken from context (set by SessionMiddleware)<br/>→ falls back to Authorization header only if context is empty<br/>extractEmailFromJWT(token) → reads "email" claim from JWT payload
 
     Handler->>Horizon: GET /v0/tenants/rns:rakuten:ucp:xxx
-    Note over Handler,Horizon: Authorization: Bearer &lt;session-access-token&gt;<br/>(decrypted from session DB by SessionMiddleware)
+    Note over Handler,Horizon: Authorization: Bearer &lt;session-access-token&gt;
     Horizon-->>Handler: {"admins": [{"email": "user@example.com"}, ...]}
     Handler->>Handler: user email ∈ admins[] → authorized ✓
 
