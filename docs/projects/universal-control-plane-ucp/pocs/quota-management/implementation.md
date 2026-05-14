@@ -96,7 +96,7 @@ sequenceDiagram
     Handler->>Handler: extractBearerToken(r)<br/>→ reads Principal.AccessToken from context (set by SessionMiddleware)<br/>→ falls back to Authorization header only if context is empty<br/>extractEmailFromJWT(token) → reads "email" claim from JWT payload
 
     Handler->>Horizon: GET /v0/tenants/rns:rakuten:ucp:xxx
-    Note over Handler,Horizon: Authorization: Bearer &lt;session-access-token&gt;
+    Note over Handler,Horizon: Authorization: Bearer [session-access-token]
     Horizon-->>Handler: {"admins": [{"email": "user@example.com"}, ...]}
     Handler->>Handler: user email ∈ admins[] → authorized ✓
 
@@ -125,7 +125,7 @@ sequenceDiagram
         Handler->>Monitoring: GET /v3/projects/my-gcp-project-qa/timeSeries
         Note over Handler,Monitoring: filter=metric.type="serviceruntime.googleapis.com/quota/allocation/usage"<br/>  AND resource.labels.service="&lt;service&gt;"
         Monitoring-->>Handler: timeSeries[]{metric.labels{quota_metric},<br/>resource.labels{location}, points[0].value.int64Value}
-        Note over Handler: Join on (quota_metric, location)<br/>limitAvailable = limit > 0 AND limit < 10^15<br/>percentage = usage/limit*100 if limitAvailable
+        Note over Handler: Join on (quota_metric, location)<br/>limitAvailable = limit &gt; 0 AND limit &lt; 10^15<br/>percentage = usage/limit*100 if limitAvailable
 
     end
 
