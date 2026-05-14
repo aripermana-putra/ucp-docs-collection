@@ -26,13 +26,39 @@ the UCP service accounts (confirmed by successful live API calls).
 
 **OAuth scope:** `https://www.googleapis.com/auth/cloud-platform` — already in use.
 
-### Confirmed quota metrics
+### metric.type vs metric.labels.quota_metric
+
+These are two distinct identifiers that are easy to confuse:
+
+| Field | What it is | Example |
+|-------|-----------|---------|
+| `metric.type` | Cloud Monitoring metric type — used as the **filter** in API requests | `serviceruntime.googleapis.com/quota/limit` |
+| `metric.labels.quota_metric` | Label on the returned time series identifying **which specific quota** | `compute.googleapis.com/cpus` |
+
+`metric.type` is always in the `serviceruntime.googleapis.com/quota/...` namespace regardless of which GCP service owns the quota. GCP publishes quota data for all services through Service Runtime, not through each service's own metric namespace.
+
+`metric.labels.quota_metric` uses the service-domain format (`{service}/{resource}`) and is what you see in the GCP Console quota table. It is a **response label**, not a filter field.
+
+The filter that scopes results to a specific GCP service is `resource.labels.service`, not the metric type:
+
+```
+filter=metric.type="serviceruntime.googleapis.com/quota/limit"
+  AND resource.labels.service="compute.googleapis.com"
+```
+
+This returns all Compute Engine quota limits. The `quota_metric` label on each row (`compute.googleapis.com/cpus`, `compute.googleapis.com/instances`, etc.) identifies which specific quota that row represents.
+
+The `{service}/quota/{resource}` format (e.g. `compute.googleapis.com/quota/cpus/usage`) appears in GCP documentation as shorthand but is not a valid Cloud Monitoring `metric.type` — using it as a filter returns HTTP 404.
+
+---
+
+### Confirmed quota metric types
 
 All confirmed via `metricDescriptors.list` with filter
 `metric.type = starts_with("serviceruntime.googleapis.com/quota")` against the sandbox
 project `sub-gcp-ucp-clsd-sandbox`.
 
-| Metric type | Kind | Value type | GA | Notes |
+| metric.type | Kind | Value type | GA | Notes |
 |-------------|------|------------|----|-------|
 | `serviceruntime.googleapis.com/quota/limit` | GAUGE | INT64 | ✅ | Effective limit per (metric, location) |
 | `serviceruntime.googleapis.com/quota/allocation/usage` | GAUGE | INT64 | ✅ | Current allocation usage |
@@ -40,12 +66,7 @@ project `sub-gcp-ucp-clsd-sandbox`.
 | `serviceruntime.googleapis.com/quota/exceeded` | GAUGE | BOOL | ✅ | Quota exceeded flag |
 | `serviceruntime.googleapis.com/quota/concurrent/usage` | GAUGE | INT64 | ALPHA | — |
 | `serviceruntime.googleapis.com/quota/concurrent/limit` | GAUGE | INT64 | ALPHA | — |
-| ~~`serviceruntime.googleapis.com/quota/allocation/limit`~~ | — | — | ❌ | **Does not exist — HTTP 404** |
-
-> **Important:** The metric path is `serviceruntime.googleapis.com/quota/...` — NOT
-> `{service}/quota/{resource}/...`. The latter format (e.g.
-> `compute.googleapis.com/quota/cpus/usage`) is documentation shorthand and does not work
-> as an actual Cloud Monitoring filter.
+| `serviceruntime.googleapis.com/quota/allocation/limit` | — | — | ❌ | Does not exist — HTTP 404 |
 
 ### `quota/limit` — confirmed live data (compute.googleapis.com, asia-east1)
 
@@ -114,6 +135,27 @@ limitAvailable = limit > 0 && limit < unlimitedThreshold
 instance count. Cloud SQL's monitored quotas are rate quotas (Admin API calls/min), not
 resource allocation counts. The Cloud SQL instance limit is a soft limit with no
 programmatic API support.
+
+### Coverage limitation — Cloud Monitoring vs GCP Console
+
+**Observed behavior:** The GCP Console's Quotas & System Limits page shows significantly
+more quota metrics per service than Cloud Monitoring returns for the same service. For
+`sqladmin.googleapis.com`, Cloud Monitoring returns only `connect`, `get`, `list`, and
+`mutate` — all rate quotas. The GCP Console shows these plus additional allocation quotas.
+This was observed in live calls against the sandbox project `sub-gcp-ucp-clsd-sandbox`.
+
+**Likely explanation (unverified — not confirmed from GCP documentation):** Cloud
+Monitoring is a time series API — it only returns series that have been published for a
+given metric within the query interval. If GCP has not instrumented a quota metric with
+Cloud Monitoring telemetry, no series exists and the metric does not appear. The GCP
+Console likely queries the Cloud Quotas API (`cloudquotas.googleapis.com`), which GCP
+describes as the dedicated quota information source and which returns quota definitions
+regardless of whether telemetry has been published.
+
+This explanation has not been verified against specific GCP documentation. The exact
+reason why Cloud Monitoring returns a subset of the quotas visible in the Console has
+not been confirmed. The observed gap should be treated as a known limitation of using
+Cloud Monitoring as the sole quota data source, not as a fully understood behavior.
 
 ---
 

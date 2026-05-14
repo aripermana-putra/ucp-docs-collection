@@ -104,10 +104,10 @@ sequenceDiagram
 
     Note over Handler,K8s: gcpHTTPClient() — resolve GCP credentials
 
-    Handler->>Handler: credentialSecretName("gcp", tenantID, "qa")<br/>→ "cloud-credentials-gcp-&lt;sanitized-rns&gt;-qa"
+    Handler->>Handler: credentialSecretName("gcp", tenantID, "qa")<br/>→ "cloud-credentials-gcp-[sanitized-rns]-qa"
 
-    Handler->>K8s: GET /api/v1/namespaces/crossplane-system/secrets/<br/>cloud-credentials-gcp-&lt;sanitized-rns&gt;-qa
-    K8s-->>Handler: Secret{data: {credentials.json: &lt;b64&gt;, project_id: &lt;b64&gt;}}
+    Handler->>K8s: GET /api/v1/namespaces/crossplane-system/secrets/<br/>cloud-credentials-gcp-[sanitized-rns]-qa
+    K8s-->>Handler: Secret{data: {credentials.json: [b64], project_id: [b64]}}
 
     Handler->>Handler: base64-decode credentials.json → GCP service account JSON<br/>base64-decode project_id → "my-gcp-project-qa"
 
@@ -118,14 +118,14 @@ sequenceDiagram
     loop for each service in [sqladmin, compute, container, storage] — 8 total calls
 
         Handler->>Monitoring: GET /v3/projects/my-gcp-project-qa/timeSeries
-        Note over Handler,Monitoring: filter=metric.type="serviceruntime.googleapis.com/quota/limit"<br/>  AND resource.labels.service="&lt;service&gt;"<br/>interval.startTime=&lt;now-25h&gt;, interval.endTime=&lt;now&gt;<br/>aggregation.alignmentPeriod=86400s, perSeriesAligner=ALIGN_NEXT_OLDER<br/>pageSize=1000
+        Note over Handler,Monitoring: filter=metric.type="serviceruntime.googleapis.com/quota/limit"<br/>  AND resource.labels.service="[service]"<br/>interval.startTime=[now-25h], interval.endTime=[now]<br/>aggregation.alignmentPeriod=86400s, perSeriesAligner=ALIGN_NEXT_OLDER<br/>pageSize=1000
         Monitoring-->>Handler: timeSeries[]{metric.labels{quota_metric, limit_name},<br/>resource.labels{location}, points[0].value.int64Value}
         Note over Handler: Keep minimum value per (quota_metric, location)<br/>to handle multiple limit_name rows for same key
 
         Handler->>Monitoring: GET /v3/projects/my-gcp-project-qa/timeSeries
-        Note over Handler,Monitoring: filter=metric.type="serviceruntime.googleapis.com/quota/allocation/usage"<br/>  AND resource.labels.service="&lt;service&gt;"
+        Note over Handler,Monitoring: filter=metric.type="serviceruntime.googleapis.com/quota/allocation/usage"<br/>  AND resource.labels.service="[service]"
         Monitoring-->>Handler: timeSeries[]{metric.labels{quota_metric},<br/>resource.labels{location}, points[0].value.int64Value}
-        Note over Handler: Join on (quota_metric, location)<br/>limitAvailable = limit &gt; 0 AND limit &lt; 10^15<br/>percentage = usage/limit*100 if limitAvailable
+        Note over Handler: Join on (quota_metric, location)<br/>limitAvailable = limit > 0 AND limit < 10^15<br/>percentage = usage/limit*100 if limitAvailable
 
     end
 
@@ -178,6 +178,15 @@ for database provisioning therefore fails open — `CheckPreProvision` always re
 The Cloud SQL metrics that do appear in Cloud Monitoring (`connect`, `get`, `list`,
 `mutate`) are **rate quotas** on Admin API call frequency. They are not relevant to
 provisioning decisions for UCP tenants.
+
+### Cloud Monitoring returns fewer metrics than the GCP Console
+
+The GCP Console's Quotas & System Limits page shows more quota metrics per service than
+Cloud Monitoring returns. For Cloud SQL (`sqladmin.googleapis.com`), Cloud Monitoring
+returns only `connect`, `get`, `list`, and `mutate`. The Console shows these plus
+additional metrics. This was observed in live calls against the sandbox project but the
+exact mechanism has not been verified against GCP documentation. See
+`gcp-api-reference.md` § "Coverage limitation" for detail.
 
 ### Quota data volume is large and unfiltered
 
