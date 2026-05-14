@@ -119,9 +119,8 @@ programmatic API support.
 
 ## Cloud Quotas API (`cloudquotas.googleapis.com`)
 
-GA since Q1 2024. Provides quota metadata and increase requests. **Not used in current
-UCP implementation** due to JSON tag bug (see below) and because Cloud Monitoring provides
-both limits and usage in one API.
+GA since Q1 2024. Provides quota metadata and increase requests. Not used in UCP — Cloud
+Monitoring provides both limits and usage in one API with simpler IAM requirements.
 
 **IAM:** `roles/cloudquotas.quotasViewer` — already added to UCP service accounts.
 
@@ -141,17 +140,12 @@ quotaInfos[]
   service             string    "compute.googleapis.com"
   quotaDisplayName    string    "CPUS per project per region"
   isFixed             bool
-  dimensionsInfos[]             ← JSON key is "dimensionsInfos" (note the 's')
+  dimensionsInfos[]             ← JSON key is "dimensionsInfos" (not "dimensionInfos")
     dimensions        map       {"region": "us-central1"}
     details
       value           int64     effective limit
 nextPageToken  string
 ```
-
-**Known bug (original UCP code):** The original `quota_handler.go` used
-`json:"dimensionInfos"`. The correct JSON key is `json:"dimensionsInfos"` (extra `s`
-before `Infos`). This caused all 495 `dimensionsInfos` arrays to parse as empty — every
-limit showed 0. The rewrite to Cloud Monitoring eliminated this dependency.
 
 **QuotaPreference** (increase requests):
 

@@ -6,52 +6,43 @@ parent_page_id: "../quota-management.md"
 
 # Quota Management — Implementation
 
-## Goal
+UCP reads real-time quota limits and usage from GCP using each tenant's stored credentials
+and surfaces them through a dedicated API endpoint and UI. A pre-provision gate is wired
+to block resource creation before a quota-exceeded request reaches the cloud provider.
 
-Prove that UCP can read real-time quota usage and limits from a cloud provider (GCP first)
-using the tenant's existing credentials, surface those quotas through a UCP API endpoint,
-and block resource provisioning at the UCP API layer before a quota-exceeded request ever
-reaches the cloud provider.
-
-This is distinct from UCP platform-level soft quotas (`quota_policies` table, `CheckQuota`
-middleware). That is a separate concern. See `ucp-quota-design.md`.
+This covers cloud provider quota visibility only. UCP platform-level soft quotas
+(`quota_policies`, `CheckQuota`) are a separate concern — see `ucp-quota-design.md`.
 
 ---
 
-## Current Implementation State
+## Implementation
 
 | Component | File | Status |
 |---|---|---|
-| `QuotaProvider` interface | `backend/api-server/quota_handler.go` | **Implemented** |
-| `gcpQuotaProvider` struct | `backend/api-server/quota_handler.go` | **Implemented** |
-| `GET /api/v1/quota` endpoint | `backend/api-server/main.go:197` | **Deployed** |
-| Pre-provision gate | `backend/api-server/main.go:478` | **Implemented (no-op for GCP)** |
-| Quota UI — table with filters | `frontend/src/components/QuotaList.jsx` | **Deployed** |
+| `QuotaProvider` interface | `backend/api-server/quota_handler.go` | Deployed |
+| `gcpQuotaProvider` | `backend/api-server/quota_handler.go` | Deployed |
+| `GET /api/v1/quota` | `backend/api-server/main.go:197` | Deployed |
+| Pre-provision gate (`CheckPreProvision`) | `backend/api-server/main.go:478` | Deployed — fails open |
+| Quota UI | `frontend/src/components/QuotaList.jsx` | Deployed |
 
-### What was originally planned vs what was built
-
-The original plan used the Cloud Quotas API for limits and Cloud Monitoring for usage.
-During implementation, the Cloud Quotas API JSON tag bug (`dimensionInfos` vs
-`dimensionsInfos`) caused all limits to return 0. The final implementation switched to
-**Cloud Monitoring only** for both limits and usage — confirmed by live API calls.
-
-See `gcp-api-reference.md` for the full API research and confirmed field structures.
+Both quota limits and usage are read from **Cloud Monitoring** (`serviceruntime.googleapis.com`).
+No separate quota API is used. See `gcp-api-reference.md` for confirmed field structures.
 
 ---
 
 ## Scope
 
-### In Scope (implemented)
+### In Scope
 
 - **`GET /api/v1/quota`** — returns all quota metrics (usage + limit + percentage) for the
   tenant's GCP project across four services: Cloud SQL, Compute Engine, GKE, Cloud Storage
-- **`QuotaProvider` interface** — abstracts GCP-specific logic; adding a new provider means
-  implementing the interface
-- **Pre-provision gate** — `CheckPreProvision` wired to `POST /api/v1/databases`; returns
-  HTTP 429 before creating any XR or Temporal workflow if quota is exhausted. Currently a
-  no-op for GCP (fails open) — see findings below
-- **Quota UI** — filterable table in the frontend with service filter, metric search,
-  sortable columns, usage % bar, pagination
+- **`QuotaProvider` interface** — abstracts GCP-specific logic behind a provider-agnostic
+  contract; adding a new provider means implementing the interface
+- **Pre-provision gate** — `CheckPreProvision` is called by `POST /api/v1/databases` before
+  creating any XR or Temporal workflow; returns HTTP 429 if quota is exhausted. Fails open
+  for GCP — Cloud SQL instance count has no programmatic metric ID (see Limitations)
+- **Quota UI** — filterable, sortable table with service filter, metric search, usage % bar,
+  row highlighting at ≥80% (warning) and ≥100% (critical), pagination
 
 ### Out of Scope
 
@@ -146,8 +137,8 @@ sequenceDiagram
 
 **X-Environment routing:**
 
-| Header | `env` | Horizon URL | Credential secret suffix |
-|--------|-------|-------------|--------------------------|
+| Header value | `env` | Horizon URL | Credential secret suffix |
+|---|---|---|---|
 | `QA` | `qa` | `https://qa-horizon-data-api.r-local.net/v0` | `-qa` |
 | `PRODUCTION` | `production` | `https://horizon-data-api.r-local.net/v0` | `-production` |
 
@@ -176,106 +167,81 @@ percentage      = float64(usage) / float64(limit) * 100
 
 ---
 
-## Key Findings
+## Limitations
 
-### Finding 1: GCP quota data is far more numerous than expected
+### Cloud SQL instance count is not quota-visible
 
-A single GCP service exposes dozens of quota metrics, each producing multiple rows across
-regions. A typical project returns 800–900 rows total across four services. The GCP
-Console quota page was the wrong design reference — it is built for project administrators,
-not for UCP tenants making provisioning decisions.
+Cloud SQL instances per project is a soft limit managed via GCP support cases. It has no
+metric ID in any quota API and does not appear in Cloud Monitoring. The pre-provision gate
+for database provisioning therefore fails open — `CheckPreProvision` always returns nil.
 
-### Finding 2: Cloud SQL instance count is not available via quota API
+The Cloud SQL metrics that do appear in Cloud Monitoring (`connect`, `get`, `list`,
+`mutate`) are **rate quotas** on Admin API call frequency. They are not relevant to
+provisioning decisions for UCP tenants.
 
-The quota that matters most for the pre-provision gate (`CheckPreProvision`) — Cloud SQL
-instances per project — is a **soft limit** with no metric ID in any quota API. It is
-managed via GCP support cases. The `serviceruntime.googleapis.com/quota/allocation/usage`
-metric does not return Cloud SQL instance count.
+### Quota data volume is large and unfiltered
 
-This means the pre-provision gate for databases cannot be implemented as originally
-designed. It currently fails open (no error → provisioning proceeds).
+A typical GCP project returns 800–900 quota rows across four services. Each metric
+produces multiple rows due to regional dimensions. The current implementation returns all
+rows unfiltered. The recommended long-term direction is to group by UCP resource type
+(Database, Compute, Kubernetes, Storage) so the UI reflects provisioning capacity rather
+than raw GCP quota topology.
 
-### Finding 3: Cloud SQL quota metrics are rate quotas, not resource count quotas
+### Pre-provision gate resource type mapping
 
-The Cloud SQL metrics that do have metric IDs (`connect`, `get`, `list`, `mutate`) are
-**rate quotas** — limits on Admin API call frequency per minute. They are irrelevant to
-UCP tenant capacity planning. A tenant managing a handful of databases will never approach
-these limits.
-
-### Finding 4: Compute Engine and GKE usage metrics work correctly
-
-`serviceruntime.googleapis.com/quota/allocation/usage` does return real data for Compute
-Engine and GKE (confirmed: `cpus=3`, `instances=3` for asia-east1 matching 3 GKE node
-VMs). Cloud Monitoring is the correct and sufficient API for these.
-
-### Finding 5: The Cloud Quotas API had a JSON tag bug in the original implementation
-
-The original code used `json:"dimensionInfos"`. The correct key is `json:"dimensionsInfos"`
-(extra `s`). This caused all 495 quota entries to parse as empty — every limit showed 0.
-The rewrite switched to Cloud Monitoring only, eliminating this dependency.
+| UCP resource type | GCP quota metric | Gate status |
+|---|---|---|
+| `database` | — (soft limit, no metric ID) | Fails open |
+| `compute` | `compute.googleapis.com/cpus` (regional) | Not wired |
+| `k8s-cluster` | `container.googleapis.com/clusters` | Not wired |
+| `storage` | `storage.googleapis.com/buckets` | Not wired |
 
 ---
 
-## Display Strategy
+## Display Design
 
-Three options were considered for what to show in the quota table:
-
-| Option | Approach | Decision |
-|--------|----------|----------|
-| A — Mirror GCP Console | Show every metric returned by API | Too complex, GCP-specific |
-| B — Curated list | Hardcode which metrics to show | Current PoC state — high maintenance |
-| C — UCP resource-type grouping | Group by UCP concept (Database, Compute, etc.) | **Recommended long-term direction** |
-
-**Current state** is Option B — all metrics from four monitored services are returned
-without curation. Option C is the right direction for multi-cloud but requires mapping
-work per provider that is out of scope for this PoC.
+The quota table currently shows all metrics returned by Cloud Monitoring across the four
+monitored services. The recommended next direction is to group rows by UCP resource type
+rather than by GCP service, separating resource count quotas from rate quotas.
 
 ### Open questions for production
 
 1. Should API rate quotas (req/min) be shown alongside resource count quotas? They serve
-   different audiences (ops vs capacity planning).
-2. For soft limits with no API support (Cloud SQL instance count), show usage-only with
-   "limit not available", or omit the row?
+   different audiences — rate quotas for operations, resource count quotas for capacity planning.
+2. For soft limits with no API support, show the usage-only row with "limit not available",
+   or omit it?
 3. For regional metrics, show all regions or only the tenant's configured region?
-4. Should the quota page aggregate across providers (GCP + Omnia) or be per-provider?
+4. Should the quota page aggregate across providers (GCP + Omnia in one view) or be per-provider?
 
 ---
 
-## Provider-Agnostic Checklist
+## Adding a New Cloud Provider
 
-Use this checklist when adding quota support for a new cloud provider:
+Implement the `QuotaProvider` interface in `quota_handler.go`:
 
-### API Availability
-- [ ] Quota listing API (metric names + limits)?
-- [ ] Real-time usage data via metrics/monitoring API?
+```go
+type QuotaProvider interface {
+    ListQuotas(ctx context.Context, tenantID, env string) ([]QuotaEntry, error)
+    CheckPreProvision(ctx context.Context, tenantID, env, resourceType string) error
+}
+```
+
+Before implementing, answer this checklist:
+
+**API availability**
+- [ ] Quota listing API that returns metric names and limits?
+- [ ] Real-time usage data via a monitoring/metrics API?
 - [ ] Both APIs are GA?
-- [ ] Rate limits on quota APIs?
 
-### Credentials
-- [ ] Accessible with provisioning credentials already stored?
-- [ ] Read-only role available?
+**Credentials**
+- [ ] Accessible with the provisioning credentials already stored for the provider?
 
-### Resource Type Mapping
+**Resource type mapping** — what is the exact metric ID for each UCP resource type?
+- [ ] `database`
+- [ ] `compute`
+- [ ] `k8s-cluster`
+- [ ] `storage`
 
-| UCP resource type | GCP quota metric | Status |
-|---|---|---|
-| `database` | none (soft limit, no metric ID) | **Blocked** |
-| `compute` | `compute.googleapis.com/cpus` (regional) | Deferred |
-| `k8s-cluster` | `container.googleapis.com/clusters` | Deferred |
-| `storage` | `storage.googleapis.com/buckets` | Deferred |
-
-### Error Handling
-- [ ] HTTP status and structure when quota is exceeded during provisioning?
+**Error handling**
+- [ ] What HTTP status does the provider return when quota is exceeded during provisioning?
 - [ ] Structured field to distinguish `quotaExceeded` from `rateLimitExceeded`?
-
----
-
-## Success Criteria — Status
-
-| Criterion | Status |
-|---|---|
-| `GET /api/v1/quota` returns real quota data using stored credentials | ✅ |
-| Quota page accessible from sidebar with service filter and usage % bar | ✅ |
-| `QuotaProvider` interface isolates GCP-specific logic | ✅ |
-| `POST /api/v1/databases` returns HTTP 429 when Cloud SQL quota exhausted | ❌ Blocked — soft limit, no metric ID |
-| Provisioning unaffected when quota is available | ✅ (gate fails open) |
