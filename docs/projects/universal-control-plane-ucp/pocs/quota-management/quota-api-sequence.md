@@ -47,7 +47,7 @@ sequenceDiagram
 
     Note over Handler: requireTenantAdmin() check
 
-    Handler->>Handler: extractBearerToken(r) → reads Authorization header<br/>extractEmailFromJWT(token) → reads "email" claim from JWT payload
+    Handler->>Handler: extractBearerToken(r)<br/>→ reads Principal.AccessToken from request context (set by SessionMiddleware)<br/>→ falls back to Authorization header only if context is empty<br/>extractEmailFromJWT(token) → reads "email" claim from JWT payload
 
     Handler->>Horizon: GET /v0/tenants/rns:rakuten:ucp:xxx
     Note over Handler,Horizon: Authorization: Bearer &lt;user-jwt&gt;
@@ -164,10 +164,17 @@ percentage      = float64(usage) / float64(limit) * 100          ← only when l
 
 ---
 
-## Known Issue
+## Token Resolution in requireTenantAdmin
 
-`requireTenantAdmin` calls `extractBearerToken(r)` which reads the raw `Authorization: Bearer` header. The SessionMiddleware puts the decrypted access token in `r.Context()` (as `Principal.AccessToken`), but `requireTenantAdmin` does **not** read from context. This means:
+`extractBearerToken(r)` checks `PrincipalFromContext` first before reading the `Authorization` header:
 
-- If the browser sends only a session cookie (no `Authorization` header), the admin check returns `"no authorization token provided"` → HTTP 403.
-- The frontend's `useAuthFetch` hook sets `X-Environment` but does not inject `Authorization` for cookie-authenticated sessions.
-- This would silently fail for any user authenticated purely via the session cookie flow.
+```go
+// priority 1 — session token already decrypted by SessionMiddleware
+if principal, ok := authpkg.PrincipalFromContext(r.Context()); ok && principal != nil {
+    return principal.AccessToken
+}
+// priority 2 — explicit Authorization: Bearer header (e.g. direct API calls)
+return r.Header.Get("Authorization")[len("Bearer "):]
+```
+
+This means the frontend does not need to send an `Authorization` header — the session cookie flow works correctly end-to-end.
