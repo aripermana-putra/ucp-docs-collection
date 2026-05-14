@@ -8,26 +8,35 @@ parent_page_id: "../quota-management.md"
 
 ## Current State
 
-Quota management is **entirely in the design phase**. The specification in
-`docs/architecture/RBAC.md` (Phase 2) is production-ready and should be used as the
-implementation guide. Zero code has been written to implement it.
+Two layers of quota exist. The cloud provider quota layer (GCP) is partially implemented.
+The UCP platform soft quota layer is still in the design phase.
 
-### What Exists
+### Cloud Provider Quota (GCP) — Partially Implemented
+
+| Component | File | Status |
+|---|---|---|
+| `QuotaProvider` interface | `backend/api-server/quota_handler.go` | **Implemented** |
+| `gcpQuotaProvider` — lists all quota metrics | `backend/api-server/quota_handler.go` | **Deployed** |
+| `GET /api/v1/quota` endpoint | `backend/api-server/main.go:197` | **Deployed** |
+| Pre-provision gate (`CheckPreProvision`) | `backend/api-server/main.go:478` | **Implemented — fails open** |
+| Quota UI | `frontend/src/components/QuotaList.jsx` | **Deployed** |
+
+The pre-provision gate for Cloud SQL databases is blocked: Cloud SQL instance count is a
+soft limit with no programmatic metric ID. See `implementation.md` — Finding 2.
+
+### UCP Platform Soft Quotas — Design Phase Only
 
 | Component | Location | Status |
 |---|---|---|
 | `quota_policies` table schema | `docs/architecture/RBAC.md` §3 | Designed only |
 | `CheckQuota` middleware design | `docs/architecture/RBAC.md` §5 | Pseudocode only |
 | Quota API endpoints | `docs/architecture/RBAC.md` §7 | Designed only |
-| Gap acknowledgement | `docs/ARCHITECTURE_VERIFICATION_REPORT.md` §Gap #16 | Documented |
 
-### What Does NOT Exist
-
+Not yet implemented:
 - `quota_policies` database table (not in `db/db.go` migrations)
-- `CheckQuota()` function (not in any Go file)
-- `/api/v1/rbac/` routes (not registered in `main.go`)
-- RBAC permission tables (`roles`, `role_permissions`, `role_assignments`) — also missing
-- Frontend quota UI
+- `CheckQuota()` function
+- `/api/v1/rbac/` routes
+- RBAC permission tables (`roles`, `role_permissions`, `role_assignments`)
 - K8s `ResourceQuota` or `LimitRange` objects
 - XRD fields for quota constraints
 
@@ -141,8 +150,8 @@ To fully manage quotas, UCP needs to handle both:
 
 | Layer | What it controls | Mechanism | Current state |
 |---|---|---|---|
-| Platform soft quota | UCP-enforced per-tenant resource count | `quota_policies` table + `CheckQuota` middleware | Designed, not implemented |
-| GCP hard quota | GCP-enforced per-project resource ceiling | Cloud Quotas API (`QuotaPreference`) + consumer overrides | Not designed for UCP |
+| GCP cloud quota | GCP-enforced per-project resource ceiling | Cloud Monitoring (`quota/limit` + `quota/allocation/usage`) | **Partially implemented** — listing works, pre-provision gate fails open |
+| Platform soft quota | UCP-enforced per-tenant resource count | `quota_policies` table + `CheckQuota` middleware | Designed only, not implemented |
 
 **Platform quota** prevents a tenant from provisioning more resources than their
 entitlement, regardless of GCP limits.
@@ -173,20 +182,19 @@ quota should be set below the GCP quota to leave headroom.
 6. Implement quota CRUD API endpoints (`/api/v1/rbac/tenants/{rns}/quotas/...`)
 7. Implement quota usage endpoint (count from K8s, stateless)
 
-### Phase 2 — GCP Cloud Quota Awareness
+### Phase 2 — GCP Cloud Quota Awareness ✅ Partially done
 
-8. Read current GCP quota for each tenant project via Cloud Monitoring API metrics
-   and surface in the quota usage endpoint alongside the platform count
+8. ~~Read current GCP quota via Cloud Monitoring~~ — **done** (`GET /api/v1/quota`)
 9. Detect when platform entitlement exceeds current GCP quota and surface as a
-   condition on the tenant's quota status
+   condition on the tenant's quota status — **not yet done**
 10. Optionally: submit `QuotaPreference` requests via Cloud Quotas API when a
-    tenant's entitlement is increased beyond the current GCP limit
+    tenant's entitlement is increased beyond the current GCP limit — **not yet done**
 
-### Phase 3 — Frontend and Quota UI
+### Phase 3 — Frontend and Quota UI ✅ Partially done
 
-11. Quota display in resource list views (current usage / limit)
-12. Quota management admin UI (platform-admin and tenant-admin views)
-13. Warning when approaching limit (e.g., at 80% usage)
+11. ~~Quota display with service filter and usage % bar~~ — **done** (`QuotaList.jsx`)
+12. Quota management admin UI (platform-admin and tenant-admin views) — **not yet done**
+13. ~~Warning when approaching limit (≥ 80% yellow, 100% red)~~ — **done** (row highlighting)
 
 ---
 
