@@ -72,7 +72,7 @@ sequenceDiagram
     participant Monitoring as Cloud Monitoring API
 
     Browser->>Handler: GET /api/v1/quota?tenantId=rns:rakuten:ucp:xxx
-    Note over Browser,Handler: Cookie: ucp-session=abc123<br/>X-Environment: QA<br/>Authorization: Bearer &lt;user-jwt&gt;
+    Note over Browser,Handler: Cookie: ucp-session=abc123<br/>X-Environment: QA
 
     Note over Handler: SessionMiddleware runs first
 
@@ -96,7 +96,7 @@ sequenceDiagram
     Handler->>Handler: extractBearerToken(r)<br/>→ reads Principal.AccessToken from context (set by SessionMiddleware)<br/>→ falls back to Authorization header only if context is empty<br/>extractEmailFromJWT(token) → reads "email" claim from JWT payload
 
     Handler->>Horizon: GET /v0/tenants/rns:rakuten:ucp:xxx
-    Note over Handler,Horizon: Authorization: Bearer &lt;user-jwt&gt;
+    Note over Handler,Horizon: Authorization: Bearer &lt;session-access-token&gt;<br/>(decrypted from session DB by SessionMiddleware)
     Horizon-->>Handler: {"admins": [{"email": "user@example.com"}, ...]}
     Handler->>Handler: user email ∈ admins[] → authorized ✓
 
