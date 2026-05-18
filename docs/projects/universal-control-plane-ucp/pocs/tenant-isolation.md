@@ -4,17 +4,17 @@ space: UCP
 parent_page_id: "../pocs.md"
 ---
 
-# Tenant Isolation
+# Tenant Isolation PoC
 
 ## Background
 
-MCUCP-119 attempted to migrate all Crossplane XRDs, XRs, and MRs from `scope: Cluster` to
-`scope: Namespaced`, with the goal of using one Kubernetes namespace per tenant as the
-isolation boundary. This was halted because Crossplane v2 enforces a hard constraint:
+MCUCP-119 attempted to migrate all Crossplane XRDs, XRs, and MRs from `scope: Cluster`
+to `scope: Namespaced`, using one Kubernetes namespace per tenant as the isolation
+boundary. This was halted because Crossplane v2 enforces a hard constraint:
 
 > A namespace-scoped XR can only compose resources in its own namespace.
 
-All managed resources (MRs) from the providers we need to support are still cluster-scoped:
+All managed resources (MRs) from the providers we need are still cluster-scoped:
 
 | Provider | MR Scope | Namespaced Support |
 |---|---|---|
@@ -24,311 +24,384 @@ All managed resources (MRs) from the providers we need to support are still clus
 | provider-roc (Omnia) | Cluster | Not yet (we own this — unblocked) |
 | provider-terraform | Cluster | Not yet |
 
-This document records the investigation and decision on how to achieve tenant isolation in
-the interim, until all providers support namespaced MRs.
+Since namespace-per-tenant is blocked upstream, the chosen interim strategy is
+**ProviderConfig-per-tenant with API-layer label filtering**.
 
 ---
 
-## Why Namespace Per Tenant Does Not Work Today
+## Strategy: ProviderConfig Per Tenant + API-Layer Filtering
 
-Creating a Kubernetes namespace per tenant only provides isolation if the resources
-actually live inside that namespace. Cluster-scoped resources (XRs, MRs) exist outside
-any namespace — they float at the cluster level with `namespace: ""`.
+Two complementary mechanisms enforce isolation:
 
-```
-namespace: team-a   <- tenant A's namespace
-namespace: team-b   <- tenant B's namespace
-
-xdatabases.platform.io/team-a-db   <- cluster-scoped, namespace = ""
-xdatabases.platform.io/team-b-db   <- cluster-scoped, namespace = ""
-```
-
-Kubernetes RBAC cannot say "only allow team-a to see resources in namespace team-a" for
-resources that are not in any namespace. The namespaces are irrelevant for Crossplane
-isolation as long as XRDs and provider MRs remain cluster-scoped.
-
-**Conclusion:** namespace-per-tenant is the correct long-term model (MCUCP-119), but it
-provides zero Crossplane isolation benefit today.
-
----
-
-## Existing Auth and RBAC Infrastructure
-
-Before deciding on an approach, it is important to understand what isolation mechanisms
-are already in place.
-
-### Identity Provider
-
-Rakuten Keycloak (`accounts-onecloud.rakuten-it.com`) is the OIDC IdP. Two auth paths:
-
-- **Browser:** BFF pattern — opaque session cookie, tokens never reach the browser
-- **CLI:** PKCE flow, Bearer JWT on every request
-
-### Tenant Identity
-
-Tenant context is passed as an `X-Tenant-ID` header using Rakuten RNS format
-(e.g. `rns:roc:iam::clsd-ucp`). The API server validates tenant admin status by calling
-the Horizon API (`isUserTenantAdmin()`).
-
-### The Critical Isolation Point
-
-Tenants never have direct access to the Kubernetes API. The only access path is:
-
-```
-Tenant -> Keycloak auth -> API Server -> Temporal Workflow -> K8s/Crossplane -> Cloud Provider
-```
-
-The API server's `ServiceAccount` is the sole Kubernetes actor. This means the **API
-server is already the primary isolation boundary** — Crossplane-level namespace scoping
-is defense-in-depth, not the primary control.
-
-### RBAC Design (Designed, Not Fully Implemented)
-
-A 5-role per-tenant RBAC model is already designed (`docs/architecture/RBAC.md`):
-
-| Role | Scope | Description |
-|---|---|---|
-| `platform-admin` | Platform | UCP operators |
-| `tenant-admin` | Tenant | Full access within tenant |
-| `deployer` | Tenant | Provision and delete resources |
-| `approver` | Tenant | Approve/reject Temporal workflows |
-| `viewer` | Tenant | Read-only |
-
-Currently only `isUserTenantAdmin()` is live. The full permission middleware is designed
-but not yet implemented.
-
-### Resource Labeling (Designed, Not Applied)
-
-All UCP-provisioned resources are designed to carry ownership labels:
-
-```yaml
-metadata:
-  labels:
-    ucp.platform/managed: "true"
-    ucp.platform/tenant: "rns:roc:iam::clsd-ucp"
-    ucp.platform/created-by: "<userID>"
-    ucp.platform/workflow-id: "<id>"
-```
-
-This is defined in `RBAC.md §6` but not yet applied at XR creation time.
-
----
-
-## Options Considered
-
-### Option A — ProviderConfig Per Tenant (Selected for Interim)
+### 1. ProviderConfig Per Tenant (Cloud-Level)
 
 Each tenant gets one `ProviderConfig` per provider, pointing to their dedicated cloud
-account or project:
+account:
 
 ```
 tenant rns:roc:iam::clsd-ucp ->
-  ProviderConfig: clsd-ucp-gcp    -> GCP project:        clsd-ucp-prod
-  ProviderConfig: clsd-ucp-aws    -> AWS account:         123456789
-  ProviderConfig: clsd-ucp-azure  -> Azure subscription:  xxxxxxxx
-  ProviderConfig: clsd-ucp-omnia  -> Omnia tenant:        clsd-ucp
+  ProviderConfig: gcp-rns-roc-iam--clsd-ucp-qa         -> GCP project (QA)
+  ProviderConfig: gcp-rns-roc-iam--clsd-ucp-production -> GCP project (production)
 ```
 
-When the API server creates an XR for a tenant, it injects the correct `providerConfig`
-reference. Tenants interact only through the API — they cannot create XRs directly or
-reference another tenant's ProviderConfig.
+When the API server creates an XR for a tenant, it injects the correct ProviderConfig
+server-side. Tenants never interact with Kubernetes directly — they cannot reference
+another tenant's ProviderConfig.
 
-The API server `ServiceAccount` already has permission to manage ProviderConfigs
-(`k8s/api-server/serviceaccount.yaml`) — this was anticipated in the existing design.
-
-**Pros:** Works today across all 4 providers. Real cloud-level isolation. No new tooling.
-
-**Cons:** Cluster-scoped XRs globally visible to cluster-admins (acceptable — tenants
-have no direct cluster access).
-
-### Option B — vCluster Per Tenant
-
-Each tenant gets a virtual Kubernetes cluster with its own Crossplane installation.
-
-**Pros:** True API-server-level isolation — tenants cannot see each other at all.
-
-**Cons:** One Crossplane install per tenant. High operational overhead. Overkill for an
-internal platform serving known teams.
-
-### Option C — Namespace Per Tenant with Namespace-Scoped XRDs (Future)
-
-Resume MCUCP-119 once all required providers ship namespaced MR support. This is the
-correct long-term model.
-
-**Blocked on:** provider-upjet-gcp, provider-upjet-azure, provider-roc, provider-terraform.
-
-Note: `provider-roc` is owned by the platform team — making `OmniaDatabase`
-namespace-scoped is unblocked today and can be done independently.
-
----
-
-## Current Implementation State
-
-The ProviderConfig-per-tenant approach is already partially live. When a tenant admin
-uploads cloud credentials via the UI, the API server automatically creates the
-corresponding ProviderConfig.
-
-### Credential Upload Flow
-
-```
-Tenant admin uploads credential file via UI (CloudCredentials.jsx)
-  -> POST /api/v1/settings/credentials
-  -> API server validates file format
-  -> Stores as K8s Secret in crossplane-system:
-       cloud-credentials-{provider}-{sanitized-tenant-id}-{env}
-       labels:
-         platform.ucp.io/type: cloud-credentials
-         platform.ucp.io/provider: gcp
-         platform.ucp.io/env: production
-         platform.ucp.io/tenant: rns-roc-iam--clsd-ucp
-  -> Automatically creates/updates ProviderConfig:
-       gcp-{sanitized-tenant-id}-{env}
-       spec.projectID: <from service account JSON>
-       spec.credentials.secretRef: <points to above secret>
-```
-
-Only tenant admins (verified via Horizon API) can upload credentials. The raw key
-material is never returned via any API endpoint — only metadata (project ID, client
-email, key ID) is surfaced back to the UI.
-
-### Current State Per Provider
-
-| Provider | Credential UI | K8s Secret | ProviderConfig Auto-Created |
-|---|---|---|---|
-| GCP | Yes | Yes (service account JSON) | Yes — `upsertGCPProviderConfig()` |
-| ROC/Omnia | Yes | Yes (Ed25519 JWK) | No — uses on-demand JWT generation instead |
-| AWS | No | No | No |
-| Azure | No | No | No |
-
-### ROC/Omnia Auth Difference
-
-Omnia uses a different auth pattern. Instead of a long-lived ProviderConfig credential,
-the API server stores the tenant's Ed25519 JWK private key and generates a fresh
-short-lived JWT (10-minute TTL) each time Omnia needs to be called:
-
-```
-K8s Secret (JWK private key)
-  -> generateROCTokenForTenant()
-  -> signs JWT with Ed25519 key
-  -> JWT passed to Temporal workflow -> Omnia API call
-```
-
-This matches Omnia's requirement for short-lived tokens and avoids the token expiry
-problems that come with storing long-lived credentials.
-
----
-
-## Isolation Layers with Option A
-
-| Layer | Mechanism | Status |
-|---|---|---|
-| Authentication | Keycloak OIDC | Implemented |
-| Tenant identity | `X-Tenant-ID` + Horizon API | Implemented |
-| API-level RBAC | 5-role permission model | Designed, not implemented |
-| Resource ownership | `ucp.platform/tenant` labels + API-layer filtering | Designed, not applied |
-| Cloud isolation (GCP) | ProviderConfig per tenant — auto-created on credential upload | Implemented |
-| Cloud isolation (Omnia) | Per-tenant JWK secret + on-demand JWT generation | Implemented |
-| Cloud isolation (AWS/Azure) | ProviderConfig per tenant | Not yet — credential UI needed |
-| K8s defense-in-depth | `ValidatingAdmissionPolicy` (native k8s 1.35, no extra tooling) | Not done |
-
----
-
-## Implementation Gaps
-
-The design is correct and does not need a PoC. Cloud-level isolation via ProviderConfig
-per tenant is proven and working for GCP. The following are implementation gaps —
-straightforward code fixes, not design unknowns.
-
-### Gap 1 — List Endpoints Return All Tenants' Resources
-
-Every list handler fetches all cluster resources with no tenant filter:
+The naming convention is deterministic:
 
 ```go
-// main.go, compute_handler.go, storage_handler.go, kubernetes_handler.go
-list, err := s.k8sClient.Resource(gvr).List(ctx, metav1.ListOptions{})
-```
+// settings_handler.go
+func gcpProviderConfigName(tenantID, env string) string {
+    // e.g. "gcp-rns-roc-iam--clsd-ucp-qa"
+    return fmt.Sprintf("gcp-%s-%s", sanitizeTenantID(tenantID), env)
+}
 
-Any authenticated user calling `GET /api/v1/databases` receives every tenant's resources.
-This is a live cross-tenant data leak via the API.
-
-**Fix:** Add `LabelSelector: "ucp.platform/tenant=<tenantId>"` to all list queries.
-Depends on Gap 2 being fixed first.
-
-### Gap 2 — No `ucp.platform/tenant` Labels on XRs at Creation
-
-No handler sets tenant ownership labels on XRs at creation time. Only these annotations
-are set:
-- `temporal.io/workflow-id`
-- `omnia.roc.rakuten.com/token-secret-ref`
-
-Without the label, there is nothing to filter by in list queries and no way to verify
-ownership on get-by-name requests.
-
-**Fix:** Add the following labels inside each create handler alongside existing annotations:
-
-```go
-labels := map[string]interface{}{
-    "ucp.platform/tenant":     sanitizeTenantID(req.TenantID),
-    "ucp.platform/managed":    "true",
-    "ucp.platform/created-by": userID,
+func sanitizeTenantID(tenantID string) string {
+    // "rns:roc:iam::clsd-ucp" -> "rns-roc-iam--clsd-ucp"
+    return strings.NewReplacer(":", "-").Replace(strings.ToLower(tenantID))
 }
 ```
 
-Affected handlers: `main.go` (database), `compute_handler.go`, `storage_handler.go`,
-`kubernetes_handler.go`, `terraform_handler.go`, `blueprint_handler.go`.
+### 2. Tenant Ownership Labels on XRs (API-Layer)
 
-### Gap 3 — Terraform Handler Accepts User-Supplied `providerConfig`
+Every XR created via the API server carries two ownership markers:
 
-Unlike all other resource handlers, the Terraform handler takes `providerConfig` directly
-from the request body:
+| Type | Key | Value | Purpose |
+|---|---|---|---|
+| Label | `platform.ucp.io/tenant` | `rns-roc-iam--clsd-ucp` (sanitized) | Kubernetes label selectors — `:` not allowed in label values |
+| Annotation | `platform.ucp.io/tenant-id` | `rns:roc:iam::clsd-ucp` (raw) | Ownership checks — raw RNS format needed to call `isUserTenantAdmin()` |
+
+Both are stamped at XR creation time. The label is used for list filtering. The
+annotation is used for delete ownership checks and in-flight workflow tenant matching.
+
+### 3. Tenant Identity + Admin Verification
+
+Tenant context flows from `X-Tenant-ID` header (browser: derived from selected tenant,
+CLI: explicitly passed). The API server verifies admin status for every mutating
+operation:
 
 ```go
-// terraform_handler.go
-parameters["providerConfig"] = req.ProviderConfig  // user-controlled
+// horizon_handler.go
+func (s *APIServer) isUserTenantAdmin(r *http.Request, tenantID string) (bool, error)
 ```
 
-A tenant could pass any arbitrary ProviderConfig name, including another tenant's.
-
-**Fix:** Inject server-side like all other handlers:
-
-```go
-parameters["providerConfig"] = gcpProviderConfigName(req.TenantID, env)
-```
-
-### Gap 4 — GET by Name Has No Tenant Ownership Check
-
-`GET /api/v1/databases/{name}` (and equivalent get-by-name endpoints) fetch the resource
-by name with no verification that it belongs to the requesting tenant. Any authenticated
-user who knows a resource name can read it.
-
-**Fix:** After fetching the resource, verify the `ucp.platform/tenant` label matches the
-`tenantId` from the request. Return 404 (not 403) on mismatch to avoid leaking resource
-existence.
+This calls the Horizon API using the caller's Keycloak access token extracted from
+the session. Only verified tenant admins can create, list-filtered, or delete resources.
 
 ---
 
-## Recommended Path
+## Authentication Architecture
 
-| Timeframe | Action | Status |
+### BFF Pattern
+
+The API server implements the Backend For Frontend pattern directly:
+
+```
+Browser (React :3000)
+  │  Cookie: session=<random hex ID>    <- not a JWT, just a DB lookup key
+  ▼
+Vite dev proxy (:3000 -> :8080)         <- dev only, no logic
+  ▼
+Go API Server (:8080)
+  │
+  ├── SessionMiddleware (bff_auth.go)
+  │     1. reads session cookie
+  │     2. looks up session ID in PostgreSQL
+  │     3. decrypts access_token + refresh_token (AES-GCM)
+  │     4. auto-refreshes JWT if expired (via Keycloak)
+  │     5. injects Principal{AccessToken, UserID, ...} into request context
+  │
+  └── handler
+        uses principal.AccessToken for Horizon API calls (isUserTenantAdmin)
+```
+
+JWTs never reach the browser. The session cookie is a random opaque ID scoped to the
+API server session store (PostgreSQL).
+
+### Login Flow (PKCE)
+
+```
+Browser -> GET /auth/login
+  -> redirect to Keycloak with code_challenge (S256 PKCE)
+  -> Keycloak -> GET /auth/callback?code=...
+  -> API server exchanges code -> gets access_token + refresh_token
+  -> encrypts both (AES-GCM), stores in DB
+  -> sets HttpOnly cookie: session=<random hex>
+  -> redirects browser to /
+```
+
+---
+
+## Implementation Status
+
+### What Is Already Done (Pre-MCUCP-192)
+
+| Feature | Status | File |
 |---|---|---|
-| Now | ProviderConfig per tenant for GCP — auto-created on credential upload | Done |
-| Now | Per-tenant JWK + JWT generation for Omnia | Done |
-| Now | Add credential UI + ProviderConfig provisioning for AWS and Azure | Not done |
-| Now | Apply `ucp.platform/tenant` labels on all XR creation (Gap 2) | Not done |
-| Now | Add `LabelSelector` to all list endpoints (Gap 1) | Not done |
-| Now | Fix Terraform handler to inject `providerConfig` server-side (Gap 3) | Not done |
-| Now | Add tenant ownership check on get-by-name endpoints (Gap 4) | Not done |
-| Now | Implement RBAC.md role model (replace `isUserTenantAdmin()`) | Not done |
-| Now | Add `ValidatingAdmissionPolicy` for tenant label + ProviderConfig enforcement | Not done |
-| Short-term | Change `provider-roc` OmniaDatabase to `scope=Namespaced` | Not done |
-| Long-term | Resume MCUCP-119 when provider-upjet-gcp and provider-upjet-azure ship namespaced MR support | Blocked on upstream |
+| Keycloak OIDC + BFF session | Done | `bff_auth.go` |
+| Horizon API tenant admin verification | Done | `horizon_handler.go` |
+| GCP credential upload + ProviderConfig auto-creation | Done | `settings_handler.go` |
+| Per-tenant Ed25519 JWK + on-demand JWT for Omnia | Done | `settings_handler.go` |
+| ProviderConfig injection on XR creation (compute, storage, lb) | Done | `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` |
+| Tenant admin check on all create operations (compute, storage, lb) | Done | same |
+
+### MCUCP-192 Changes (API-Layer Isolation Gaps)
+
+#### Gap 2 — Tenant Label Stamping on XR Creation
+
+**Problem:** No handler stamped ownership labels on XRs. Without labels, there was
+nothing to filter on in list endpoints and no way to verify ownership on delete.
+
+**Fix:** Added label + annotation in every create handler:
+
+```go
+// In createXDatabaseYAML(), createXKubernetesClusterYAML()
+annotations["platform.ucp.io/tenant-id"] = req.TenantID           // raw RNS
+metadata["labels"] = map[string]interface{}{
+    "platform.ucp.io/tenant": sanitizeTenantID(req.TenantID),      // sanitized
+}
+```
+
+Affected: `main.go` (XDatabase), `kubernetes_handler.go` (XKubernetesCluster).
+Note: compute, storage, and load balancer handlers already had this pattern.
+
+#### Gap 1 — List Endpoints Return All Tenants' Resources
+
+**Problem:** All list handlers fetched all cluster resources with no tenant filter.
+Any authenticated user could call `GET /api/v1/databases` and receive every
+tenant's resources.
+
+**Fix:** Accept optional `?tenantId=` query param. When present, verify admin status
+then filter:
+
+```go
+tenantID := strings.TrimSpace(r.URL.Query().Get("tenantId"))
+if tenantID != "" {
+    if ok, err := s.isUserTenantAdmin(r, tenantID); !ok { return 403 }
+}
+// ...
+for _, item := range list.Items {
+    if tenantID != "" && !xrBelongsToTenant(&item, tenantID, env) {
+        continue
+    }
+}
+```
+
+The `xrBelongsToTenant` helper checks three fallbacks in order:
+
+```go
+// main.go
+func xrBelongsToTenant(obj *unstructured.Unstructured, tenantID, env string) bool {
+    // 1. annotation (raw RNS comparison)
+    if obj.GetAnnotations()["platform.ucp.io/tenant-id"] == tenantID {
+        return true
+    }
+    // 2. label (sanitized comparison)
+    if obj.GetLabels()["platform.ucp.io/tenant"] == sanitizeTenantID(tenantID) {
+        return true
+    }
+    // 3. providerConfig name (legacy resources without labels)
+    providerConfig, _, _ := unstructured.NestedString(obj.Object, "spec", "parameters", "providerConfig")
+    return providerConfig == gcpProviderConfigName(tenantID, env)
+}
+```
+
+The third fallback covers resources provisioned before label stamping was added.
+
+In-flight Temporal workflows are also filtered via `wf.TenantID`.
+
+Affected: `ListDatabases()`, `ListKubernetesClusters()`.
+Note: compute, storage, and load balancer list handlers already used
+`computeInstanceBelongsToTenant` / `loadBalancerBelongsToTenant` — same 3-step
+logic, separate functions (not refactored per YAGNI).
+
+#### Gap 4 — Delete Has No Tenant Ownership Check
+
+**Problem:** Delete endpoints deleted any named resource without checking whether
+it belonged to the requesting tenant.
+
+**Fix:** Read XR first, extract tenant ID from annotation, verify admin before deleting:
+
+```go
+obj, err := s.k8sClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+if err != nil {
+    if k8serrors.IsNotFound(err) { return 404 }
+    return 500
+}
+xrTenantID := obj.GetAnnotations()["platform.ucp.io/tenant-id"]
+if xrTenantID == "" {
+    xrTenantID, _, _ = unstructured.NestedString(obj.Object, "spec", "parameters", "tenantId")
+}
+if xrTenantID != "" {
+    if ok, err := s.isUserTenantAdmin(r, xrTenantID); !ok { return 403 }
+}
+```
+
+Returns 403 (not 404) on ownership mismatch — the resource name is already known
+to the caller since they just provided it. 404-on-mismatch is reserved for get-by-name
+where the caller should not know if the resource exists.
+
+Affected: `DeleteDatabase()`, `DeleteKubernetesCluster()`.
+
+### Out of Scope
+
+| Item | Reason |
+|---|---|
+| Terraform endpoints (`/api/v1/terraform/*`) | Generate random strings/passwords via OpenTofu `random` provider — no cloud credentials, no per-tenant ProviderConfig involved |
+| Omnia-specific isolation | Omnia uses on-demand JWT per tenant — isolation already handled at auth layer |
+
+---
+
+## Remaining Work
+
+### Frontend: Global Tenant Context (MCUCP-192, not yet done)
+
+**Problem:** List endpoints currently return everything when no `?tenantId=` is passed.
+The UI never sends `tenantId` on list requests. Requiring it as a query param would
+mean adding a tenant selector to every list component — scattered changes.
+
+**Fix:** Two-part change:
+
+1. **Frontend** — create a global `TenantContext` at app root that stores the currently
+   selected tenant. Update `useAuthFetch.ts` to inject `X-Tenant-ID: <tenant.rns>`
+   header on every request automatically:
+
+   ```ts
+   // useAuthFetch.ts
+   const { selectedTenant } = useTenantContext()
+   if (selectedTenant) {
+       headers.set('X-Tenant-ID', selectedTenant.rns)
+   }
+   ```
+
+2. **Backend** — list handlers read `X-Tenant-ID` as fallback when query param absent:
+
+   ```go
+   tenantID := strings.TrimSpace(r.URL.Query().Get("tenantId"))
+   if tenantID == "" {
+       tenantID = strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+   }
+   ```
+
+This means no changes needed in individual list components — the tenant propagates
+automatically through `authFetch`.
+
+### RBAC Role Model (MCUCP-191, not yet done)
+
+Currently the only role check is `isUserTenantAdmin()` — binary: admin or 403.
+
+The full 5-role model (`docs/architecture/RBAC.md`) needs to be implemented:
+
+| Role | Permitted operations |
+|---|---|
+| `platform-admin` | All operations across all tenants |
+| `tenant-admin` | All operations within their tenant |
+| `deployer` | Create + delete resources within their tenant |
+| `approver` | Approve/reject Temporal workflows |
+| `viewer` | Read-only within their tenant |
+
+Depends on MCUCP-192 label infrastructure being in place (now done).
+
+### ValidatingAdmissionPolicy (MCUCP-192, Gap 6, not yet done)
+
+Defense-in-depth at the Kubernetes API layer. Even if the API server is bypassed,
+XRs without proper tenant labels or with mismatched ProviderConfig would be rejected:
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+spec:
+  validations:
+    - expression: "has(object.metadata.labels['platform.ucp.io/tenant'])"
+      message: "XR must have platform.ucp.io/tenant label"
+```
+
+Requires Kubernetes 1.30+ (GA). No extra tooling needed.
+
+---
+
+## Verification Guide
+
+### Gap 2 — Label Stamping
+
+Create a resource via UI, then inspect:
+
+```bash
+kubectl get xdatabase <name> -o jsonpath='{.metadata.labels}' | jq .
+# {"platform.ucp.io/tenant": "rns-roc-iam--clsd-ucp"}
+
+kubectl get xdatabase <name> -o jsonpath='{.metadata.annotations}' | jq .
+# {"platform.ucp.io/tenant-id": "rns:roc:iam::clsd-ucp"}
+```
+
+### Gap 1 — List Filtering
+
+```bash
+COOKIE="Cookie: session=<value-from-browser-devtools>"
+TENANT="rns:roc:iam::clsd-ucp"
+
+# Real tenant -> 200, filtered results
+curl -H "$COOKIE" -H "X-Environment: QA" \
+  "http://localhost:8080/api/v1/databases?tenantId=$TENANT"
+
+# Fake tenant you are NOT admin of -> 403
+curl -H "$COOKIE" -H "X-Environment: QA" \
+  "http://localhost:8080/api/v1/databases?tenantId=rns:roc:iam::fake-tenant"
+```
+
+### Gap 4 — Delete Ownership
+
+```bash
+# Stamp a fake tenant on an existing resource
+kubectl annotate xdatabase <name> \
+  platform.ucp.io/tenant-id=rns:roc:iam::fake-tenant --overwrite
+
+# Delete via API -> 403
+curl -X DELETE -H "$COOKIE" -H "X-Environment: QA" \
+  "http://localhost:8080/api/v1/databases/<name>"
+
+# Restore
+kubectl annotate xdatabase <name> \
+  platform.ucp.io/tenant-id=$TENANT --overwrite
+```
+
+### Negative Test: List Without Tenant Filtering
+
+Without a tenant context (before the frontend TenantContext work):
+
+```bash
+# No tenantId -> returns ALL resources (known gap, pending frontend fix)
+curl -H "$COOKIE" "http://localhost:8080/api/v1/databases"
+```
+
+After the TenantContext work, this will return only the selected tenant's resources
+because the browser will automatically send `X-Tenant-ID`.
+
+---
+
+## Implementation Plan (Full)
+
+| # | Work Item | Ticket | Status |
+|---|---|---|---|
+| 1 | ProviderConfig auto-creation on GCP credential upload | — | Done |
+| 2 | Per-tenant JWK + JWT generation for Omnia | — | Done |
+| 3 | Tenant label + annotation stamping on XDatabase, XKubernetesCluster XRs | MCUCP-192 | Done |
+| 4 | Tenant-filtered list endpoints (database, kubernetes) | MCUCP-192 | Done |
+| 5 | Delete ownership check (database, kubernetes) | MCUCP-192 | Done |
+| 6 | Global `TenantContext` + `X-Tenant-ID` injection in `useAuthFetch` | MCUCP-192 | Pending |
+| 7 | Backend list handlers read `X-Tenant-ID` header as fallback | MCUCP-192 | Pending |
+| 8 | Full RBAC role model — replace binary `isUserTenantAdmin()` | MCUCP-191 | Pending |
+| 9 | `ValidatingAdmissionPolicy` for tenant label + ProviderConfig enforcement | MCUCP-192 | Pending |
+| 10 | Change `provider-roc` OmniaDatabase to `scope=Namespaced` | — | Unblocked, not started |
+| 11 | Resume namespace-per-tenant (MCUCP-119) | MCUCP-119 | Blocked on provider-upjet-gcp + provider-upjet-azure |
 
 ---
 
 ## Related
 
+- `MCUCP-192` — this PoC implementation
+- `MCUCP-191` — RBAC role model (depends on MCUCP-192 label infrastructure)
 - `MCUCP-119` — namespace-scoped XRDs branch (on hold)
-- `.local-docs/MCUCP-119-namespace-scoped-xrds.md` — detailed blocker analysis
-- `docs/architecture/RBAC.md` — full RBAC role and permission design
+- `docs/architecture/RBAC.md` — full 5-role RBAC design
 - `docs/architecture/BFF_AUTH.md` — authentication architecture
-- `.local-docs/AUTH_FLOW.md` — end-to-end auth flow reference
