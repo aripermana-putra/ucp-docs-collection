@@ -32,6 +32,7 @@ before delete operations.
 | Per-tenant Ed25519 JWK + on-demand JWT for Omnia | `settings_handler.go` | Deployed |
 | Global `TenantContext` + `X-Tenant-ID` header injection | `useAuthFetch.ts`, frontend | Not deployed |
 | `X-Tenant-ID` fallback in list handlers | `main.go`, `kubernetes_handler.go`, `compute_handler.go` | Not deployed |
+| `ValidatingAdmissionPolicy` — tenant label + annotation enforcement | `k8s/` (new manifest) | Not deployed |
 
 ---
 
@@ -48,6 +49,8 @@ before delete operations.
   tenant (HTTP 403)
 - **ProviderConfig injection** — `providerConfig` is always derived server-side from
   `gcpProviderConfigName(tenantID, env)`; callers cannot supply it
+- **ValidatingAdmissionPolicy** — Kubernetes admission webhook that rejects XR creation
+  if `platform.ucp.io/tenant` label or `platform.ucp.io/tenant-id` annotation is absent
 
 ### Out of Scope
 
