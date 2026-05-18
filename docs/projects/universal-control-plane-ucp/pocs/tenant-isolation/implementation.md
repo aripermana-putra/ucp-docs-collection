@@ -28,11 +28,12 @@ before delete operations.
 | Tenant-filtered list — compute, storage, load balancer | `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
 | Delete ownership check — XDatabase | `main.go` (`DeleteDatabase`) | Deployed |
 | Delete ownership check — XKubernetesCluster | `kubernetes_handler.go` (`DeleteKubernetesCluster`) | Deployed |
+| Delete ownership check — XObjectStorage | `storage_handler.go` (`DeleteStorageBucket`) | Deployed |
 | GCP credential upload + ProviderConfig auto-creation | `settings_handler.go` (`upsertGCPProviderConfig`) | Deployed |
 | Per-tenant Ed25519 JWK + on-demand JWT for Omnia | `settings_handler.go` | Deployed |
-| Global `TenantContext` + `X-Tenant-ID` header injection | `useAuthFetch.ts`, frontend | Not deployed |
-| `X-Tenant-ID` header in list handlers | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `load_balancer_handler.go` | Not deployed |
-| `ValidatingAdmissionPolicy` — tenant label + annotation enforcement | `k8s/` (new manifest) | Not deployed |
+| Global `TenantContext` + `X-Tenant-ID` header injection | `TenantContext.jsx`, `useAuthFetch.ts`, `MainLayout.jsx`, frontend | Deployed |
+| `X-Tenant-ID` header in list handlers | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
+| `ValidatingAdmissionPolicy` — tenant label + annotation enforcement | `k8s/tenant-admission-policy.yaml` | Deployed |
 
 ---
 
@@ -57,6 +58,53 @@ before delete operations.
 - Terraform endpoints (`/api/v1/terraform/*`) — these use the OpenTofu `random` provider
   with no cloud credentials; per-tenant ProviderConfig is not applicable
 - Omnia-specific isolation — handled at the auth layer via per-tenant JWK + on-demand JWT
+
+---
+
+## API Sequence — Create with Admission Validation
+
+`POST /api/v1/storage-buckets` (same flow applies to all resource types)
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    participant Browser
+    participant Handler as API Server<br/>(CreateStorageBucket)
+    participant Horizon as Horizon API
+    participant Temporal as Temporal Worker
+    participant K8sAPI as Kubernetes API Server<br/>(ValidatingAdmissionPolicy)
+    participant Crossplane
+
+    Browser->>Handler: POST /api/v1/storage-buckets
+    Note over Browser,Handler: Cookie: session=abc123<br/>X-Environment: QA<br/>Body: {name, projectId, tenantId: "rns:roc:iam::clsd-ucp"}
+
+    Handler->>Horizon: GET /v0/tenants/rns:roc:iam::clsd-ucp
+    Horizon-->>Handler: {admins: [...]}
+    Handler->>Handler: caller ∈ admins → authorized
+
+    Handler->>Handler: stamp XR metadata<br/>label  platform.ucp.io/tenant: "rns-roc-iam--clsd-ucp"<br/>annot  platform.ucp.io/tenant-id: "rns:roc:iam::clsd-ucp"<br/>param  providerConfig: "gcp-rns-roc-iam--clsd-ucp-qa"
+
+    Handler->>Temporal: ExecuteWorkflow("RequestStorageWorkflow", xrYAML)
+    Handler-->>Browser: 202 Accepted {workflowId}
+
+    Temporal->>K8sAPI: CREATE XObjectStorage (xrYAML)
+
+    K8sAPI->>K8sAPI: evaluate ValidatingAdmissionPolicy CEL<br/>① has(object.metadata.labels['platform.ucp.io/tenant'])?<br/>② has(object.metadata.annotations['platform.ucp.io/tenant-id'])?
+
+    alt both expressions true
+        K8sAPI-->>Temporal: 201 Created
+        K8sAPI--)Crossplane: watch event — new XR
+        Crossplane->>Crossplane: reconcile → provision resource
+    else label or annotation absent
+        K8sAPI-->>Temporal: 422 Unprocessable Entity<br/>"XR must carry the platform.ucp.io/tenant label"
+        Note over Temporal: workflow fails — XR never persisted
+    end
+```
+
+The same policy covers `UPDATE` operations. A direct `kubectl patch` on an existing XR
+that removes the label or annotation is also rejected at the API server layer before
+reaching etcd.
 
 ---
 
