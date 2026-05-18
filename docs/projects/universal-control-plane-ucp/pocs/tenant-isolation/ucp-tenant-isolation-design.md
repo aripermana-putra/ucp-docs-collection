@@ -35,18 +35,11 @@ if (selectedTenant) {
 }
 ```
 
-List handlers on the API server read `X-Tenant-ID` as a fallback when the query
-parameter is absent:
+List handlers on the API server read the tenant ID exclusively from the header:
 
 ```go
-tenantID := strings.TrimSpace(r.URL.Query().Get("tenantId"))
-if tenantID == "" {
-    tenantID = strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
-}
+tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
 ```
-
-The query parameter takes precedence over the header, preserving the ability to override
-for admin use cases.
 
 ---
 

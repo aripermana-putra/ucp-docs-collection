@@ -31,7 +31,7 @@ before delete operations.
 | GCP credential upload + ProviderConfig auto-creation | `settings_handler.go` (`upsertGCPProviderConfig`) | Deployed |
 | Per-tenant Ed25519 JWK + on-demand JWT for Omnia | `settings_handler.go` | Deployed |
 | Global `TenantContext` + `X-Tenant-ID` header injection | `useAuthFetch.ts`, frontend | Not deployed |
-| `X-Tenant-ID` fallback in list handlers | `main.go`, `kubernetes_handler.go`, `compute_handler.go` | Not deployed |
+| `X-Tenant-ID` header in list handlers | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `load_balancer_handler.go` | Not deployed |
 | `ValidatingAdmissionPolicy` — tenant label + annotation enforcement | `k8s/` (new manifest) | Not deployed |
 
 ---
@@ -42,7 +42,7 @@ before delete operations.
 
 - **Label stamping** — every XR creation stamps `platform.ucp.io/tenant` (label) and
   `platform.ucp.io/tenant-id` (annotation) on the Kubernetes object
-- **Tenant-filtered list endpoints** — `?tenantId=<rns>` query parameter activates
+- **Tenant-filtered list endpoints** — `X-Tenant-ID` request header activates
   tenant filtering; the caller must be admin of the specified tenant
 - **Delete ownership enforcement** — delete endpoints read the XR's
   `platform.ucp.io/tenant-id` annotation and reject callers who are not admin of that
@@ -62,7 +62,7 @@ before delete operations.
 
 ## API Sequence — Tenant-Filtered List
 
-`GET /api/v1/databases?tenantId=rns:roc:iam::clsd-ucp`
+`GET /api/v1/databases`
 
 ```mermaid
 sequenceDiagram
@@ -74,8 +74,8 @@ sequenceDiagram
     participant Horizon as Horizon API
     participant K8s as Kubernetes
 
-    Browser->>Handler: GET /api/v1/databases?tenantId=rns:roc:iam::clsd-ucp
-    Note over Browser,Handler: Cookie: session=abc123<br/>X-Environment: QA
+    Browser->>Handler: GET /api/v1/databases
+    Note over Browser,Handler: Cookie: session=abc123<br/>X-Environment: QA<br/>X-Tenant-ID: rns:roc:iam::clsd-ucp
 
     Handler->>SessionDB: GetSessionWithUser("abc123")
     SessionDB-->>Handler: session{enc_access_token, ...}
@@ -192,13 +192,13 @@ kubectl get xdatabase <name> -o jsonpath='{.metadata.annotations}' | jq .
 ```bash
 COOKIE="Cookie: session=<value-from-browser-devtools>"
 
-# Caller's own tenant → 200, filtered results
-curl -H "$COOKIE" -H "X-Environment: QA" \
-  "http://localhost:8080/api/v1/databases?tenantId=rns:roc:iam::clsd-ucp"
+# Own tenant → 200, filtered results
+curl -H "$COOKIE" -H "X-Environment: QA" -H "X-Tenant-ID: rns:roc:iam::clsd-ucp" \
+  "http://localhost:8080/api/v1/databases"
 
 # Tenant the caller is not admin of → 403
-curl -H "$COOKIE" -H "X-Environment: QA" \
-  "http://localhost:8080/api/v1/databases?tenantId=rns:roc:iam::other-tenant"
+curl -H "$COOKIE" -H "X-Environment: QA" -H "X-Tenant-ID: rns:roc:iam::other-tenant" \
+  "http://localhost:8080/api/v1/databases"
 ```
 
 ### Delete ownership
@@ -221,12 +221,11 @@ curl -X DELETE -H "$COOKIE" -H "X-Environment: QA" \
 
 ## Limitations
 
-### List endpoints require explicit tenantId
+### List handlers return all resources when X-Tenant-ID is absent
 
-List handlers return all resources when `?tenantId=` is absent. The browser UI does not
-currently send a tenant ID on list requests — the frontend has no global tenant context.
-The design fix (global `TenantContext` + `X-Tenant-ID` header) is described in
-`ucp-tenant-isolation-design.md`.
+List handlers apply tenant filtering only when the `X-Tenant-ID` header is present. The
+browser UI does not yet send this header automatically — the global `TenantContext` and
+`useAuthFetch` injection are not yet deployed. See `ucp-tenant-isolation-design.md`.
 
 ### providerConfig fallback relies on naming convention
 
