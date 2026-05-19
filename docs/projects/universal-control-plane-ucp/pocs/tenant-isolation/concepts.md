@@ -30,7 +30,7 @@ cannot supply or override it.
 
 ## Tenant Identity
 
-Tenant context is expressed as an RNS-format string: `rns:roc:iam::clsd-ucp`.
+Tenant context is expressed as an RNS (Rakuten Name Space) string: `rns:roc:iam::clsd-ucp`.
 
 The API server verifies tenant admin membership for every mutating and tenant-scoped read
 operation by calling the Horizon API:
