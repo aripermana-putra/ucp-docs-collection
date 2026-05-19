@@ -18,7 +18,7 @@ before delete operations.
 |---|---|---|
 | `sanitizeTenantID()` | `settings_handler.go:290` | Deployed |
 | `gcpProviderConfigName()` | `settings_handler.go:236` | Deployed |
-| `isUserTenantAdmin()` | `horizon_handler.go` | Deployed |
+| `isUserTenantAdmin()` | `settings_handler.go` | Deployed |
 | `xrBelongsToTenant()` | `main.go:1308` | Deployed |
 | Label + annotation stamping — XDatabase | `main.go` (`createXDatabaseYAML`) | Deployed |
 | Label + annotation stamping — XKubernetesCluster | `kubernetes_handler.go` (`createXKubernetesClusterYAML`) | Deployed |
@@ -90,7 +90,7 @@ sequenceDiagram
 
     Temporal->>K8sAPI: CREATE XObjectStorage (xrYAML)
 
-    K8sAPI->>K8sAPI: evaluate ValidatingAdmissionPolicy CEL<br/>① has(object.metadata.labels['platform.ucp.io/tenant'])?<br/>② has(object.metadata.annotations['platform.ucp.io/tenant-id'])?
+    K8sAPI->>K8sAPI: evaluate ValidatingAdmissionPolicy CEL<br/>① has(object.metadata.labels) && 'platform.ucp.io/tenant' in labels?<br/>② has(object.metadata.annotations) && 'platform.ucp.io/tenant-id' in annotations?
 
     alt both expressions true
         K8sAPI-->>Temporal: 201 Created
@@ -171,10 +171,11 @@ sequenceDiagram
 
     alt xrTenantID is set
         Handler->>Horizon: GET /v0/tenants/{xrTenantID}
-        Horizon-->>Handler: admins list
-        Handler->>Handler: caller ∈ admins?
+        Horizon-->>Handler: admins list OR 404
 
-        alt not admin
+        alt Horizon returns 404 (unknown tenant)
+            Handler-->>Browser: 422 Unprocessable Entity<br/>"Resource belongs to an unknown tenant"
+        else caller not in admins
             Handler-->>Browser: 403 Forbidden
         end
     end
@@ -269,11 +270,12 @@ curl -X DELETE -H "$COOKIE" -H "X-Environment: QA" \
 
 ## Limitations
 
-### List handlers return all resources when X-Tenant-ID is absent
+### List handlers scope to caller's tenants when X-Tenant-ID is absent
 
-List handlers apply tenant filtering only when the `X-Tenant-ID` header is present. The
-browser UI does not yet send this header automatically — the global `TenantContext` and
-`useAuthFetch` injection are not yet deployed. See `ucp-tenant-isolation-design.md`.
+When `X-Tenant-ID` is not set, list handlers call Horizon
+`GET /v0/members/<email>/tenants` to fetch all tenants the caller belongs to and
+filter results to those tenants. This means a user who is a member of multiple
+tenants sees resources across all of them in the default (no header) view.
 
 ### providerConfig fallback relies on naming convention
 
