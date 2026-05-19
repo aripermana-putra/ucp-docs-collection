@@ -6,19 +6,13 @@ parent_page_id: "../tenant-isolation.md"
 
 # Tenant Isolation — UCP Design
 
-This document covers the design for isolation features not yet deployed: global tenant
-context propagation, the RBAC role model, Kubernetes admission enforcement, and the
-long-term path to namespace-per-tenant isolation.
+This document covers the design decisions behind global tenant context propagation,
+the RBAC role model, Kubernetes admission enforcement, and the long-term path to
+namespace-per-tenant isolation.
 
 ---
 
 ## Global Tenant Context and Automatic Header Injection
-
-### Problem
-
-List endpoints enforce tenant filtering only when `?tenantId=` is explicitly passed.
-The browser UI sends no tenant ID on list requests, so all resources across all tenants
-are returned to any authenticated user.
 
 ### Design
 
@@ -79,8 +73,7 @@ for the endpoint. All endpoints currently guarded by `isUserTenantAdmin()` are m
 to `RequireRole("tenant-admin")` as a starting point.
 
 Role resolution requires the tenant context to be available on the request — provided by
-`X-Tenant-ID` or `?tenantId=`. This is why the global tenant context work is a
-prerequisite.
+the `X-Tenant-ID` header. This is why the global tenant context work is a prerequisite.
 
 ---
 
@@ -108,9 +101,9 @@ spec:
         resources: ["*"]
         operations: ["CREATE", "UPDATE"]
   validations:
-    - expression: "has(object.metadata.labels['platform.ucp.io/tenant'])"
+    - expression: "has(object.metadata.labels) && 'platform.ucp.io/tenant' in object.metadata.labels"
       message: "XR must carry the platform.ucp.io/tenant label"
-    - expression: "has(object.metadata.annotations['platform.ucp.io/tenant-id'])"
+    - expression: "has(object.metadata.annotations) && 'platform.ucp.io/tenant-id' in object.metadata.annotations"
       message: "XR must carry the platform.ucp.io/tenant-id annotation"
 ```
 
