@@ -113,8 +113,38 @@ spec:
 
 ## Namespace Per Tenant (Long-Term Path)
 
-Namespace-per-tenant is the correct long-term isolation model. It allows Kubernetes RBAC
-to enforce isolation at the API-server level independent of the UCP API server.
+Namespace-per-tenant is the correct long-term isolation model for two reasons.
+
+**RBAC isolation at the Kubernetes layer.** Kubernetes RBAC can restrict access to
+namespaced resources by namespace, providing isolation enforced by the Kubernetes API
+server independent of the UCP API server. With cluster-scoped XRs this is not possible —
+cluster-scoped resources have no namespace boundary for RBAC to act on.
+
+**List performance.** All current list endpoints fetch every XR of a given type
+cluster-wide and filter tenant ownership in the UCP API server's memory:
+
+```go
+// Today: fetches all tenants' resources, filters in UCP API server memory
+list, err := s.k8sClient.Resource(xObjectStorageGVR).List(ctx, metav1.ListOptions{})
+for _, item := range list.Items {
+    if !xrBelongsToAnyTenant(&item, allowedTenantIDs, env) {
+        continue
+    }
+}
+```
+
+With namespace-scoped XRs, the list call is scoped to the tenant's namespace and
+Kubernetes filters server-side using its namespace index:
+
+```go
+// After MCUCP-119: only this tenant's resources returned, no in-memory filtering needed
+list, err := s.k8sClient.Resource(xObjectStorageGVR).Namespace(tenantNamespace).List(ctx, metav1.ListOptions{})
+```
+
+This eliminates the `getUserTenantIDs` Horizon call, the `xrBelongsToAnyTenant`
+in-memory loop, and the three-fallback ownership check on every list request. Memory
+pressure and latency in the UCP API server grow with the requesting tenant's resource
+count rather than with the total across all tenants.
 
 The approach is blocked until all required providers ship namespace-scoped managed resource
 (MR) support:
