@@ -16,23 +16,16 @@ before delete operations.
 
 | Component | File | Status |
 |---|---|---|
-| `sanitizeTenantID()` | `settings_handler.go:290` | Deployed |
-| `gcpProviderConfigName()` | `settings_handler.go:236` | Deployed |
-| `isUserTenantAdmin()` | `settings_handler.go` | Deployed |
-| `xrBelongsToTenant()` | `main.go:1308` | Deployed |
+| `xrBelongsToTenant()` | `main.go` | Deployed |
+| `xrBelongsToAnyTenant()` | `main.go` | Deployed |
+| `getUserTenantIDs()` | `horizon_handler.go` | Deployed |
+| `errTenantNotFound` / `isTenantNotFound()` | `settings_handler.go` | Deployed |
 | Label + annotation stamping — XDatabase | `main.go` (`createXDatabaseYAML`) | Deployed |
 | Label + annotation stamping — XKubernetesCluster | `kubernetes_handler.go` (`createXKubernetesClusterYAML`) | Deployed |
 | Label + annotation stamping — XComputeInstance, XStorageBucket, XLoadBalancer | `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
-| Tenant-filtered `ListDatabases` | `main.go` | Deployed |
-| Tenant-filtered `ListKubernetesClusters` | `kubernetes_handler.go` | Deployed |
-| Tenant-filtered list — compute, storage, load balancer | `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
-| Delete ownership check — XDatabase | `main.go` (`DeleteDatabase`) | Deployed |
-| Delete ownership check — XKubernetesCluster | `kubernetes_handler.go` (`DeleteKubernetesCluster`) | Deployed |
-| Delete ownership check — XObjectStorage | `storage_handler.go` (`DeleteStorageBucket`) | Deployed |
-| GCP credential upload + ProviderConfig auto-creation | `settings_handler.go` (`upsertGCPProviderConfig`) | Deployed |
-| Per-tenant Ed25519 JWK + on-demand JWT for Omnia | `settings_handler.go` | Deployed |
+| Tenant-filtered list — all resource types (X-Tenant-ID or caller's tenants) | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
+| Delete ownership check — all resource types | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
 | Global `TenantContext` + `X-Tenant-ID` header injection | `TenantContext.jsx`, `useAuthFetch.ts`, `MainLayout.jsx`, frontend | Deployed |
-| `X-Tenant-ID` header in list handlers | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
 | `ValidatingAdmissionPolicy` — tenant label + annotation enforcement | `k8s/tenant-admission-policy.yaml` | Deployed |
 
 ---
