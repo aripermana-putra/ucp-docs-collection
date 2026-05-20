@@ -30,43 +30,53 @@ well — not only for `deployer`.
 
 ---
 
-## Role Resolution via Horizon
+## Role Resolution
 
-Role membership is resolved against the Horizon API, consistent with the
-existing `isUserTenantAdmin()` pattern. The Horizon members endpoint returns
-the caller's tenant subscriptions, each of which carries a `default_role` field:
+`resolveUserRole(r, tenantID)` is called by `RequireRole` on every protected
+request. By the time it runs, `SessionMiddleware` has already executed — the
+`Principal` is in the request context and carries two fields that both candidate
+approaches use:
 
-```
-GET /v0/members/<email>/tenants?subscriptions=true
-Authorization: Bearer {access_token}
-
-Response:
-{
-  "items": [
-    {
-      "rns": "rns:roc:iam::clsd-ucp",
-      "subscriptions": [
-        { "default_role": "tenant-admin", "service": "ucp" }
-      ]
-    }
-  ]
-}
+```go
+Principal.AccessToken  // decrypted Keycloak JWT — used by Option B
+Principal.UserID       // internal DB UUID      — used by Option C
 ```
 
-`resolveUserRole(r, tenantID)` calls this endpoint, finds the entry matching
-`tenantID`, reads `subscriptions[].default_role`, and maps it to the internal
-`Role` type.
+### Option B — Keycloak JWT claims
 
-### Role Mapping
+A custom `ucp_roles` claim is added to the Keycloak access token via a protocol
+mapper. The claim is a map of tenant RNS → role:
 
-| Horizon `default_role` | Internal `Role` |
-|---|---|
-| `platform-admin` | `RolePlatformAdmin` |
-| `tenant-admin` | `RoleTenantAdmin` |
-| `deployer` | `RoleDeployer` |
-| `approver` | `RoleApprover` |
-| `viewer` | `RoleViewer` |
-| absent / unrecognised | `RoleUnknown` (→ 403) |
+```json
+{ "ucp_roles": { "rns:roc:iam::clsd-ucp": "deployer" } }
+```
+
+`resolveUserRole` parses `Principal.AccessToken` (already decrypted, no extra
+API call) and reads the role for the requested tenant:
+
+```go
+claims, _ := auth.ParseUnverified(principal.AccessToken)
+roleStr := claims.UCPRoles[tenantID]
+```
+
+Role changes take effect after token refresh (up to the access token TTL).
+
+### Option C — UCP database
+
+Role assignments are stored in a `tenant_role_assignments` table. `resolveUserRole`
+queries the DB using `Principal.UserID`:
+
+```go
+roleStr, _ := s.db.GetTenantRole(principal.UserID, tenantID)
+```
+
+Role changes take effect immediately. Requires a schema migration and an admin
+API to manage assignments.
+
+### Decision
+
+The approach has not been decided. See `ucp-rbac-design.md` for the detailed
+design of each option.
 
 ---
 
@@ -117,11 +127,10 @@ Handlers no longer call `isUserTenantAdmin()` directly.
 It grants access to every endpoint, including cross-tenant list operations
 (list all resources regardless of `X-Tenant-ID`).
 
-Resolution: the Horizon members endpoint returns all tenants for a user.
-A user whose membership record carries `default_role: platform-admin` on any
-tenant entry is identified as a platform admin. Alternatively, a dedicated
-Horizon platform group may be checked — the exact mechanism is determined
-by what the Horizon API exposes.
+Resolution follows the same mechanism as tenant-scoped roles — either a
+dedicated `platform-admin` value in the Keycloak JWT claim or a DB entry
+with `tenant_rns = '*'` (or similar sentinel). The exact representation
+depends on the chosen approach and is defined in `ucp-rbac-design.md`.
 
 ---
 

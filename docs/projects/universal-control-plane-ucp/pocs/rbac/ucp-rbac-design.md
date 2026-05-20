@@ -54,67 +54,75 @@ func RoleFromContext(ctx context.Context) (Role, bool) {
 
 ## resolveUserRole
 
-`resolveUserRole` lives in `rbac_handler.go`. It calls the Horizon members
-endpoint and maps the returned `default_role` to the internal `Role` type.
+`resolveUserRole` lives in `rbac_handler.go`. By the time it is called,
+`SessionMiddleware` has already run and injected a `Principal` into the request
+context. The `Principal` provides what both candidate approaches need without
+any additional network call for the role lookup itself:
 
 ```go
-// rbac_handler.go
-func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, error) {
-    authToken := extractBearerToken(r)
-    principal, _ := authpkg.PrincipalFromContext(r.Context())
+principal, _ := authpkg.PrincipalFromContext(r.Context())
+// principal.AccessToken — decrypted Keycloak JWT (Option B)
+// principal.UserID      — internal DB UUID       (Option C)
+```
 
-    env := r.Header.Get("X-Environment")
-    if env == "" {
-        env = "PRODUCTION"
-    }
+### Option B — Keycloak JWT claims
 
-    endpoint := fmt.Sprintf("%s/members/%s/tenants?subscriptions=true",
-        getHorizonAPIBaseURL(env),
-        url.PathEscape(principal.Email),
-    )
+Requires `UCPClaims` in `auth/auth.go` to carry a custom `ucp_roles` claim
+configured in Keycloak via a protocol mapper:
 
-    body, status, err := s.horizonGet(authToken, endpoint)
-    if err != nil || status != http.StatusOK {
-        return RoleUnknown, fmt.Errorf("horizon returned %d: %w", status, err)
-    }
-
-    var resp struct {
-        Items []struct {
-            RNS           string `json:"rns"`
-            Subscriptions []struct {
-                DefaultRole string `json:"default_role"`
-                Service     string `json:"service"`
-            } `json:"subscriptions"`
-        } `json:"items"`
-    }
-    if err := json.Unmarshal(body, &resp); err != nil {
-        return RoleUnknown, fmt.Errorf("failed to parse tenant list: %w", err)
-    }
-
-    for _, item := range resp.Items {
-        // platform-admin: present on any tenant entry
-        for _, sub := range item.Subscriptions {
-            if sub.DefaultRole == "platform-admin" {
-                return RolePlatformAdmin, nil
-            }
-        }
-        // tenant-scoped role
-        if item.RNS == tenantID {
-            for _, sub := range item.Subscriptions {
-                return horizonRoleToInternal(sub.DefaultRole), nil
-            }
-        }
-    }
-    return RoleUnknown, nil
+```go
+type UCPClaims struct {
+    jwt.RegisteredClaims
+    Email             string            `json:"email"`
+    PreferredUsername string            `json:"preferred_username"`
+    Name              string            `json:"name"`
+    UCPRoles          map[string]string `json:"ucp_roles"`
 }
 
-func horizonRoleToInternal(r string) Role {
-    switch r {
-    case "tenant-admin": return RoleTenantAdmin
-    case "deployer":     return RoleDeployer
-    case "approver":     return RoleApprover
-    case "viewer":       return RoleViewer
-    default:             return RoleUnknown
+func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, error) {
+    principal, _ := authpkg.PrincipalFromContext(r.Context())
+    claims, err := authpkg.ParseUnverified(principal.AccessToken)
+    if err != nil {
+        return RoleUnknown, fmt.Errorf("failed to parse token claims: %w", err)
+    }
+    roleStr, ok := claims.UCPRoles[tenantID]
+    if !ok {
+        // check platform-admin (not tenant-scoped)
+        if claims.UCPRoles["*"] == "platform-admin" {
+            return RolePlatformAdmin, nil
+        }
+        return RoleUnknown, nil
+    }
+    return stringToRole(roleStr), nil
+}
+```
+
+### Option C — UCP database
+
+Requires a `tenant_role_assignments` table and a `GetTenantRole` DB method:
+
+```go
+func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, error) {
+    principal, _ := authpkg.PrincipalFromContext(r.Context())
+    roleStr, err := s.db.GetTenantRole(principal.UserID, tenantID)
+    if err != nil {
+        return RoleUnknown, fmt.Errorf("failed to resolve role: %w", err)
+    }
+    return stringToRole(roleStr), nil
+}
+```
+
+### Shared mapping
+
+```go
+func stringToRole(s string) Role {
+    switch s {
+    case "platform-admin": return RolePlatformAdmin
+    case "tenant-admin":   return RoleTenantAdmin
+    case "deployer":       return RoleDeployer
+    case "approver":       return RoleApprover
+    case "viewer":         return RoleViewer
+    default:               return RoleUnknown
     }
 }
 ```
@@ -215,14 +223,16 @@ not replaced by `RequireRole`.
 
 ---
 
-## open question — platform-admin Resolution
+## Undecided — Role Resolution Approach
 
-The Horizon API `GET /v0/members/<email>/tenants?subscriptions=true` returns
-a list of tenants the caller belongs to. A `platform-admin` is identified when
-any entry in that list carries `default_role: platform-admin`.
+The role resolution mechanism has not been decided. Two candidates:
 
-This assumes Horizon uses `platform-admin` as a literal `default_role` value.
-If Horizon uses a different string (e.g. `admin` or a group name), the mapping
-in `horizonRoleToInternal` must be updated to match the actual value returned.
-The exact value should be confirmed against a live Horizon response during
-implementation.
+| | Option B — Keycloak JWT | Option C — UCP Database |
+|---|---|---|
+| Source | `ucp_roles` claim in access token | `tenant_role_assignments` table |
+| Extra call at resolution | None — token already in `Principal` | One DB query |
+| Role change latency | Token TTL (~10 min) | Immediate |
+| Setup | Keycloak protocol mapper + group assignment | Schema migration + admin API |
+| `platform-admin` representation | `UCPRoles["*"] = "platform-admin"` | Row with `tenant_rns = '*'` |
+
+See `concepts.md` for detailed description of each option.

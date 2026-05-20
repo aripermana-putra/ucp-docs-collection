@@ -25,7 +25,7 @@ parent_page_id: "../rbac.md"
 ### In Scope
 
 - **Role type** — ordered `Role` integer type in `auth/context.go` enabling `>=` comparison
-- **Role resolution** — `resolveUserRole()` calls Horizon `GET /v0/members/<email>/tenants?subscriptions=true` and maps `default_role` to the internal `Role` type
+- **Role resolution** — `resolveUserRole()` resolves the caller's role from either Keycloak JWT claims or the UCP database (approach TBD); the `Principal` already in context provides `AccessToken` and `UserID` for both options without an additional network call
 - **RequireRole middleware** — per-route middleware that resolves role, enforces minimum, and injects resolved role into request context
 - **Route refactoring** — routes grouped by minimum role; `isUserTenantAdmin()` removed from create/list handlers and replaced by middleware
 - **platform-admin bypass** — cross-tenant role resolved independently of `X-Tenant-ID`
@@ -34,7 +34,7 @@ parent_page_id: "../rbac.md"
 
 - **Delete ownership check** — `isUserTenantAdmin()` in delete handlers reads the XR annotation tenant, not `X-Tenant-ID`. This targeted check remains unchanged.
 - **`GET` by name ownership check** — returning 404 vs 403 on cross-tenant name lookup is deferred.
-- **Role storage in UCP database** — roles are sourced from Horizon, not a local DB.
+- **Role resolution approach** — choosing between Keycloak JWT claims and UCP database is in scope of MCUCP-191 design, not implementation.
 - **Terraform endpoints** — no cloud credentials or tenant isolation applicable.
 
 ---
@@ -76,23 +76,30 @@ parent_page_id: "../rbac.md"
 
 `POST /api/v1/databases` (deployer minimum)
 
+By the time `RequireRole` runs, `SessionMiddleware` has already injected the
+`Principal` into context. `resolveUserRole` reads from the `Principal` — no
+additional network call to Horizon. The exact source (JWT claim or DB) depends
+on the chosen approach.
+
 ```mermaid
 sequenceDiagram
     autonumber
 
     participant Browser
+    participant Session as SessionMiddleware
     participant Middleware as RequireRole("deployer")
-    participant Horizon as Horizon API
+    participant Resolver as resolveUserRole
     participant Handler as CreateDatabase
 
-    Browser->>Middleware: POST /api/v1/databases
-    Note over Browser,Middleware: Cookie: session=...<br/>X-Tenant-ID: rns:roc:iam::clsd-ucp
+    Browser->>Session: POST /api/v1/databases<br/>Cookie: session=...<br/>X-Tenant-ID: rns:roc:iam::clsd-ucp
+    Session->>Session: decrypt access_token → inject Principal<br/>{UserID, Email, AccessToken, ...}
+    Session->>Middleware: request with Principal in context
 
-    Middleware->>Horizon: GET /v0/members/<email>/tenants?subscriptions=true
-    Horizon-->>Middleware: {items: [{rns: "rns:roc:iam::clsd-ucp", subscriptions: [{default_role: "deployer"}]}]}
+    Middleware->>Resolver: resolveUserRole(r, "rns:roc:iam::clsd-ucp")
+    Note over Resolver: Option B: parse Principal.AccessToken → read ucp_roles claim<br/>Option C: query DB with Principal.UserID → read role
+    Resolver-->>Middleware: RoleDeployer (3)
 
-    Middleware->>Middleware: map "deployer" → RoleDeployer (3)<br/>RoleDeployer (3) >= RoleDeployer (3) → pass
-
+    Middleware->>Middleware: RoleDeployer (3) >= RoleDeployer (3) → pass
     Middleware->>Handler: inject RoleDeployer into context
     Handler-->>Browser: 202 Accepted
 
@@ -110,21 +117,23 @@ sequenceDiagram
     autonumber
 
     participant Browser
+    participant Session as SessionMiddleware
     participant Middleware as RequireRole("viewer")
-    participant Horizon as Horizon API
+    participant Resolver as resolveUserRole
     participant Handler as ListDatabases
 
-    Browser->>Middleware: GET /api/v1/databases
-    Note over Browser,Middleware: No X-Tenant-ID header
+    Browser->>Session: GET /api/v1/databases<br/>Cookie: session=... (no X-Tenant-ID)
+    Session->>Session: decrypt access_token → inject Principal
+    Session->>Middleware: request with Principal in context
 
-    Middleware->>Horizon: GET /v0/members/<email>/tenants?subscriptions=true
-    Horizon-->>Middleware: {items: [{default_role: "platform-admin"}]}
+    Middleware->>Resolver: resolveUserRole(r, "")
+    Note over Resolver: Option B: parse Principal.AccessToken → ucp_roles["*"] = "platform-admin"<br/>Option C: query DB with Principal.UserID → role = "platform-admin"
+    Resolver-->>Middleware: RolePlatformAdmin (5)
 
-    Middleware->>Middleware: map → RolePlatformAdmin (5)<br/>bypass tenant check<br/>inject RolePlatformAdmin into context
-
+    Middleware->>Middleware: RolePlatformAdmin (5) >= RoleViewer (1) → pass<br/>inject RolePlatformAdmin into context
     Middleware->>Handler: request with RolePlatformAdmin in context
-    Handler->>Handler: getUserTenantIDs sees platform-admin<br/>returns all-tenants result
-    Handler-->>Browser: 200 OK — all tenants' resources
+    Handler->>Handler: platform-admin bypasses tenant scope<br/>returns all tenants' resources
+    Handler-->>Browser: 200 OK
 ```
 
 ---
