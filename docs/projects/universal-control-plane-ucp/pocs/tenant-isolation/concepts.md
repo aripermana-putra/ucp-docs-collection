@@ -60,6 +60,25 @@ Both are set at XR creation time. The label is used for list filtering. The anno
 used in delete ownership checks and in-flight workflow matching, where the raw RNS string
 is needed.
 
+### Why label values are restricted but annotation values are not
+
+Labels were designed to be **selectable and indexable**. The API server builds an
+in-memory index of labels to evaluate selectors like `matchLabels` in a Service or
+`-l app=frontend` in kubectl efficiently. For this to work, label values must be
+parseable without ambiguity in selector expressions. Kubernetes enforces a strict
+character set borrowed from DNS label rules (RFC 1123): alphanumerics, `-`, `_`, `.`
+only, maximum 63 characters. The `:` character is not permitted — in a selector
+expression like `region=us:east`, the `:` would be ambiguous.
+
+Annotations are an explicit escape hatch for when label constraints are too restrictive.
+They are never used in selectors and the API server places no constraints on annotation
+values — only annotation keys must be valid qualified names. Annotation values can hold
+any string: `:`, `/`, JSON, YAML, certificates, arbitrary tool output.
+
+The RNS string `rns:roc:iam::clsd-ucp` is a URN-style identifier where `:` is the path
+separator. URN syntax is incompatible with DNS label rules, which is why the label value
+requires sanitization while the annotation stores the raw string.
+
 ---
 
 ## sanitizeTenantID
