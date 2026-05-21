@@ -12,23 +12,23 @@ parent_page_id: "../rbac.md"
 
 | Component | File | Status |
 |---|---|---|
-| `Role` type + context helpers | `auth/context.go` | Not deployed |
-| `tenant_role_assignments` DB schema + migration | `db/` | Not deployed |
-| DB methods — `GetTenantRole`, `GetAllRolesForUser`, `GetRoleAssignmentsForTenant`, `AssignTenantRole`, `RevokeTenantRole` | `db/` | Not deployed |
-| `db.FindUserByEmail()` (for AssignRole email → user_id lookup) | `db/` | Not deployed |
-| `resolveUserRole()` | `rbac_handler.go` | Not deployed |
-| `RequireRole(minRole)` middleware | `rbac_handler.go` | Not deployed |
-| Admin API handlers — `ListRoleAssignments`, `AssignRole`, `RevokeRole` | `rbac_handler.go` | Not deployed |
-| Route grouping by role level + admin API route registration | `main.go` | Not deployed |
-| Remove `isUserTenantAdmin()` from create/list resource handlers | all resource handlers | Not deployed |
-| Remove `isUserTenantAdmin()` from settings handlers (credentials) | `settings_handler.go` | Not deployed |
-| `/auth/me` role extension | `bff_auth.go` (`MeHandler`) | Not deployed |
-| `useRole()` hook | frontend | Not deployed |
-| Sidebar role-aware rendering (hide nav items) | `Sidebar.jsx` | Not deployed |
-| In-page action buttons role-aware rendering | all list/detail components | Not deployed |
-| `ForbiddenPage` component | `pages/ForbiddenPage.jsx`, frontend | Not deployed |
-| `RequireRole` route wrapper — wrap restricted routes in `App.jsx` | `App.jsx`, frontend | Not deployed |
-| Role management UI | frontend | Not deployed |
+| `Role` type + context helpers | `auth/context.go` | Deployed |
+| `tenant_role_assignments` DB schema + migration | `db/` | Deployed |
+| DB methods — `GetTenantRole`, `GetAllRolesForUser`, `GetRoleAssignmentsForTenant`, `AssignTenantRole`, `RevokeTenantRole` | `db/roles.go` | Deployed |
+| `db.FindUserByEmail()` (for AssignRole email → user_id lookup) | `db/roles.go` | Deployed |
+| `resolveUserRole()` | `rbac_handler.go` | Deployed |
+| `RequireRole(minRole)` middleware | `rbac_handler.go` | Deployed |
+| Admin API handlers — `ListRoleAssignments`, `AssignRole`, `RevokeRole` | `rbac_handler.go` | Deployed |
+| Route grouping by role level + admin API route registration | `main.go` | Deployed |
+| Remove `isUserTenantAdmin()` from create/list resource handlers | all resource handlers | Deployed |
+| Remove `isUserTenantAdmin()` from settings handlers (credentials) | `settings_handler.go` | Deployed |
+| `/auth/me` role extension | `bff_auth.go` (`MeHandler`) | Deployed |
+| `useRole()` hook | `hooks/useRole.ts`, frontend | Deployed |
+| Sidebar role-aware rendering (hide nav items) | `Sidebar.jsx` | Deployed |
+| In-page action buttons role-aware rendering | all list components | Deployed |
+| `ForbiddenPage` component | `pages/ForbiddenPage.jsx` | Deployed |
+| `RequireRole` route wrapper — wrap restricted routes in `App.jsx` | `App.jsx` | Deployed |
+| Role management UI | `pages/RoleManagementPage.jsx` | Deployed |
 
 ---
 
