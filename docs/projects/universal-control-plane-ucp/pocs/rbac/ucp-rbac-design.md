@@ -131,6 +131,85 @@ record) before inserting into `tenant_role_assignments`.
 
 ---
 
+## /auth/me Extension
+
+`MeHandler` in `bff_auth.go` is extended to query `tenant_role_assignments`
+for the caller and include the results in the response. The frontend calls
+this on mount via `AuthProvider`, so role information is available immediately
+after login.
+
+Extended response:
+
+```json
+{
+  "id": "abc123",
+  "email": "user@example.com",
+  "name": "User Name",
+  "roles": {
+    "rns:roc:iam::clsd-ucp": "deployer",
+    "rns:roc:iam::other-tenant": "viewer"
+  },
+  "isPlatformAdmin": false
+}
+```
+
+`isPlatformAdmin` is `true` when a `tenant_rns = '*'` row exists for the user.
+The `roles` map contains only tenant-scoped assignments — `platform-admin` is
+not included as a tenant entry, it is expressed via `isPlatformAdmin`.
+
+---
+
+## useRole Hook
+
+`useRole()` derives the caller's effective role for the currently selected
+tenant from the data already in `AuthProvider`. No extra API call needed.
+
+```ts
+type Role = 'platform-admin' | 'tenant-admin' | 'deployer' | 'approver' | 'viewer'
+
+const ROLE_LEVEL: Record<Role, number> = {
+  'viewer': 1,
+  'approver': 2,
+  'deployer': 3,
+  'tenant-admin': 4,
+  'platform-admin': 5,
+}
+
+function useRole() {
+  const { user } = useAuth()
+  const { selectedTenant } = useTenantContext()
+
+  if (user?.isPlatformAdmin) {
+    return { role: 'platform-admin', hasMinRole: () => true }
+  }
+
+  const role: Role | null = selectedTenant
+    ? (user?.roles?.[selectedTenant.rns] ?? null)
+    : null
+
+  const hasMinRole = (min: Role) =>
+    role !== null && ROLE_LEVEL[role] >= ROLE_LEVEL[min]
+
+  return { role, hasMinRole }
+}
+```
+
+Usage in components:
+
+```tsx
+const { hasMinRole } = useRole()
+
+{hasMinRole('deployer') && <CreateButton />}
+{hasMinRole('deployer') && <DeleteButton />}
+{hasMinRole('approver') && <ApproveButton />}
+{hasMinRole('tenant-admin') && <CredentialsMenuItem />}
+```
+
+When no tenant is selected, `role` is `null` and `hasMinRole` returns `false`
+for all checks — all action buttons are hidden until the user selects a tenant.
+
+---
+
 ## RequireRole Middleware
 
 `RequireRole` returns a gorilla/mux-compatible middleware. It resolves the

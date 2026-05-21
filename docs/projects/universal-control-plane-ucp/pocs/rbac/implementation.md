@@ -19,6 +19,8 @@ parent_page_id: "../rbac.md"
 | Route grouping by role level | `main.go` | Not deployed |
 | Remove `isUserTenantAdmin()` from create/list handlers | all resource handlers | Not deployed |
 | Admin API — list/assign/revoke role assignments | `rbac_handler.go` | Not deployed |
+| `/auth/me` role extension | `bff_auth.go` (`MeHandler`) | Not deployed |
+| `useRole()` hook + role-aware UI rendering | frontend | Not deployed |
 | Role management UI | frontend | Not deployed |
 
 ---
@@ -31,6 +33,9 @@ parent_page_id: "../rbac.md"
 - **DB schema** — `tenant_role_assignments(user_id, tenant_rns, role)` table; `platform-admin` stored as `tenant_rns = '*'`
 - **Role resolution** — `resolveUserRole()` queries `tenant_role_assignments` using `Principal.UserID` from the request context (injected by `SessionMiddleware`)
 - **Admin API** — list, assign, and revoke role assignments per tenant; gated behind `tenant-admin`
+- **`/auth/me` role extension** — `MeHandler` queries `tenant_role_assignments` and adds a `roles` map and `isPlatformAdmin` flag to the response; frontend reads this on mount
+- **`useRole()` hook** — derives the caller's role for the currently selected tenant from `user.roles`; exposes `hasMinRole(min)` for conditional rendering
+- **Role-aware UI** — actions and menus hidden or shown based on `hasMinRole`: create/delete behind `deployer`, approve/reject behind `approver`, credentials behind `tenant-admin`
 - **Role management UI** — frontend page for admins to manage role assignments within a tenant
 - **RequireRole middleware** — per-route middleware that resolves role, enforces minimum, and injects resolved role into request context
 - **Route refactoring** — routes grouped by minimum role; `isUserTenantAdmin()` removed from create/list handlers and replaced by middleware
