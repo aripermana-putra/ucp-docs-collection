@@ -60,34 +60,37 @@ parent_page_id: "../rbac.md"
 
 ## Endpoint-to-Role Mapping
 
-| Endpoint | Method | Minimum role |
-|---|---|---|
-| `/api/v1/databases` | GET | `viewer` |
-| `/api/v1/databases` | POST | `deployer` |
-| `/api/v1/databases/{name}` | GET | `viewer` |
-| `/api/v1/databases/{name}` | DELETE | `deployer` |
-| `/api/v1/compute` | GET | `viewer` |
-| `/api/v1/compute` | POST | `deployer` |
-| `/api/v1/compute/{name}` | GET | `viewer` |
-| `/api/v1/compute/{name}` | DELETE | `deployer` |
-| `/api/v1/storage` | GET | `viewer` |
-| `/api/v1/storage` | POST | `deployer` |
-| `/api/v1/storage/{name}` | GET | `viewer` |
-| `/api/v1/storage/{name}` | DELETE | `deployer` |
-| `/api/v1/kubernetes-clusters` | GET | `viewer` |
-| `/api/v1/kubernetes-clusters` | POST | `deployer` |
-| `/api/v1/kubernetes-clusters/{name}` | GET | `viewer` |
-| `/api/v1/kubernetes-clusters/{name}` | DELETE | `deployer` |
-| `/api/v1/load-balancers` | GET | `viewer` |
-| `/api/v1/load-balancers` | POST | `deployer` |
-| `/api/v1/load-balancers/{name}` | GET | `viewer` |
-| `/api/v1/load-balancers/{name}` | DELETE | `deployer` |
-| `/api/v1/workflows/{id}/approve` | POST | `approver` |
-| `/api/v1/workflows/{id}/reject` | POST | `approver` |
-| `/api/v1/settings/credentials` | GET, POST | `tenant-admin` |
-| `/api/v1/settings/credentials/{provider}` | DELETE | `tenant-admin` |
-| `/api/v1/settings/credentials/roc` | GET, POST | `tenant-admin` |
-| `/api/v1/settings/credentials/all` | GET | `platform-admin` |
+| Endpoint | Method | Minimum role | Description |
+|---|---|---|---|
+| `/api/v1/databases` | GET | `viewer` | List databases scoped to caller's tenants |
+| `/api/v1/databases` | POST | `deployer` | Provision a new database |
+| `/api/v1/databases/{name}` | GET | `viewer` | Get database details by name |
+| `/api/v1/databases/{name}` | DELETE | `deployer` | Delete a database |
+| `/api/v1/compute` | GET | `viewer` | List compute instances scoped to caller's tenants |
+| `/api/v1/compute` | POST | `deployer` | Provision a new compute instance |
+| `/api/v1/compute/{name}` | GET | `viewer` | Get compute instance details by name |
+| `/api/v1/compute/{name}` | DELETE | `deployer` | Delete a compute instance |
+| `/api/v1/storage` | GET | `viewer` | List storage buckets scoped to caller's tenants |
+| `/api/v1/storage` | POST | `deployer` | Provision a new storage bucket |
+| `/api/v1/storage/{name}` | GET | `viewer` | Get storage bucket details by name |
+| `/api/v1/storage/{name}` | DELETE | `deployer` | Delete a storage bucket |
+| `/api/v1/kubernetes-clusters` | GET | `viewer` | List Kubernetes clusters scoped to caller's tenants |
+| `/api/v1/kubernetes-clusters` | POST | `deployer` | Provision a new Kubernetes cluster |
+| `/api/v1/kubernetes-clusters/{name}` | GET | `viewer` | Get Kubernetes cluster details by name |
+| `/api/v1/kubernetes-clusters/{name}` | DELETE | `deployer` | Delete a Kubernetes cluster |
+| `/api/v1/load-balancers` | GET | `viewer` | List load balancer attachments scoped to caller's tenants |
+| `/api/v1/load-balancers` | POST | `deployer` | Create a new load balancer attachment |
+| `/api/v1/load-balancers/{name}` | GET | `viewer` | Get load balancer attachment details by name |
+| `/api/v1/load-balancers/{name}` | DELETE | `deployer` | Delete a load balancer attachment |
+| `/api/v1/workflows/{id}/approve` | POST | `approver` | Approve a pending Temporal workflow |
+| `/api/v1/workflows/{id}/reject` | POST | `approver` | Reject a pending Temporal workflow |
+| `/api/v1/settings/credentials` | GET, POST | `tenant-admin` | Read or upload GCP credentials for the tenant |
+| `/api/v1/settings/credentials/{provider}` | DELETE | `tenant-admin` | Remove a provider's credentials for the tenant |
+| `/api/v1/settings/credentials/roc` | GET, POST | `tenant-admin` | Read or configure ROC (Omnia) credentials for the tenant |
+| `/api/v1/settings/credentials/all` | GET | `platform-admin` | List all credentials across all tenants |
+| `/api/v1/admin/tenants/{tenantRNS}/roles` | GET | `tenant-admin` | List role assignments for a tenant |
+| `/api/v1/admin/tenants/{tenantRNS}/roles` | POST | `tenant-admin` | Assign a role to a user within a tenant |
+| `/api/v1/admin/tenants/{tenantRNS}/roles/{userID}` | DELETE | `tenant-admin` | Revoke a user's role within a tenant |
 
 ---
 
