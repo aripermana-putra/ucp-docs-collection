@@ -26,7 +26,8 @@ parent_page_id: "../rbac.md"
 | `useRole()` hook | frontend | Not deployed |
 | Sidebar role-aware rendering (hide nav items) | `Sidebar.jsx` | Not deployed |
 | In-page action buttons role-aware rendering | all list/detail components | Not deployed |
-| `RequireRole` route wrapper + `ForbiddenPage` | `App.jsx`, frontend | Not deployed |
+| `ForbiddenPage` component | `pages/ForbiddenPage.jsx`, frontend | Not deployed |
+| `RequireRole` route wrapper — wrap restricted routes in `App.jsx` | `App.jsx`, frontend | Not deployed |
 | Role management UI | frontend | Not deployed |
 
 ---
