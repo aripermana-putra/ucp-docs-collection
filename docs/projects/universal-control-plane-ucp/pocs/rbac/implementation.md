@@ -14,14 +14,19 @@ parent_page_id: "../rbac.md"
 |---|---|---|
 | `Role` type + context helpers | `auth/context.go` | Not deployed |
 | `tenant_role_assignments` DB schema + migration | `db/` | Not deployed |
+| DB methods — `GetTenantRole`, `GetAllRolesForUser`, `GetRoleAssignmentsForTenant`, `AssignTenantRole`, `RevokeTenantRole` | `db/` | Not deployed |
+| `db.FindUserByEmail()` (for AssignRole email → user_id lookup) | `db/` | Not deployed |
 | `resolveUserRole()` | `rbac_handler.go` | Not deployed |
 | `RequireRole(minRole)` middleware | `rbac_handler.go` | Not deployed |
-| Route grouping by role level | `main.go` | Not deployed |
-| Remove `isUserTenantAdmin()` from create/list handlers | all resource handlers | Not deployed |
-| Admin API — list/assign/revoke role assignments | `rbac_handler.go` | Not deployed |
+| Admin API handlers — `ListRoleAssignments`, `AssignRole`, `RevokeRole` | `rbac_handler.go` | Not deployed |
+| Route grouping by role level + admin API route registration | `main.go` | Not deployed |
+| Remove `isUserTenantAdmin()` from create/list resource handlers | all resource handlers | Not deployed |
+| Remove `isUserTenantAdmin()` from settings handlers (credentials) | `settings_handler.go` | Not deployed |
 | `/auth/me` role extension | `bff_auth.go` (`MeHandler`) | Not deployed |
-| `useRole()` hook + role-aware UI rendering | frontend | Not deployed |
-| `RequireRole` route wrapper + `ForbiddenPage` | frontend | Not deployed |
+| `useRole()` hook | frontend | Not deployed |
+| Sidebar role-aware rendering (hide nav items) | `Sidebar.jsx` | Not deployed |
+| In-page action buttons role-aware rendering | all list/detail components | Not deployed |
+| `RequireRole` route wrapper + `ForbiddenPage` | `App.jsx`, frontend | Not deployed |
 | Role management UI | frontend | Not deployed |
 
 ---
@@ -36,11 +41,15 @@ parent_page_id: "../rbac.md"
 - **Admin API** — list, assign, and revoke role assignments per tenant; gated behind `tenant-admin`
 - **`/auth/me` role extension** — `MeHandler` queries `tenant_role_assignments` and adds a `roles` map and `isPlatformAdmin` flag to the response; frontend reads this on mount
 - **`useRole()` hook** — derives the caller's role for the currently selected tenant from `user.roles`; exposes `hasMinRole(min)` for conditional rendering
-- **Role-aware UI** — actions and menus hidden or shown based on `hasMinRole`: create/delete behind `deployer`, approve/reject behind `approver`, credentials behind `tenant-admin`
-- **Role management UI** — frontend page for admins to manage role assignments within a tenant
+- **DB query methods** — `GetTenantRole`, `GetAllRolesForUser`, `AssignTenantRole`, `RevokeTenantRole`, `GetRoleAssignmentsForTenant`, `FindUserByEmail`
+- **Admin API** — `ListRoleAssignments`, `AssignRole`, `RevokeRole` handlers + route registration; gated behind `tenant-admin`
 - **RequireRole middleware** — per-route middleware that resolves role, enforces minimum, and injects resolved role into request context
-- **Route refactoring** — routes grouped by minimum role; `isUserTenantAdmin()` removed from create/list handlers and replaced by middleware
+- **Route refactoring** — routes grouped by minimum role; `isUserTenantAdmin()` removed from all resource and settings handlers and replaced by middleware
 - **platform-admin bypass** — cross-tenant role resolved independently of `X-Tenant-ID`
+- **Sidebar role-aware rendering** — nav items hidden when caller lacks minimum role
+- **In-page action buttons** — create/delete hidden for viewer and approver; approve/reject hidden below approver
+- **`RequireRole` route wrapper + `ForbiddenPage`** — direct URL access blocked with 403 page for insufficient role
+- **Role management UI** — frontend page for admins to manage role assignments within a tenant
 
 ### Out of Scope
 
