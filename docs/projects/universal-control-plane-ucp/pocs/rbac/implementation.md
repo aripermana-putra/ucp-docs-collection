@@ -200,8 +200,8 @@ sequenceDiagram
 
 By the time `RequireRole` runs, `SessionMiddleware` has already injected the
 `Principal` into context. `resolveUserRole` reads from the `Principal` — no
-additional network call to Horizon. The exact source (JWT claim or DB) depends
-on the chosen approach.
+additional network call to Horizon. `resolveUserRole` queries the
+`tenant_role_assignments` table using `Principal.UserID`.
 
 ```mermaid
 sequenceDiagram
@@ -218,7 +218,7 @@ sequenceDiagram
     Session->>Middleware: request with Principal in context
 
     Middleware->>Resolver: resolveUserRole(r, "rns:roc:iam::clsd-ucp")
-    Note over Resolver: Option B: parse Principal.AccessToken → read ucp_roles claim<br/>Option C: query DB with Principal.UserID → read role
+    Note over Resolver: query tenant_role_assignments WHERE user_id = Principal.UserID AND tenant_rns = tenantID
     Resolver-->>Middleware: RoleDeployer (3)
 
     Middleware->>Middleware: RoleDeployer (3) >= RoleDeployer (3) → pass
@@ -249,7 +249,7 @@ sequenceDiagram
     Session->>Middleware: request with Principal in context
 
     Middleware->>Resolver: resolveUserRole(r, "")
-    Note over Resolver: Option B: parse Principal.AccessToken → ucp_roles["*"] = "platform-admin"<br/>Option C: query DB with Principal.UserID → role = "platform-admin"
+    Note over Resolver: query tenant_role_assignments WHERE user_id = Principal.UserID AND tenant_rns = "*"
     Resolver-->>Middleware: RolePlatformAdmin (5)
 
     Middleware->>Middleware: RolePlatformAdmin (5) >= RoleViewer (1) → pass<br/>inject RolePlatformAdmin into context

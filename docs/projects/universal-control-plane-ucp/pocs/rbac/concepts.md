@@ -109,10 +109,9 @@ Handlers no longer call `isUserTenantAdmin()` directly.
 It grants access to every endpoint, including cross-tenant list operations
 (list all resources regardless of `X-Tenant-ID`).
 
-Resolution follows the same mechanism as tenant-scoped roles — either a
-dedicated `platform-admin` value in the Keycloak JWT claim or a DB entry
-with `tenant_rns = '*'` (or similar sentinel). The exact representation
-depends on the chosen approach and is defined in `ucp-rbac-design.md`.
+Resolution uses the same DB mechanism as tenant-scoped roles — a row in
+`tenant_role_assignments` with `tenant_rns = '*'`. `resolveUserRole` checks
+for this row first before performing the tenant-scoped lookup.
 
 ---
 
