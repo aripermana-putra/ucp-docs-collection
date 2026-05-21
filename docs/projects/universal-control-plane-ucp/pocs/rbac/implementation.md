@@ -21,6 +21,7 @@ parent_page_id: "../rbac.md"
 | Admin API — list/assign/revoke role assignments | `rbac_handler.go` | Not deployed |
 | `/auth/me` role extension | `bff_auth.go` (`MeHandler`) | Not deployed |
 | `useRole()` hook + role-aware UI rendering | frontend | Not deployed |
+| `RequireRole` route wrapper + `ForbiddenPage` | frontend | Not deployed |
 | Role management UI | frontend | Not deployed |
 
 ---
@@ -87,24 +88,28 @@ parent_page_id: "../rbac.md"
 
 ### Sidebar navigation
 
-| Item | Route | Minimum role | Behaviour |
+Navigation items are hidden when the caller lacks the minimum role. Direct URL
+access (bookmark, address bar) is also blocked — a `RequireRole` route wrapper
+renders a 403 page instead of the content if the check fails.
+
+| Item | Route | Minimum role | If insufficient role |
 |---|---|---|---|
-| Database → List | `/` | `viewer` | Always shown to authenticated users with a tenant selected |
-| Database → Create | `/create` | `deployer` | Hidden for viewer and approver |
-| Compute → List | `/compute` | `viewer` | Always shown |
-| Compute → Create | `/compute/create` | `deployer` | Hidden for viewer and approver |
-| Storage → List | `/storage` | `viewer` | Always shown |
-| Storage → Create | `/storage/create` | `deployer` | Hidden for viewer and approver |
-| Kubernetes → List | `/kubernetes` | `viewer` | Always shown |
-| Kubernetes → Create | `/kubernetes/create` | `deployer` | Hidden for viewer and approver |
-| Drift → List | `/drift` | `viewer` | Always shown |
-| Quotas → Usage | `/quota` | `viewer` | Always shown |
-| Terraform | `/terraform/*` | — | Out of RBAC scope (experimental, no cloud credentials) |
-| Admin → Workflows | `/admin/workflows` | `viewer` | Shown to all; approve/reject actions gated separately |
-| Admin → Kube Resources | `/admin/kube-resources` | `platform-admin` | Hidden for all tenant-scoped roles |
-| Settings → Credentials | `/settings/credentials` | `tenant-admin` | Hidden for viewer, approver, deployer |
-| Settings → Tenants | `/admin/tenants` | `platform-admin` | Hidden for all tenant-scoped roles |
-| Settings → Role Management | `/settings/roles` | `tenant-admin` | Hidden for viewer, approver, deployer |
+| Database → List | `/` | `viewer` | — (all tenant-authenticated users) |
+| Database → Create | `/create` | `deployer` | Hidden in sidebar + 403 on direct access |
+| Compute → List | `/compute` | `viewer` | — |
+| Compute → Create | `/compute/create` | `deployer` | Hidden + 403 |
+| Storage → List | `/storage` | `viewer` | — |
+| Storage → Create | `/storage/create` | `deployer` | Hidden + 403 |
+| Kubernetes → List | `/kubernetes` | `viewer` | — |
+| Kubernetes → Create | `/kubernetes/create` | `deployer` | Hidden + 403 |
+| Drift → List | `/drift` | `viewer` | — |
+| Quotas → Usage | `/quota` | `viewer` | — |
+| Terraform | `/terraform/*` | — | Out of RBAC scope (experimental) |
+| Admin → Workflows | `/admin/workflows` | `viewer` | — (approve/reject actions gated separately) |
+| Admin → Kube Resources | `/admin/kube-resources` | `platform-admin` | Hidden + 403 |
+| Settings → Credentials | `/settings/credentials` | `tenant-admin` | Hidden + 403 |
+| Settings → Tenants | `/admin/tenants` | `platform-admin` | Hidden + 403 |
+| Settings → Role Management | `/settings/roles` | `tenant-admin` | Hidden + 403 |
 
 ### In-page actions
 

@@ -210,6 +210,51 @@ for all checks — all action buttons are hidden until the user selects a tenant
 
 ---
 
+## Frontend Route Guard
+
+Hiding a menu item is not sufficient — a user can still navigate directly to a
+restricted URL via the address bar or a bookmark. A `RequireRole` wrapper
+component renders a 403 page instead of the route content when the check fails:
+
+```tsx
+// components/RequireRole.tsx
+function RequireRole({ min, children }: { min: Role; children: ReactNode }) {
+  const { hasMinRole } = useRole()
+
+  if (!hasMinRole(min)) {
+    return <ForbiddenPage />
+  }
+  return <>{children}</>
+}
+```
+
+Applied per route in `App.jsx`:
+
+```tsx
+<Route
+  path="/settings/credentials"
+  element={
+    <RequireRole min="tenant-admin">
+      <SettingsCredentialsPage />
+    </RequireRole>
+  }
+/>
+<Route
+  path="/admin/kube-resources"
+  element={
+    <RequireRole min="platform-admin">
+      <KubeResourcesPage />
+    </RequireRole>
+  }
+/>
+```
+
+`ForbiddenPage` displays a 403 message and a link back to the home page. It
+does not redirect — a redirect would hide the fact that the access was denied,
+making it harder to diagnose misconfigured role assignments.
+
+---
+
 ## RequireRole Middleware
 
 `RequireRole` returns a gorilla/mux-compatible middleware. It resolves the
