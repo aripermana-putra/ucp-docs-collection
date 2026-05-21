@@ -54,10 +54,7 @@ parent_page_id: "../rbac.md"
 
 ### Out of Scope
 
-- **Delete ownership check** — `isUserTenantAdmin()` in delete handlers reads the XR annotation tenant, not `X-Tenant-ID`. This targeted check remains unchanged.
-- **`GET` by name ownership check** — returning 404 vs 403 on cross-tenant name lookup is deferred.
 - **Keycloak configuration** — no changes to Keycloak; roles are owned entirely by UCP.
-- **Terraform endpoints** — no cloud credentials or tenant isolation applicable.
 
 ---
 
