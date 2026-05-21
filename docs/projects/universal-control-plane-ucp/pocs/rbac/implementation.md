@@ -83,6 +83,66 @@ parent_page_id: "../rbac.md"
 
 ---
 
+## API Sequence — /auth/me on Mount
+
+The frontend `AuthProvider` calls `/auth/me` on mount. With the role extension,
+the response now includes the caller's role assignments so the UI has everything
+it needs before the first page renders.
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    participant Browser
+    participant AuthProvider as AuthProvider.jsx
+    participant BFF as API Server
+    participant DB as PostgreSQL
+
+    Browser->>AuthProvider: app mounts
+    AuthProvider->>BFF: GET /auth/me<br/>Cookie: session=...
+
+    BFF->>BFF: SessionMiddleware → inject Principal{UserID, ...}
+    BFF->>DB: SELECT role, tenant_rns FROM tenant_role_assignments<br/>WHERE user_id = Principal.UserID
+    DB-->>BFF: [{tenant_rns: "rns:roc:iam::clsd-ucp", role: "deployer"},<br/>{tenant_rns: "*", role: "platform-admin"}]
+
+    BFF->>BFF: build roles map<br/>isPlatformAdmin = any row has tenant_rns = "*"
+    BFF-->>AuthProvider: {id, email, name,<br/>roles: {"rns:roc:iam::clsd-ucp": "deployer"},<br/>isPlatformAdmin: false}
+
+    AuthProvider->>AuthProvider: store user{roles, isPlatformAdmin} in context
+    Note over AuthProvider: isAuthenticated = true<br/>user.roles available to all components
+```
+
+---
+
+## UI Sequence — Role-Aware Rendering
+
+When the user selects a tenant, `useRole()` derives the effective role from the
+already-stored `user.roles` — no additional API call.
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    participant User
+    participant TenantSelector as TenantSelector
+    participant TenantCtx as TenantContext
+    participant Component as DatabasesPage
+    participant useRole as useRole()
+
+    User->>TenantSelector: select "clsd-ucp" tenant
+    TenantSelector->>TenantCtx: setSelectedTenant({rns: "rns:roc:iam::clsd-ucp"})
+    TenantCtx->>Component: Outlet re-mounts (key changed)
+
+    Component->>useRole: useRole()
+    useRole->>useRole: user.isPlatformAdmin? → false<br/>role = user.roles["rns:roc:iam::clsd-ucp"] → "deployer"
+
+    useRole-->>Component: {role: "deployer", hasMinRole}
+
+    Note over Component: hasMinRole("viewer")      → true  → list shown<br/>hasMinRole("deployer")    → true  → Create button shown<br/>hasMinRole("approver")    → false → Approve button hidden<br/>hasMinRole("tenant-admin")→ false → Credentials menu hidden
+```
+
+---
+
 ## API Sequence — RequireRole Check
 
 `POST /api/v1/databases` (deployer minimum)
