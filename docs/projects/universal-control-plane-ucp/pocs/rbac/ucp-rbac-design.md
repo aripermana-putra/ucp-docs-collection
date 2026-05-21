@@ -52,69 +52,46 @@ func RoleFromContext(ctx context.Context) (Role, bool) {
 
 ---
 
+## Database Schema
+
+```sql
+CREATE TABLE tenant_role_assignments (
+    user_id    TEXT NOT NULL REFERENCES users(id),
+    tenant_rns TEXT NOT NULL,
+    role       TEXT NOT NULL CHECK (role IN (
+                   'platform-admin', 'tenant-admin',
+                   'deployer', 'approver', 'viewer')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, tenant_rns)
+);
+```
+
+`platform-admin` is stored as a row with `tenant_rns = '*'` — not tied to any
+specific tenant, matches regardless of the `X-Tenant-ID` in the request.
+
+---
+
 ## resolveUserRole
 
-`resolveUserRole` lives in `rbac_handler.go`. By the time it is called,
-`SessionMiddleware` has already run and injected a `Principal` into the request
-context. The `Principal` provides what both candidate approaches need without
-any additional network call for the role lookup itself:
-
-```go
-principal, _ := authpkg.PrincipalFromContext(r.Context())
-// principal.AccessToken — decrypted Keycloak JWT (Option B)
-// principal.UserID      — internal DB UUID       (Option C)
-```
-
-### Option B — Keycloak JWT claims
-
-Requires `UCPClaims` in `auth/auth.go` to carry a custom `ucp_roles` claim
-configured in Keycloak via a protocol mapper:
-
-```go
-type UCPClaims struct {
-    jwt.RegisteredClaims
-    Email             string            `json:"email"`
-    PreferredUsername string            `json:"preferred_username"`
-    Name              string            `json:"name"`
-    UCPRoles          map[string]string `json:"ucp_roles"`
-}
-
-func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, error) {
-    principal, _ := authpkg.PrincipalFromContext(r.Context())
-    claims, err := authpkg.ParseUnverified(principal.AccessToken)
-    if err != nil {
-        return RoleUnknown, fmt.Errorf("failed to parse token claims: %w", err)
-    }
-    roleStr, ok := claims.UCPRoles[tenantID]
-    if !ok {
-        // check platform-admin (not tenant-scoped)
-        if claims.UCPRoles["*"] == "platform-admin" {
-            return RolePlatformAdmin, nil
-        }
-        return RoleUnknown, nil
-    }
-    return stringToRole(roleStr), nil
-}
-```
-
-### Option C — UCP database
-
-Requires a `tenant_role_assignments` table and a `GetTenantRole` DB method:
+`resolveUserRole` lives in `rbac_handler.go`. `SessionMiddleware` has already
+run by the time it is called — `Principal.UserID` is available in context:
 
 ```go
 func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, error) {
     principal, _ := authpkg.PrincipalFromContext(r.Context())
+
+    // check platform-admin first (tenant_rns = '*')
+    if roleStr, err := s.db.GetTenantRole(principal.UserID, "*"); err == nil && roleStr != "" {
+        return stringToRole(roleStr), nil
+    }
+
     roleStr, err := s.db.GetTenantRole(principal.UserID, tenantID)
     if err != nil {
         return RoleUnknown, fmt.Errorf("failed to resolve role: %w", err)
     }
     return stringToRole(roleStr), nil
 }
-```
 
-### Shared mapping
-
-```go
 func stringToRole(s string) Role {
     switch s {
     case "platform-admin": return RolePlatformAdmin
@@ -126,6 +103,31 @@ func stringToRole(s string) Role {
     }
 }
 ```
+
+---
+
+## Admin API
+
+Role assignments are managed via three endpoints, all gated behind
+`RequireRole(RoleTenantAdmin)`. `platform-admin` passes all role checks
+automatically.
+
+```go
+// rbac_handler.go
+func (s *APIServer) ListRoleAssignments(w http.ResponseWriter, r *http.Request)
+func (s *APIServer) AssignRole(w http.ResponseWriter, r *http.Request)
+func (s *APIServer) RevokeRole(w http.ResponseWriter, r *http.Request)
+```
+
+`AssignRole` request body:
+
+```json
+{ "userEmail": "user@example.com", "role": "deployer" }
+```
+
+The handler resolves `userEmail` to a `user_id` via the `users` table (user
+must have logged in at least once for JIT provisioning to have created their
+record) before inserting into `tenant_role_assignments`.
 
 ---
 
@@ -223,16 +225,14 @@ not replaced by `RequireRole`.
 
 ---
 
-## Undecided — Role Resolution Approach
+## Role Management UI
 
-The role resolution mechanism has not been decided. Two candidates:
+A role management page in the frontend lets `tenant-admin` and `platform-admin`
+users assign and revoke roles within a tenant. The page is accessible from the
+Settings or Admin section and scoped to the tenant selected in the global
+`TenantSelector`.
 
-| | Option B — Keycloak JWT | Option C — UCP Database |
-|---|---|---|
-| Source | `ucp_roles` claim in access token | `tenant_role_assignments` table |
-| Extra call at resolution | None — token already in `Principal` | One DB query |
-| Role change latency | Token TTL (~10 min) | Immediate |
-| Setup | Keycloak protocol mapper + group assignment | Schema migration + admin API |
-| `platform-admin` representation | `UCPRoles["*"] = "platform-admin"` | Row with `tenant_rns = '*'` |
-
-See `concepts.md` for detailed description of each option.
+The UI calls the admin API endpoints defined above. It needs to:
+- List current role assignments for the selected tenant
+- Show a user search/input to assign a role (user must have logged in once)
+- Allow changing or removing an existing assignment

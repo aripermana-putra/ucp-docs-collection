@@ -33,50 +33,32 @@ well — not only for `deployer`.
 ## Role Resolution
 
 `resolveUserRole(r, tenantID)` is called by `RequireRole` on every protected
-request. By the time it runs, `SessionMiddleware` has already executed — the
-`Principal` is in the request context and carries two fields that both candidate
-approaches use:
-
-```go
-Principal.AccessToken  // decrypted Keycloak JWT — used by Option B
-Principal.UserID       // internal DB UUID      — used by Option C
-```
-
-### Option B — Keycloak JWT claims
-
-A custom `ucp_roles` claim is added to the Keycloak access token via a protocol
-mapper. The claim is a map of tenant RNS → role:
-
-```json
-{ "ucp_roles": { "rns:roc:iam::clsd-ucp": "deployer" } }
-```
-
-`resolveUserRole` parses `Principal.AccessToken` (already decrypted, no extra
-API call) and reads the role for the requested tenant:
-
-```go
-claims, _ := auth.ParseUnverified(principal.AccessToken)
-roleStr := claims.UCPRoles[tenantID]
-```
-
-Role changes take effect after token refresh (up to the access token TTL).
-
-### Option C — UCP database
-
-Role assignments are stored in a `tenant_role_assignments` table. `resolveUserRole`
-queries the DB using `Principal.UserID`:
+request. By the time it runs, `SessionMiddleware` has already executed and
+injected the `Principal` into the request context. `Principal.UserID` is the
+internal DB UUID used to look up the caller's role:
 
 ```go
 roleStr, _ := s.db.GetTenantRole(principal.UserID, tenantID)
 ```
 
-Role changes take effect immediately. Requires a schema migration and an admin
-API to manage assignments.
+Role assignments are stored in a `tenant_role_assignments` table in the
+existing PostgreSQL database. Role changes take effect immediately. Roles are
+managed via a dedicated admin API and the role management UI.
 
-### Decision
+## Role Management
 
-The approach has not been decided. See `ucp-rbac-design.md` for the detailed
-design of each option.
+Roles are assigned and revoked through the API and a role management page in
+the UI. The endpoints are gated behind `tenant-admin` for tenant-scoped
+operations and `platform-admin` for cross-tenant operations:
+
+| Endpoint | Method | Minimum role | Description |
+|---|---|---|---|
+| `/api/v1/admin/tenants/{tenantRNS}/roles` | GET | `tenant-admin` | List role assignments for a tenant |
+| `/api/v1/admin/tenants/{tenantRNS}/roles` | POST | `tenant-admin` | Assign a role to a user |
+| `/api/v1/admin/tenants/{tenantRNS}/roles/{userID}` | DELETE | `tenant-admin` | Remove a role assignment |
+
+`platform-admin` can access these endpoints across all tenants regardless of
+`X-Tenant-ID`.
 
 ---
 

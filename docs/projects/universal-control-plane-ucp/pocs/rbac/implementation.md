@@ -13,10 +13,13 @@ parent_page_id: "../rbac.md"
 | Component | File | Status |
 |---|---|---|
 | `Role` type + context helpers | `auth/context.go` | Not deployed |
+| `tenant_role_assignments` DB schema + migration | `db/` | Not deployed |
 | `resolveUserRole()` | `rbac_handler.go` | Not deployed |
 | `RequireRole(minRole)` middleware | `rbac_handler.go` | Not deployed |
 | Route grouping by role level | `main.go` | Not deployed |
 | Remove `isUserTenantAdmin()` from create/list handlers | all resource handlers | Not deployed |
+| Admin API — list/assign/revoke role assignments | `rbac_handler.go` | Not deployed |
+| Role management UI | frontend | Not deployed |
 
 ---
 
@@ -25,7 +28,10 @@ parent_page_id: "../rbac.md"
 ### In Scope
 
 - **Role type** — ordered `Role` integer type in `auth/context.go` enabling `>=` comparison
-- **Role resolution** — `resolveUserRole()` resolves the caller's role from either Keycloak JWT claims or the UCP database (approach TBD); the `Principal` already in context provides `AccessToken` and `UserID` for both options without an additional network call
+- **DB schema** — `tenant_role_assignments(user_id, tenant_rns, role)` table; `platform-admin` stored as `tenant_rns = '*'`
+- **Role resolution** — `resolveUserRole()` queries `tenant_role_assignments` using `Principal.UserID` from the request context (injected by `SessionMiddleware`)
+- **Admin API** — list, assign, and revoke role assignments per tenant; gated behind `tenant-admin`
+- **Role management UI** — frontend page for admins to manage role assignments within a tenant
 - **RequireRole middleware** — per-route middleware that resolves role, enforces minimum, and injects resolved role into request context
 - **Route refactoring** — routes grouped by minimum role; `isUserTenantAdmin()` removed from create/list handlers and replaced by middleware
 - **platform-admin bypass** — cross-tenant role resolved independently of `X-Tenant-ID`
@@ -34,7 +40,7 @@ parent_page_id: "../rbac.md"
 
 - **Delete ownership check** — `isUserTenantAdmin()` in delete handlers reads the XR annotation tenant, not `X-Tenant-ID`. This targeted check remains unchanged.
 - **`GET` by name ownership check** — returning 404 vs 403 on cross-tenant name lookup is deferred.
-- **Role resolution approach** — choosing between Keycloak JWT claims and UCP database is in scope of MCUCP-191 design, not implementation.
+- **Keycloak configuration** — no changes to Keycloak; roles are owned entirely by UCP.
 - **Terraform endpoints** — no cloud credentials or tenant isolation applicable.
 
 ---
