@@ -83,6 +83,42 @@ parent_page_id: "../rbac.md"
 
 ---
 
+## UI-to-Role Mapping
+
+### Sidebar navigation
+
+| Item | Route | Minimum role | Behaviour |
+|---|---|---|---|
+| Database → List | `/` | `viewer` | Always shown to authenticated users with a tenant selected |
+| Database → Create | `/create` | `deployer` | Hidden for viewer and approver |
+| Compute → List | `/compute` | `viewer` | Always shown |
+| Compute → Create | `/compute/create` | `deployer` | Hidden for viewer and approver |
+| Storage → List | `/storage` | `viewer` | Always shown |
+| Storage → Create | `/storage/create` | `deployer` | Hidden for viewer and approver |
+| Kubernetes → List | `/kubernetes` | `viewer` | Always shown |
+| Kubernetes → Create | `/kubernetes/create` | `deployer` | Hidden for viewer and approver |
+| Drift → List | `/drift` | `viewer` | Always shown |
+| Quotas → Usage | `/quota` | `viewer` | Always shown |
+| Terraform | `/terraform/*` | — | Out of RBAC scope (experimental, no cloud credentials) |
+| Admin → Workflows | `/admin/workflows` | `viewer` | Shown to all; approve/reject actions gated separately |
+| Admin → Kube Resources | `/admin/kube-resources` | `platform-admin` | Hidden for all tenant-scoped roles |
+| Settings → Credentials | `/settings/credentials` | `tenant-admin` | Hidden for viewer, approver, deployer |
+| Settings → Tenants | `/admin/tenants` | `platform-admin` | Hidden for all tenant-scoped roles |
+| Settings → Role Management | `/settings/roles` | `tenant-admin` | Hidden for viewer, approver, deployer |
+
+### In-page actions
+
+| Action | Page | Minimum role |
+|---|---|---|
+| Create button | All resource list pages | `deployer` |
+| Delete button | All resource list/detail pages | `deployer` |
+| Approve button | Workflows page | `approver` |
+| Reject button | Workflows page | `approver` |
+| Upload credentials | Settings → Credentials | `tenant-admin` |
+| Assign / revoke role | Settings → Role Management | `tenant-admin` |
+
+---
+
 ## API Sequence — /auth/me on Mount
 
 The frontend `AuthProvider` calls `/auth/me` on mount. With the role extension,
