@@ -151,38 +151,76 @@ specific tenant, matches regardless of the `X-Tenant-ID` in the request.
 
 ---
 
-## resolveUserRole
+## Role Resolution — Design
 
-`resolveUserRole` lives in `rbac_handler.go`. `SessionMiddleware` has already
-run by the time it is called — `Principal.UserID` is available in context:
+Role resolution uses a **per-request cache** to avoid repeated DB queries.
+A single `GetAllRolesForUser` call is made at most once per request; all
+subsequent checks within the same request read from the Go context.
+
+### loadRoles
+
+`loadRoles` fetches all role assignments for the caller and stores them in
+the request context. Returns immediately if the cache is already populated.
+
+```go
+func (s *APIServer) loadRoles(r *http.Request) (*http.Request, map[string]string, error) {
+    if cached, ok := r.Context().Value(cachedRolesKey{}).(map[string]string); ok {
+        return r, cached, nil  // cache hit — no DB call
+    }
+    allRoles, err := s.db.GetAllRolesForUser(principal.UserID)  // 1 DB call
+    r = r.WithContext(context.WithValue(r.Context(), cachedRolesKey{}, allRoles))
+    return r, allRoles, nil
+}
+```
+
+### roleFromMap
+
+Derives a `Role` from the cached map for a given `tenantID`:
+
+```go
+func roleFromMap(allRoles map[string]string, tenantID string) Role {
+    if allRoles["*"] == "platform-admin" {
+        return RolePlatformAdmin            // platform-admin sentinel
+    }
+    if tenantID != "" {
+        return stringToRole(allRoles[tenantID])  // specific tenant
+    }
+    // X-Tenant-ID absent — return highest role across all tenants
+    max := RoleUnknown
+    for _, roleStr := range allRoles {
+        if r := stringToRole(roleStr); r > max { max = r }
+    }
+    return max
+}
+```
+
+When `X-Tenant-ID` is absent, the caller's maximum role across all their
+tenants is used. This allows `RequireRole` checks to pass without requiring
+the header — for example, a user with `deployer` in tenant-A can delete
+their resource without specifying the header. The per-handler ownership
+check then verifies their role against the resource's annotated tenant.
+
+### resolveUserRole
+
+Reads from context cache — zero additional DB calls after `loadRoles` has run:
 
 ```go
 func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, error) {
-    principal, _ := authpkg.PrincipalFromContext(r.Context())
-
-    // check platform-admin first (tenant_rns = '*')
-    if roleStr, err := s.db.GetTenantRole(principal.UserID, "*"); err == nil && roleStr != "" {
-        return stringToRole(roleStr), nil
+    allRoles, ok := r.Context().Value(cachedRolesKey{}).(map[string]string)
+    if !ok {
+        _, allRoles, _ = s.loadRoles(r)  // fallback if cache not populated
     }
-
-    roleStr, err := s.db.GetTenantRole(principal.UserID, tenantID)
-    if err != nil {
-        return RoleUnknown, fmt.Errorf("failed to resolve role: %w", err)
-    }
-    return stringToRole(roleStr), nil
-}
-
-func stringToRole(s string) Role {
-    switch s {
-    case "platform-admin": return RolePlatformAdmin
-    case "tenant-admin":   return RoleTenantAdmin
-    case "deployer":       return RoleDeployer
-    case "approver":       return RoleApprover
-    case "viewer":         return RoleViewer
-    default:               return RoleUnknown
-    }
+    return roleFromMap(allRoles, tenantID), nil
 }
 ```
+
+### DB call count per request
+
+| Scenario | DB calls |
+|---|---|
+| Any request through `RequireRole` | 1 (`loadRoles` in middleware) |
+| Delete handler ownership check | 0 (reads context cache) |
+| `/auth/me` | 1 (`GetAllRolesForUser` directly, cache not used) |
 
 ---
 
@@ -337,9 +375,9 @@ making it harder to diagnose misconfigured role assignments.
 
 ## RequireRole Middleware
 
-`RequireRole` returns a gorilla/mux-compatible middleware. It resolves the
-caller's role for the tenant in `X-Tenant-ID`, enforces the minimum, and
-injects the resolved role into the context for downstream handlers.
+`RequireRole` calls `loadRoles` first to populate the per-request cache,
+then resolves the effective role and enforces the minimum. The handler and
+any subsequent `resolveUserRole` calls in the same request hit the cache.
 
 ```go
 // rbac_handler.go
@@ -348,7 +386,16 @@ func (s *APIServer) RequireRole(minRole authpkg.Role) mux.MiddlewareFunc {
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
             tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
 
-            role, err := s.resolveUserRole(r, tenantID)
+            // Populate cache — at most 1 DB call per request.
+            var err error
+            r, _, err = s.loadRoles(r)
+            if err != nil {
+                respondError(w, http.StatusInternalServerError,
+                    "Failed to load roles: "+err.Error())
+                return
+            }
+
+            role, err := s.resolveUserRole(r, tenantID)  // reads cache
             if err != nil {
                 respondError(w, http.StatusInternalServerError,
                     "Failed to resolve user role: "+err.Error())
@@ -360,6 +407,7 @@ func (s *APIServer) RequireRole(minRole authpkg.Role) mux.MiddlewareFunc {
                 return
             }
 
+            // Pass updated request (with cache + resolved role in context).
             next.ServeHTTP(w, r.WithContext(authpkg.WithRole(r.Context(), role)))
         })
     }

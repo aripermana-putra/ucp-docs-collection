@@ -194,14 +194,12 @@ sequenceDiagram
 
 ---
 
-## API Sequence — RequireRole Check
+## API Sequence — RequireRole Check (create)
 
-`POST /api/v1/databases` (deployer minimum)
+`POST /api/v1/databases` (deployer minimum, X-Tenant-ID present)
 
-By the time `RequireRole` runs, `SessionMiddleware` has already injected the
-`Principal` into context. `resolveUserRole` reads from the `Principal` — no
-additional network call to Horizon. `resolveUserRole` queries the
-`tenant_role_assignments` table using `Principal.UserID`.
+`RequireRole` calls `loadRoles` first — **1 DB call** fetches all role
+assignments and caches them in the request context.
 
 ```mermaid
 sequenceDiagram
@@ -210,22 +208,59 @@ sequenceDiagram
     participant Browser
     participant Session as SessionMiddleware
     participant Middleware as RequireRole("deployer")
-    participant Resolver as resolveUserRole
+    participant DB as PostgreSQL
     participant Handler as CreateDatabase
 
     Browser->>Session: POST /api/v1/databases<br/>Cookie: session=...<br/>X-Tenant-ID: rns:roc:iam::clsd-ucp
-    Session->>Session: decrypt access_token → inject Principal<br/>{UserID, Email, AccessToken, ...}
+    Session->>Session: decrypt access_token → inject Principal{UserID, ...}
     Session->>Middleware: request with Principal in context
 
-    Middleware->>Resolver: resolveUserRole(r, "rns:roc:iam::clsd-ucp")
-    Note over Resolver: query tenant_role_assignments WHERE user_id = Principal.UserID AND tenant_rns = tenantID
-    Resolver-->>Middleware: RoleDeployer (3)
+    Middleware->>DB: GetAllRolesForUser(Principal.UserID)
+    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "deployer", ...}
+    Note over Middleware: cache stored in request context
 
-    Middleware->>Middleware: RoleDeployer (3) >= RoleDeployer (3) → pass
-    Middleware->>Handler: inject RoleDeployer into context
+    Middleware->>Middleware: roleFromMap(cache, "rns:roc:iam::clsd-ucp") → RoleDeployer (3)<br/>RoleDeployer (3) >= RoleDeployer (3) → pass
+
+    Middleware->>Handler: inject RoleDeployer + cache into context
     Handler-->>Browser: 202 Accepted
 
     note over Middleware: viewer (1) < deployer (3) → 403<br/>tenant-admin (4) >= deployer (3) → pass
+```
+
+---
+
+## API Sequence — RequireRole Check (delete with ownership)
+
+`DELETE /api/v1/storage/my-bucket` (deployer minimum, no X-Tenant-ID)
+
+Cache populated in middleware; ownership check in handler reads from cache —
+**1 DB call total** for the entire request.
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    participant Browser
+    participant Session as SessionMiddleware
+    participant Middleware as RequireRole("deployer")
+    participant DB as PostgreSQL
+    participant Handler as DeleteStorageBucket
+
+    Browser->>Session: DELETE /api/v1/storage/my-bucket<br/>Cookie: session=... (no X-Tenant-ID)
+    Session->>Session: inject Principal
+    Session->>Middleware: request with Principal in context
+
+    Middleware->>DB: GetAllRolesForUser(Principal.UserID)
+    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "deployer", ...}
+    Note over Middleware: cache stored in request context
+
+    Middleware->>Middleware: roleFromMap(cache, "") → max role = RoleDeployer<br/>RoleDeployer >= RoleDeployer → pass
+
+    Middleware->>Handler: request with cache in context
+    Handler->>Handler: read platform.ucp.io/tenant-id from XR annotation<br/>xrTenantID = "rns:roc:iam::clsd-ucp"
+    Handler->>Handler: resolveUserRole(r, xrTenantID) → reads cache (0 DB calls)<br/>roleFromMap(cache, "rns:roc:iam::clsd-ucp") = RoleDeployer
+    Handler->>Handler: RoleDeployer >= RoleDeployer → authorized
+    Handler-->>Browser: 200 OK
 ```
 
 ---
@@ -241,19 +276,20 @@ sequenceDiagram
     participant Browser
     participant Session as SessionMiddleware
     participant Middleware as RequireRole("viewer")
-    participant Resolver as resolveUserRole
+    participant DB as PostgreSQL
     participant Handler as ListDatabases
 
     Browser->>Session: GET /api/v1/databases<br/>Cookie: session=... (no X-Tenant-ID)
     Session->>Session: decrypt access_token → inject Principal
     Session->>Middleware: request with Principal in context
 
-    Middleware->>Resolver: resolveUserRole(r, "")
-    Note over Resolver: query tenant_role_assignments WHERE user_id = Principal.UserID AND tenant_rns = "*"
-    Resolver-->>Middleware: RolePlatformAdmin (5)
+    Middleware->>DB: GetAllRolesForUser(Principal.UserID)
+    DB-->>Middleware: {"*": "platform-admin"}
+    Note over Middleware: cache stored in request context
 
-    Middleware->>Middleware: RolePlatformAdmin (5) >= RoleViewer (1) → pass<br/>inject RolePlatformAdmin into context
-    Middleware->>Handler: request with RolePlatformAdmin in context
+    Middleware->>Middleware: roleFromMap(cache, "") → "*" key = platform-admin → RolePlatformAdmin (5)<br/>RolePlatformAdmin (5) >= RoleViewer (1) → pass
+
+    Middleware->>Handler: request with RolePlatformAdmin + cache in context
     Handler->>Handler: platform-admin bypasses tenant scope<br/>returns all tenants' resources
     Handler-->>Browser: 200 OK
 ```
