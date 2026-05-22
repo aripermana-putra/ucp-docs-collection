@@ -41,7 +41,7 @@ parent_page_id: "../rbac.md"
 - **Role resolution** — `resolveUserRole()` queries `tenant_role_assignments` using `Principal.UserID` from the request context (injected by `SessionMiddleware`)
 - **Admin API** — list, assign, and revoke role assignments per tenant; gated behind `tenant-admin`
 - **`/auth/me` role extension** — `MeHandler` queries `tenant_role_assignments` and adds a `roles` map and `isPlatformAdmin` flag to the response; frontend reads this on mount
-- **`useRole()` hook** — derives the caller's role for the currently selected tenant from `user.roles`; exposes `hasMinRole(min)` for conditional rendering
+- **`useRole()` hook** — when a tenant is selected, returns the role for that tenant; when no tenant is selected, returns the user's maximum role across all tenants (mirrors backend `roleFromMap` behaviour so sidebar and page access reflect the highest role anywhere)
 - **DB query methods** — `GetTenantRole`, `GetAllRolesForUser`, `AssignTenantRole`, `RevokeTenantRole`, `GetRoleAssignmentsForTenant`, `FindUserByEmail`
 - **Admin API** — `ListRoleAssignments`, `AssignRole`, `RevokeRole` handlers + route registration; gated behind `tenant-admin`
 - **RequireRole middleware** — per-route middleware that resolves role, enforces minimum, and injects resolved role into request context
@@ -84,6 +84,10 @@ parent_page_id: "../rbac.md"
 | `/api/v1/load-balancers/{name}` | DELETE | `deployer` | Delete a load balancer attachment |
 | `/api/v1/workflows/{id}/approve` | POST | `approver` | Approve a pending Temporal workflow |
 | `/api/v1/workflows/{id}/reject` | POST | `approver` | Reject a pending Temporal workflow |
+| `/api/v1/drift` | GET | `tenant-admin` | List drift detections for the tenant |
+| `/api/v1/quota` | GET | `tenant-admin` | View GCP quota usage for the tenant |
+| `/api/v1/gcp/discover` | GET | `tenant-admin` | Discover unmanaged GCP resources for the tenant |
+| `/api/v1/settings/api-exposure` | GET, PUT | `tenant-admin` | Read or configure API exposure settings |
 | `/api/v1/settings/credentials` | GET, POST | `tenant-admin` | Read or upload GCP credentials for the tenant |
 | `/api/v1/settings/credentials/{provider}` | DELETE | `tenant-admin` | Remove a provider's credentials for the tenant |
 | `/api/v1/settings/credentials/roc` | GET, POST | `tenant-admin` | Read or configure ROC (Omnia) credentials for the tenant |
@@ -112,10 +116,10 @@ renders a 403 page instead of the content if the check fails.
 | Storage → Create | `/storage/create` | `deployer` | Hidden + 403 |
 | Kubernetes → List | `/kubernetes` | `viewer` | — |
 | Kubernetes → Create | `/kubernetes/create` | `deployer` | Hidden + 403 |
-| Drift → List | `/drift` | `viewer` | — |
-| Quotas → Usage | `/quota` | `viewer` | — |
+| Drift → List | `/drift` | `tenant-admin` | Hidden + 403 |
+| Quotas → Usage | `/quota` | `tenant-admin` | Hidden + 403 |
 | Terraform | `/terraform/*` | — | Out of RBAC scope (experimental) |
-| Admin → Workflows | `/admin/workflows` | `viewer` | — (approve/reject actions gated separately) |
+| Admin → Workflows | `/admin/workflows` | `platform-admin` | Hidden + 403 |
 | Admin → Kube Resources | `/admin/kube-resources` | `platform-admin` | Hidden + 403 |
 | Settings → Credentials | `/settings/credentials` | `tenant-admin` | Hidden + 403 |
 | Settings → Tenants | `/admin/tenants` | `platform-admin` | Hidden + 403 |
