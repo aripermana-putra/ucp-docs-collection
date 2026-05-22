@@ -52,6 +52,74 @@ func RoleFromContext(ctx context.Context) (Role, bool) {
 
 ---
 
+## Database ERD
+
+```mermaid
+erDiagram
+    identity_providers {
+        UUID id PK
+        TEXT name
+        TEXT issuer_url
+        TEXT client_id
+        TEXT jwks_uri
+        TEXT env
+        BOOLEAN is_active
+        TIMESTAMPTZ created_at
+    }
+
+    users {
+        UUID id PK
+        UUID idp_id FK
+        TEXT external_id
+        TEXT email
+        TEXT username
+        TEXT display_name
+        TEXT status
+        TIMESTAMPTZ last_login_at
+        INT login_count
+        TIMESTAMPTZ created_at
+    }
+
+    sessions {
+        TEXT id PK
+        UUID user_id FK
+        TEXT access_token
+        TEXT refresh_token
+        TIMESTAMPTZ expires_at
+        TIMESTAMPTZ created_at
+        TIMESTAMPTZ last_seen_at
+        TEXT ip_address
+        TEXT user_agent
+    }
+
+    audit_logs {
+        UUID id PK
+        UUID user_id FK
+        TEXT session_id
+        TEXT action
+        TEXT resource
+        JSONB metadata
+        TIMESTAMPTZ created_at
+    }
+
+    tenant_role_assignments {
+        TEXT user_id FK
+        TEXT tenant_rns
+        TEXT role
+        TIMESTAMPTZ created_at
+    }
+
+    identity_providers ||--o{ users : "idp_id"
+    users ||--o{ sessions : "user_id"
+    users ||--o{ audit_logs : "user_id"
+    users ||--o{ tenant_role_assignments : "user_id"
+```
+
+`tenant_rns = '*'` in `tenant_role_assignments` denotes a platform-admin — a
+cross-tenant role not bound to any specific tenant RNS.
+
+---
+
 ## Database Schema
 
 ```sql
