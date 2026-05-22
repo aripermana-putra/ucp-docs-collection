@@ -159,19 +159,32 @@ subsequent checks within the same request read from the Go context.
 
 ### loadRoles
 
-`loadRoles` fetches all role assignments for the caller and stores them in
-the request context. Returns immediately if the cache is already populated.
+`loadRoles` fetches role assignments and stores them in the request context.
+Returns immediately on cache hit. Branches on whether `X-Tenant-ID` is set
+to minimise the query:
 
 ```go
 func (s *APIServer) loadRoles(r *http.Request) (*http.Request, map[string]string, error) {
     if cached, ok := r.Context().Value(cachedRolesKey{}).(map[string]string); ok {
-        return r, cached, nil  // cache hit — no DB call
+        return r, cached, nil  // cache hit — 0 DB calls
     }
-    allRoles, err := s.db.GetAllRolesForUser(principal.UserID)  // 1 DB call
-    r = r.WithContext(context.WithValue(r.Context(), cachedRolesKey{}, allRoles))
-    return r, allRoles, nil
+    tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+
+    var roles map[string]string
+    if tenantID != "" {
+        // Fetch only the specific tenant + '*' sentinel — at most 2 primary-key lookups
+        roles, err = s.db.GetTenantRoles(principal.UserID, tenantID)
+    } else {
+        // Need all roles to derive the maximum across tenants
+        roles, err = s.db.GetAllRolesForUser(principal.UserID)
+    }
+    r = r.WithContext(context.WithValue(r.Context(), cachedRolesKey{}, roles))
+    return r, roles, nil
 }
 ```
+
+`GetTenantRoles` uses `WHERE user_id = $1 AND tenant_rns IN ($2, '*')` —
+a primary-key index lookup returning at most 2 rows.
 
 ### roleFromMap
 
@@ -218,9 +231,11 @@ func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, err
 
 | Scenario | DB calls |
 |---|---|
-| Any request through `RequireRole` | 1 (`loadRoles` in middleware) |
+| `X-Tenant-ID` present | 1 (`GetTenantRoles` — 2 rows max) |
+| `X-Tenant-ID` absent | 1 (`GetAllRolesForUser` — all rows) |
 | Delete handler ownership check | 0 (reads context cache) |
-| `/auth/me` | 1 (`GetAllRolesForUser` directly, cache not used) |
+| Any subsequent check in same request | 0 (cache hit) |
+| `/auth/me` | 1 (`GetAllRolesForUser` directly, independent of cache) |
 
 ---
 
