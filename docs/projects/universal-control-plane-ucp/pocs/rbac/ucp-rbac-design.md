@@ -115,6 +115,18 @@ erDiagram
     users ||--o{ tenant_role_assignments : "user_id"
 ```
 
+| Table | Origin | Modified by MCUCP-191 |
+|---|---|---|
+| `identity_providers` | Pre-existing | No |
+| `users` | Pre-existing | No |
+| `sessions` | Pre-existing | No |
+| `audit_logs` | Pre-existing | No |
+| `tenant_role_assignments` | **Added by MCUCP-191** | — |
+
+No pre-existing tables were altered. MCUCP-191 only adds the new
+`tenant_role_assignments` table and the query methods in `db/roles.go`
+that operate on it.
+
 `tenant_rns = '*'` in `tenant_role_assignments` denotes a platform-admin — a
 cross-tenant role not bound to any specific tenant RNS.
 
