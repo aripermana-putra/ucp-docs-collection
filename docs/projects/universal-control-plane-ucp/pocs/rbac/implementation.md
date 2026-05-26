@@ -10,25 +10,53 @@ parent_page_id: "../rbac.md"
 
 ## Implementation
 
+### Phase 1 — Core RBAC (deployed)
+
 | Component | File | Status |
 |---|---|---|
 | `Role` type + context helpers | `auth/context.go` | Deployed |
 | `tenant_role_assignments` DB schema + migration | `db/` | Deployed |
 | DB methods — `GetTenantRole`, `GetAllRolesForUser`, `GetRoleAssignmentsForTenant`, `AssignTenantRole`, `RevokeTenantRole` | `db/roles.go` | Deployed |
-| `db.FindUserByEmail()` (for AssignRole email → user_id lookup) | `db/roles.go` | Deployed |
-| `resolveUserRole()` | `rbac_handler.go` | Deployed |
+| `db.FindUserByEmail()` | `db/roles.go` | Deployed |
+| `resolveUserRole()` with per-request cache | `rbac_handler.go` | Deployed |
 | `RequireRole(minRole)` middleware | `rbac_handler.go` | Deployed |
-| Admin API handlers — `ListRoleAssignments`, `AssignRole`, `RevokeRole` | `rbac_handler.go` | Deployed |
+| Admin API — `ListRoleAssignments`, `AssignRole`, `RevokeRole` | `rbac_handler.go` | Deployed |
 | Route grouping by role level + admin API route registration | `main.go` | Deployed |
-| Remove `isUserTenantAdmin()` from create/list resource handlers | all resource handlers | Deployed |
-| Remove `isUserTenantAdmin()` from settings handlers (credentials) | `settings_handler.go` | Deployed |
-| `/auth/me` role extension | `bff_auth.go` (`MeHandler`) | Deployed |
-| `useRole()` hook | `hooks/useRole.ts`, frontend | Deployed |
-| Sidebar role-aware rendering (hide nav items) | `Sidebar.jsx` | Deployed |
+| Remove `isUserTenantAdmin()` from all handlers | all resource + settings handlers | Deployed |
+| `/auth/me` role extension | `bff_auth.go` | Deployed |
+| `useRole()` hook | `hooks/useRole.ts` | Deployed |
+| Sidebar role-aware rendering | `Sidebar.jsx` | Deployed |
 | In-page action buttons role-aware rendering | all list components | Deployed |
-| `ForbiddenPage` component | `pages/ForbiddenPage.jsx` | Deployed |
-| `RequireRole` route wrapper — wrap restricted routes in `App.jsx` | `App.jsx` | Deployed |
+| `ForbiddenPage` + `RequireRole` route wrapper | `App.jsx`, frontend | Deployed |
 | Role management UI | `pages/RoleManagementPage.jsx` | Deployed |
+
+### Phase 2 — Permission model refactor (not deployed)
+
+Replaces the linear role hierarchy with an orthogonal permission-based model.
+`deployer` and `approver` become parallel — a deployer cannot approve their
+own request.
+
+| Component | File | Status |
+|---|---|---|
+| `Permission` bitmask type + `RolePermissions` map | `auth/context.go` | Not deployed |
+| `RequirePermission(perm)` middleware replacing `RequireRole` | `rbac_handler.go` | Not deployed |
+| Route registrations updated to use permissions | `main.go` | Not deployed |
+| Delete handler ownership check updated to use permissions | all resource handlers | Not deployed |
+| `hasPermission(perm)` replacing `hasMinRole(min)` in `useRole()` | `hooks/useRole.ts` | Not deployed |
+| All frontend components updated to use `hasPermission` | all components | Not deployed |
+
+### Phase 3 — Tenant onboarding + user seeding + sync (not deployed)
+
+| Component | File | Status |
+|---|---|---|
+| `ucp_registered_tenants` DB table | `db/` | Not deployed |
+| DB methods — `RegisterTenant`, `IsRegistered`, `GetRegisteredTenants` | `db/tenants.go` | Not deployed |
+| Tenant registration endpoint `POST /api/v1/tenants/register` | `tenant_handler.go` | Not deployed |
+| User seeding on first login (Core Data → `tenant_role_assignments`) | `bff_auth.go` (`CallbackHandler`) | Not deployed |
+| Tenant member list from Core Data on login | `horizon_handler.go` | Not deployed |
+| Background sync job — polls Core Data, updates `tenant_role_assignments` | `sync/` | Not deployed |
+| `GET /api/v1/me/tenants` — user's OC tenants with UCP status | `tenant_handler.go` | Not deployed |
+| Onboarding landing page — tenant status per tenant | frontend | Not deployed |
 
 ---
 
@@ -36,25 +64,33 @@ parent_page_id: "../rbac.md"
 
 ### In Scope
 
-- **Role type** — ordered `Role` integer type in `auth/context.go` enabling `>=` comparison
-- **DB schema** — `tenant_role_assignments(user_id, tenant_rns, role)` table; `platform-admin` stored as `tenant_rns = '*'`
-- **Role resolution** — `resolveUserRole()` queries `tenant_role_assignments` using `Principal.UserID` from the request context (injected by `SessionMiddleware`)
-- **Admin API** — list, assign, and revoke role assignments per tenant; gated behind `tenant-admin`
-- **`/auth/me` role extension** — `MeHandler` queries `tenant_role_assignments` and adds a `roles` map and `isPlatformAdmin` flag to the response; frontend reads this on mount
-- **`useRole()` hook** — when a tenant is selected, returns the role for that tenant; when no tenant is selected, returns the user's maximum role across all tenants (mirrors backend `roleFromMap` behaviour so sidebar and page access reflect the highest role anywhere)
-- **DB query methods** — `GetTenantRole`, `GetAllRolesForUser`, `AssignTenantRole`, `RevokeTenantRole`, `GetRoleAssignmentsForTenant`, `FindUserByEmail`
-- **Admin API** — `ListRoleAssignments`, `AssignRole`, `RevokeRole` handlers + route registration; gated behind `tenant-admin`
-- **RequireRole middleware** — per-route middleware that resolves role, enforces minimum, and injects resolved role into request context
-- **Route refactoring** — routes grouped by minimum role; `isUserTenantAdmin()` removed from all resource and settings handlers and replaced by middleware
-- **platform-admin bypass** — cross-tenant role resolved independently of `X-Tenant-ID`
-- **Sidebar role-aware rendering** — nav items hidden when caller lacks minimum role
-- **In-page action buttons** — create/delete hidden for viewer and approver; approve/reject hidden below approver
-- **`RequireRole` route wrapper + `ForbiddenPage`** — direct URL access blocked with 403 page for insufficient role
-- **Role management UI** — frontend page for admins to manage role assignments within a tenant
+**Phase 1 — Core RBAC (deployed)**
+- Role type, DB schema, role resolution with per-request cache
+- `RequireRole` middleware replacing all `isUserTenantAdmin()` per-handler checks
+- Admin API to manage role assignments manually
+- `/auth/me` extended with roles map and `isPlatformAdmin` flag
+- Role-aware frontend — sidebar, page buttons, route guards, role management UI
+
+**Phase 2 — Permission model refactor**
+- Replace linear `Role int` hierarchy with orthogonal `Permission` bitmask
+- `deployer` and `approver` become parallel — deployer cannot approve; approver cannot provision
+- `RolePermissions` map defines each role as a set of permissions
+- All route registrations use `RequirePermission(perm)` instead of `RequireRole(minRole)`
+- Frontend `hasPermission(perm)` replaces `hasMinRole(min)` throughout
+
+**Phase 3 — Tenant onboarding + user seeding + sync**
+- **Tenant registration** — `ucp_registered_tenants` table; a tenant must be explicitly registered in UCP by an OC Tenant Admin before any UCP operations are allowed for it
+- **User seeding on first login** — on successful OIDC callback, UCP calls Core Data `GET /v0/members/{email}/tenants?subscriptions=true`, fetches all registered tenants the user belongs to, and seeds UCP roles based on their OC standing (OC Tenant Admin → UCP `tenant-admin`; OC Tenant Member → UCP `viewer`)
+- **Tenant member seeding on first admin login** — when an OC Tenant Admin registers a tenant, UCP fetches all current OC members of that tenant via `GET /v0/tenants/{tenantRNS}/members` and seeds their UCP roles
+- **Periodic sync** — background polling job calls Core Data at a configurable interval, compares current OC membership against `tenant_role_assignments`, adds new members, and removes or downgrades stale assignments
+- **OC → UCP role mapping** — explicit mapping used by seeding and sync (see Design doc)
+- **`GET /api/v1/me/tenants`** — returns the user's OC tenants enriched with UCP registration status and their UCP role per tenant
+- **Onboarding landing page** — shows per-tenant status: registered + has role / registered + no role ("contact your tenant-admin") / not registered in UCP
 
 ### Out of Scope
 
 - **Keycloak configuration** — no changes to Keycloak; roles are owned entirely by UCP.
+- **OC role validation at request time** — UCP does not call Core Data on every API request to verify OC standing; consistency is maintained through seeding and periodic sync instead.
 
 ---
 
@@ -98,21 +134,15 @@ If multiple projects per tenant are required:
 
 ### 3. Impact of OneCloud access revocation on UCP
 
-UCP stores its own role assignments in `tenant_role_assignments`,
-independent of OC membership. If a user's access is revoked in OC
-(removed from a tenant, or the tenant itself is deleted), UCP is not
-automatically notified and the user's UCP roles remain active.
+**Partially addressed in Phase 3.** The periodic sync job detects OC membership
+removals and removes the corresponding UCP role assignments. However there is a
+window of up to the sync interval (default 15 min) during which a revoked OC
+member retains their UCP access.
 
-Questions to resolve:
-- Should UCP periodically sync membership from OC and remove stale UCP
-  role assignments?
-- Should UCP validate OC membership on every request (adding a Horizon
-  API call to the hot path)?
-- Or is it acceptable that a tenant-admin manually revokes the UCP role
-  before or after the OC revocation?
-
-The PoC does not implement any sync mechanism. The current behaviour is
-that OC revocation has no immediate effect on UCP access.
+Remaining open question: whether the sync interval is acceptable or whether
+near-realtime revocation requires a different approach (e.g. OC webhook
+integration if it becomes available, or a shorter polling interval for
+high-sensitivity tenants).
 
 ---
 
@@ -137,6 +167,22 @@ Questions to resolve:
 The PoC treats credentials as static — no rotation logic is implemented.
 Stale credentials will cause Crossplane reconciliation errors that require
 manual credential re-upload to resolve.
+
+---
+
+### 5. OC role validation at request time vs sync-based consistency
+
+A user could hold UCP `tenant-admin` but have been downgraded to `Tenant Member`
+in OC. The Phase 3 sync catches this within the polling interval, but during
+that window the user retains elevated UCP access.
+
+Should UCP validate the user's current OC standing on every protected request
+(PM's Option 2)? This would make access revocation near-instant but adds a
+Core Data API call to every hot path.
+
+The PoC chooses sync-based consistency (polling) as the simpler approach.
+Request-time OC validation is deferred and would require the OC → UCP role
+mapping to be applied at the middleware layer rather than only at seed/sync time.
 
 ---
 
