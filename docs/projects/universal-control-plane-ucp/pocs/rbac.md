@@ -8,33 +8,35 @@ parent_page_id: "../pocs.md"
 
 UCP enforces access control at the API server layer using a
 **5-role per-tenant model**. Each role defines the minimum set of operations
-a user can perform within a tenant. Role resolution is delegated to the
-Horizon API, consistent with the existing `isUserTenantAdmin()` pattern
-from MCUCP-192.
+a user can perform within a tenant. Role assignments are stored in UCP's own
+PostgreSQL database (`tenant_role_assignments` table) — independent of
+Keycloak and Horizon.
 
 ---
 
 ## Approach Summary
 
 Every authenticated request passes through a `RequireRole(minRole)` middleware
-before reaching the handler. The middleware resolves the caller's role for the
-tenant in `X-Tenant-ID` by calling the Horizon members API and maps the
-returned subscription role to the internal `Role` type. Requests that do not
-meet the minimum required role are rejected with HTTP 403.
+before reaching the handler. The middleware loads the caller's role assignments
+from the DB in a single call, caches them in the request context, and enforces
+the minimum role. Requests that do not meet the minimum required role are
+rejected with HTTP 403.
 
-`platform-admin` is a cross-tenant role that bypasses per-tenant checks. It is
-identified via a dedicated Horizon group membership check.
+`platform-admin` is a cross-tenant role stored as `tenant_rns = '*'` and
+bypasses all per-tenant checks.
 
 ---
 
 ## Sub-Documents
 
-- [Concepts](rbac/concepts.md) — role definitions, role hierarchy, Horizon role
+- [Concepts](rbac/concepts.md) — role definitions, role hierarchy, role
   resolution, RequireRole middleware pattern
 - [Implementation](rbac/implementation.md) — scope, status table, endpoint-role
   mapping, sequence diagrams, verification
 - [Design](rbac/ucp-rbac-design.md) — Role type, resolveUserRole, RequireRole
   middleware, route grouping, platform-admin handling
+- [Horizon Core Data API](rbac/horizon-core-data-api.md) — member and tenant
+  identity endpoints, JWT claim approach, Option 2 feasibility findings
 
 ---
 
