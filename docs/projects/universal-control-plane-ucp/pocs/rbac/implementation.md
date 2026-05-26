@@ -58,6 +58,88 @@ parent_page_id: "../rbac.md"
 
 ---
 
+## Open Questions
+
+### 1. Environment boundary in OneCloud — same tenant or separate tenants?
+
+In OneCloud, does a single tenant span multiple deployment environments
+(e.g. staging and production), or is each environment represented as a
+distinct tenant with its own membership and service subscriptions?
+
+This matters for UCP because:
+- If staging and production are **separate OC tenants**, the existing
+  per-tenant isolation is sufficient — a user's access to each environment
+  is naturally gated by their OC membership in each tenant.
+- If staging and production exist **within the same OC tenant**, UCP must
+  introduce its own per-environment scoping layer. This would affect the
+  `tenant_role_assignments` schema (adding an `environment` column), the
+  ProviderConfig naming convention, and how credentials are registered.
+
+The current PoC assumes one UCP context per OC tenant and does not model
+environments as a separate dimension.
+
+---
+
+### 2. Multiple cloud provider projects per tenant
+
+The PoC operates on the assumption that one OC tenant maps to exactly
+one GCP project (or one project per public cloud provider). It is unclear
+whether a team may have multiple GCP projects under the same OC tenant —
+for example, one project per service or one project per environment.
+
+If multiple projects per tenant are required:
+- The current `ProviderConfig` naming convention
+  (`gcp-{sanitized-tenant-id}-{env}`) assumes a single project and would
+  need to be extended.
+- The "UCP Project" entity proposed by the PM would need to model a
+  one-to-many relationship between an OC tenant and its cloud projects.
+
+---
+
+### 3. Impact of OneCloud access revocation on UCP
+
+UCP stores its own role assignments in `tenant_role_assignments`,
+independent of OC membership. If a user's access is revoked in OC
+(removed from a tenant, or the tenant itself is deleted), UCP is not
+automatically notified and the user's UCP roles remain active.
+
+Questions to resolve:
+- Should UCP periodically sync membership from OC and remove stale UCP
+  role assignments?
+- Should UCP validate OC membership on every request (adding a Horizon
+  API call to the hot path)?
+- Or is it acceptable that a tenant-admin manually revokes the UCP role
+  before or after the OC revocation?
+
+The PoC does not implement any sync mechanism. The current behaviour is
+that OC revocation has no immediate effect on UCP access.
+
+---
+
+### 4. Service account credential lifecycle and key rotation
+
+UCP stores GCP (and OC) service account credentials in Kubernetes Secrets
+(PoC) or GCP Secret Manager (production target). No key rotation mechanism
+is implemented.
+
+Questions to resolve:
+- When a service account key expires or is rotated externally, Crossplane
+  will start failing reconciliation for that tenant's resources with
+  authentication errors. Does UCP surface this clearly to the tenant-admin,
+  or does it silently leave resources in an error state?
+- Should UCP implement automatic key rotation (e.g. via ESO + GCP Secret
+  Manager rotation policies), or is manual update via the credentials
+  endpoint (`POST /api/v1/settings/credentials`) sufficient?
+- What is the expected SLA for a tenant-admin to respond to a broken
+  credential — can provisioning/reconciliation be paused rather than
+  failing?
+
+The PoC treats credentials as static — no rotation logic is implemented.
+Stale credentials will cause Crossplane reconciliation errors that require
+manual credential re-upload to resolve.
+
+---
+
 ## Endpoint-to-Role Mapping
 
 | Endpoint | Method | Minimum role | Description |
