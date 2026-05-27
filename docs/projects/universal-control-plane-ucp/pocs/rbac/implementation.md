@@ -32,31 +32,34 @@ parent_page_id: "../rbac.md"
 
 ### Phase 2 — Permission model refactor (not deployed)
 
-Replaces the linear role hierarchy with an orthogonal permission-based model.
-`deployer` and `approver` become parallel — a deployer cannot approve their
-own request.
+Replaces the linear `Role int` hierarchy with an orthogonal permission bitmask.
+UCP uses three roles: `developer`, `tenant-admin`, `platform-admin`.
+`developer` has `PermProvision` but not `PermApprove` — a developer cannot
+approve their own provisioning request. The bitmask is kept for future-proofing:
+new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions`.
 
 | Component | File | Status |
 |---|---|---|
+| 3-role model: `RoleDeveloper`, `RoleTenantAdmin`, `RolePlatformAdmin` (remove `RoleViewer`, `RoleApprover`, `RoleDeployer`) | `auth/context.go` | Not deployed |
 | `Permission` bitmask type + `RolePermissions` map | `auth/context.go` | Not deployed |
 | `RequirePermission(perm)` middleware replacing `RequireRole` | `rbac_handler.go` | Not deployed |
 | Route registrations updated to use permissions | `main.go` | Not deployed |
-| Delete handler ownership check updated to use permissions | all resource handlers | Not deployed |
 | `hasPermission(perm)` replacing `hasMinRole(min)` in `useRole()` | `hooks/useRole.ts` | Not deployed |
 | All frontend components updated to use `hasPermission` | all components | Not deployed |
+| DB migration: update `tenant_role_assignments.role` CHECK constraint to `('developer','tenant-admin','platform-admin')` | `db/` | Not deployed |
 
-### Phase 3 — Tenant onboarding + user seeding + sync (not deployed)
+### Phase 3 — Tenant onboarding + login sync (not deployed)
 
 | Component | File | Status |
 |---|---|---|
 | `ucp_registered_tenants` DB table | `db/` | Not deployed |
 | DB methods — `RegisterTenant`, `IsRegistered`, `GetRegisteredTenants` | `db/tenants.go` | Not deployed |
 | Tenant registration endpoint `POST /api/v1/tenants/register` | `tenant_handler.go` | Not deployed |
-| User seeding on first login (Core Data → `tenant_role_assignments`) | `bff_auth.go` (`CallbackHandler`) | Not deployed |
-| Tenant member list from Core Data on login | `horizon_handler.go` | Not deployed |
-| Background sync job — polls Core Data, updates `tenant_role_assignments` | `sync/` | Not deployed |
-| `GET /api/v1/me/tenants` — user's OC tenants with UCP status | `tenant_handler.go` | Not deployed |
-| Onboarding landing page — tenant status per tenant | frontend | Not deployed |
+| Login-triggered OC sync in `CallbackHandler` — auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted roles | `bff_auth.go` | Not deployed |
+| `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Not deployed |
+| Tenant page — register flow + member picker from Horizon for role assignment | frontend | Not deployed |
+| Onboarding landing page — 4-state tenant rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) | frontend | Not deployed |
+| ~~Background sync job~~ | — | Deferred — notes only (login sync is sufficient for PoC) |
 
 ---
 
@@ -72,20 +75,21 @@ own request.
 - Role-aware frontend — sidebar, page buttons, route guards, role management UI
 
 **Phase 2 — Permission model refactor**
-- Replace linear `Role int` hierarchy with orthogonal `Permission` bitmask
-- `deployer` and `approver` become parallel — deployer cannot approve; approver cannot provision
+- 3-role model: `developer`, `tenant-admin`, `platform-admin` (scrap `viewer`, `approver`, `deployer`)
+- Replace linear `Role int` hierarchy with orthogonal `Permission` bitmask for future-proofing
+- `developer` has `PermProvision` but not `PermApprove` — a developer cannot approve their own request
 - `RolePermissions` map defines each role as a set of permissions
 - All route registrations use `RequirePermission(perm)` instead of `RequireRole(minRole)`
 - Frontend `hasPermission(perm)` replaces `hasMinRole(min)` throughout
+- DB migration: update `CHECK` constraint to the 3 new role names
 
-**Phase 3 — Tenant onboarding + user seeding + sync**
-- **Tenant registration** — `ucp_registered_tenants` table; a tenant must be explicitly registered in UCP by an OC Tenant Admin before any UCP operations are allowed for it
-- **User seeding on first login** — on successful OIDC callback, UCP calls Core Data `GET /v0/members/{email}/tenants?subscriptions=true`, fetches all registered tenants the user belongs to, and seeds UCP roles based on their OC standing (OC Tenant Admin → UCP `tenant-admin`; OC Tenant Member → UCP `viewer`)
-- **Tenant member seeding on first admin login** — when an OC Tenant Admin registers a tenant, UCP fetches all current OC members of that tenant via `GET /v0/tenants/{tenantRNS}/members` and seeds their UCP roles
-- **Periodic sync** — background polling job calls Core Data at a configurable interval, compares current OC membership against `tenant_role_assignments`, adds new members, and removes or downgrades stale assignments
-- **OC → UCP role mapping** — explicit mapping used by seeding and sync (see Design doc)
-- **`GET /api/v1/me/tenants`** — returns the user's OC tenants enriched with UCP registration status and their UCP role per tenant
-- **Onboarding landing page** — shows per-tenant status: registered + has role / registered + no role ("contact your tenant-admin") / not registered in UCP
+**Phase 3 — Tenant onboarding + login-triggered sync**
+- **Tenant registration** — `ucp_registered_tenants` table; a tenant must be explicitly registered by an OC Tenant Admin before UCP operations are allowed
+- **Login-triggered OC sync** — on every OIDC callback, UCP calls Horizon `GET /v0/members/{email}/tenants`, and for each tenant: auto-assigns `tenant-admin` if the user is an OC Admin (upgrade only), preserves manually-granted roles for OC Members, and revokes UCP roles for tenants the user has been removed from
+- **`GET /api/v1/me/tenants`** — returns the user's OC tenants enriched with UCP registration status, UCP role, and tenant-admin contact info (name + email) for tenants where the user has no role or the tenant is unregistered
+- **Tenant page** — register flow + OC member picker from Horizon for role assignment (no manual email input)
+- **Onboarding landing page** — 4-state rendering per tenant: registered+role / registered+no-role (contact admin) / unregistered+OC-admin (register action) / unregistered+OC-member (contact admin)
+- **Periodic sync** — deferred, notes only; login sync is sufficient for PoC
 
 ### Out of Scope
 
@@ -96,7 +100,32 @@ own request.
 
 ## Open Questions
 
-### 1. Environment boundary in OneCloud — same tenant or separate tenants?
+### 1. Service-level roles for public cloud resources
+
+OneCloud defines per-service roles (DBaaS `admin`/`operator`/`viewer`, CaaS
+`admin`/`edit`/`view`, etc.). The PM's Confluence page (UCP Identity, Tenancy
+& Roles) only defines OC service roles, not an equivalent UCP service-role layer.
+
+For **OC resources**, two options exist (PM's open question):
+- **Option 1 — UCP tenant role only:** `developer` in UCP is sufficient to
+  provision any OC service the tenant is subscribed to, regardless of the
+  user's OC service-level roles.
+- **Option 2 — UCP role + OC service-role check:** UCP additionally verifies
+  the user's OC service role per resource type at provisioning time.
+
+For **public cloud resources (GCP and future providers)**, there is no OC
+service-role concept. Access is controlled solely by the UCP tenant role
+(`developer` or `tenant-admin`). A developer can provision any resource type
+the tenant's credentials cover, with no per-service restriction.
+
+A UCP-native service-role layer (independent of OC) is not defined. Whether
+UCP should introduce per-service roles (e.g. `database-operator`) for both OC
+and public cloud is an open question to be resolved with the PM before any
+such system is designed.
+
+---
+
+### 2. Environment boundary in OneCloud — same tenant or separate tenants?
 
 In OneCloud, does a single tenant span multiple deployment environments
 (e.g. staging and production), or is each environment represented as a
@@ -190,28 +219,28 @@ mapping to be applied at the middleware layer rather than only at seed/sync time
 
 | Endpoint | Method | Minimum role | Description |
 |---|---|---|---|
-| `/api/v1/databases` | GET | `viewer` | List databases scoped to caller's tenants |
-| `/api/v1/databases` | POST | `deployer` | Provision a new database |
-| `/api/v1/databases/{name}` | GET | `viewer` | Get database details by name |
-| `/api/v1/databases/{name}` | DELETE | `deployer` | Delete a database |
-| `/api/v1/compute` | GET | `viewer` | List compute instances scoped to caller's tenants |
-| `/api/v1/compute` | POST | `deployer` | Provision a new compute instance |
-| `/api/v1/compute/{name}` | GET | `viewer` | Get compute instance details by name |
-| `/api/v1/compute/{name}` | DELETE | `deployer` | Delete a compute instance |
-| `/api/v1/storage` | GET | `viewer` | List storage buckets scoped to caller's tenants |
-| `/api/v1/storage` | POST | `deployer` | Provision a new storage bucket |
-| `/api/v1/storage/{name}` | GET | `viewer` | Get storage bucket details by name |
-| `/api/v1/storage/{name}` | DELETE | `deployer` | Delete a storage bucket |
-| `/api/v1/kubernetes-clusters` | GET | `viewer` | List Kubernetes clusters scoped to caller's tenants |
-| `/api/v1/kubernetes-clusters` | POST | `deployer` | Provision a new Kubernetes cluster |
-| `/api/v1/kubernetes-clusters/{name}` | GET | `viewer` | Get Kubernetes cluster details by name |
-| `/api/v1/kubernetes-clusters/{name}` | DELETE | `deployer` | Delete a Kubernetes cluster |
-| `/api/v1/load-balancers` | GET | `viewer` | List load balancer attachments scoped to caller's tenants |
-| `/api/v1/load-balancers` | POST | `deployer` | Create a new load balancer attachment |
-| `/api/v1/load-balancers/{name}` | GET | `viewer` | Get load balancer attachment details by name |
-| `/api/v1/load-balancers/{name}` | DELETE | `deployer` | Delete a load balancer attachment |
-| `/api/v1/workflows/{id}/approve` | POST | `approver` | Approve a pending Temporal workflow |
-| `/api/v1/workflows/{id}/reject` | POST | `approver` | Reject a pending Temporal workflow |
+| `/api/v1/databases` | GET | `developer` | List databases scoped to caller's tenants |
+| `/api/v1/databases` | POST | `developer` | Provision a new database |
+| `/api/v1/databases/{name}` | GET | `developer` | Get database details by name |
+| `/api/v1/databases/{name}` | DELETE | `developer` | Delete a database |
+| `/api/v1/compute` | GET | `developer` | List compute instances scoped to caller's tenants |
+| `/api/v1/compute` | POST | `developer` | Provision a new compute instance |
+| `/api/v1/compute/{name}` | GET | `developer` | Get compute instance details by name |
+| `/api/v1/compute/{name}` | DELETE | `developer` | Delete a compute instance |
+| `/api/v1/storage` | GET | `developer` | List storage buckets scoped to caller's tenants |
+| `/api/v1/storage` | POST | `developer` | Provision a new storage bucket |
+| `/api/v1/storage/{name}` | GET | `developer` | Get storage bucket details by name |
+| `/api/v1/storage/{name}` | DELETE | `developer` | Delete a storage bucket |
+| `/api/v1/kubernetes-clusters` | GET | `developer` | List Kubernetes clusters scoped to caller's tenants |
+| `/api/v1/kubernetes-clusters` | POST | `developer` | Provision a new Kubernetes cluster |
+| `/api/v1/kubernetes-clusters/{name}` | GET | `developer` | Get Kubernetes cluster details by name |
+| `/api/v1/kubernetes-clusters/{name}` | DELETE | `developer` | Delete a Kubernetes cluster |
+| `/api/v1/load-balancers` | GET | `developer` | List load balancer attachments scoped to caller's tenants |
+| `/api/v1/load-balancers` | POST | `developer` | Create a new load balancer attachment |
+| `/api/v1/load-balancers/{name}` | GET | `developer` | Get load balancer attachment details by name |
+| `/api/v1/load-balancers/{name}` | DELETE | `developer` | Delete a load balancer attachment |
+| `/api/v1/workflows/{id}/approve` | POST | `tenant-admin` | Approve a pending Temporal workflow |
+| `/api/v1/workflows/{id}/reject` | POST | `tenant-admin` | Reject a pending Temporal workflow |
 | `/api/v1/drift` | GET | `tenant-admin` | List drift detections for the tenant |
 | `/api/v1/quota` | GET | `tenant-admin` | View GCP quota usage for the tenant |
 | `/api/v1/gcp/discover` | GET | `tenant-admin` | Discover unmanaged GCP resources for the tenant |
@@ -236,14 +265,14 @@ renders a 403 page instead of the content if the check fails.
 
 | Item | Route | Minimum role | If insufficient role |
 |---|---|---|---|
-| Database → List | `/` | `viewer` | — (all tenant-authenticated users) |
-| Database → Create | `/create` | `deployer` | Hidden in sidebar + 403 on direct access |
-| Compute → List | `/compute` | `viewer` | — |
-| Compute → Create | `/compute/create` | `deployer` | Hidden + 403 |
-| Storage → List | `/storage` | `viewer` | — |
-| Storage → Create | `/storage/create` | `deployer` | Hidden + 403 |
-| Kubernetes → List | `/kubernetes` | `viewer` | — |
-| Kubernetes → Create | `/kubernetes/create` | `deployer` | Hidden + 403 |
+| Database → List | `/` | `developer` | — (all tenant-authenticated users) |
+| Database → Create | `/create` | `developer` | Hidden in sidebar + 403 on direct access |
+| Compute → List | `/compute` | `developer` | — |
+| Compute → Create | `/compute/create` | `developer` | Hidden + 403 |
+| Storage → List | `/storage` | `developer` | — |
+| Storage → Create | `/storage/create` | `developer` | Hidden + 403 |
+| Kubernetes → List | `/kubernetes` | `developer` | — |
+| Kubernetes → Create | `/kubernetes/create` | `developer` | Hidden + 403 |
 | Drift → List | `/drift` | `tenant-admin` | Hidden + 403 |
 | Quotas → Usage | `/quota` | `tenant-admin` | Hidden + 403 |
 | Terraform | `/terraform/*` | — | Out of RBAC scope (experimental) |
@@ -257,10 +286,10 @@ renders a 403 page instead of the content if the check fails.
 
 | Action | Page | Minimum role |
 |---|---|---|
-| Create button | All resource list pages | `deployer` |
-| Delete button | All resource list/detail pages | `deployer` |
-| Approve button | Workflows page | `approver` |
-| Reject button | Workflows page | `approver` |
+| Create button | All resource list pages | `developer` |
+| Delete button | All resource list/detail pages | `developer` |
+| Approve button | Workflows page | `tenant-admin` |
+| Reject button | Workflows page | `tenant-admin` |
 | Upload credentials | Settings → Credentials | `tenant-admin` |
 | Assign / revoke role | Settings → Role Management | `tenant-admin` |
 
@@ -286,10 +315,10 @@ sequenceDiagram
 
     BFF->>BFF: SessionMiddleware → inject Principal{UserID, ...}
     BFF->>DB: SELECT role, tenant_rns FROM tenant_role_assignments<br/>WHERE user_id = Principal.UserID
-    DB-->>BFF: [{tenant_rns: "rns:roc:iam::clsd-ucp", role: "deployer"},<br/>{tenant_rns: "*", role: "platform-admin"}]
+    DB-->>BFF: [{tenant_rns: "rns:roc:iam::clsd-ucp", role: "developer"},<br/>{tenant_rns: "*", role: "platform-admin"}]
 
     BFF->>BFF: build roles map<br/>isPlatformAdmin = any row has tenant_rns = "*"
-    BFF-->>AuthProvider: {id, email, name,<br/>roles: {"rns:roc:iam::clsd-ucp": "deployer"},<br/>isPlatformAdmin: false}
+    BFF-->>AuthProvider: {id, email, name,<br/>roles: {"rns:roc:iam::clsd-ucp": "developer"},<br/>isPlatformAdmin: false}
 
     AuthProvider->>AuthProvider: store user{roles, isPlatformAdmin} in context
     Note over AuthProvider: isAuthenticated = true<br/>user.roles available to all components
@@ -317,18 +346,18 @@ sequenceDiagram
     TenantCtx->>Component: Outlet re-mounts (key changed)
 
     Component->>useRole: useRole()
-    useRole->>useRole: user.isPlatformAdmin? → false<br/>role = user.roles["rns:roc:iam::clsd-ucp"] → "deployer"
+    useRole->>useRole: user.isPlatformAdmin? → false<br/>role = user.roles["rns:roc:iam::clsd-ucp"] → "developer"
 
-    useRole-->>Component: {role: "deployer", hasMinRole}
+    useRole-->>Component: {role: "developer", hasMinRole}
 
-    Note over Component: hasMinRole("viewer")      → true  → list shown<br/>hasMinRole("deployer")    → true  → Create button shown<br/>hasMinRole("approver")    → false → Approve button hidden<br/>hasMinRole("tenant-admin")→ false → Credentials menu hidden
+    Note over Component: hasPermission("read")      → true  → list shown<br/>hasPermission("provision") → true  → Create button shown<br/>hasPermission("approve")   → false → Approve button hidden<br/>hasPermission("manage")    → false → Credentials menu hidden
 ```
 
 ---
 
 ## API Sequence — RequireRole Check (create)
 
-`POST /api/v1/databases` (deployer minimum, X-Tenant-ID present)
+`POST /api/v1/databases` (developer minimum, X-Tenant-ID present)
 
 `RequireRole` calls `loadRoles` first — **1 DB call** fetches all role
 assignments and caches them in the request context.
@@ -339,7 +368,7 @@ sequenceDiagram
 
     participant Browser
     participant Session as SessionMiddleware
-    participant Middleware as RequireRole("deployer")
+    participant Middleware as RequireRole("developer")
     participant DB as PostgreSQL
     participant Handler as CreateDatabase
 
@@ -348,22 +377,22 @@ sequenceDiagram
     Session->>Middleware: request with Principal in context
 
     Middleware->>DB: GetAllRolesForUser(Principal.UserID)
-    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "deployer", ...}
+    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "developer", ...}
     Note over Middleware: cache stored in request context
 
-    Middleware->>Middleware: roleFromMap(cache, "rns:roc:iam::clsd-ucp") → RoleDeployer (3)<br/>RoleDeployer (3) >= RoleDeployer (3) → pass
+    Middleware->>Middleware: roleFromMap(cache, "rns:roc:iam::clsd-ucp") → RoleDeveloper (1)<br/>RoleDeveloper (1) >= RoleDeveloper (1) → pass
 
     Middleware->>Handler: inject RoleDeployer + cache into context
     Handler-->>Browser: 202 Accepted
 
-    note over Middleware: viewer (1) < deployer (3) → 403<br/>tenant-admin (4) >= deployer (3) → pass
+    note over Middleware: unknown (0) < developer (1) → 403<br/>tenant-admin (2) >= developer (1) → pass
 ```
 
 ---
 
 ## API Sequence — RequireRole Check (delete with ownership)
 
-`DELETE /api/v1/storage/my-bucket` (deployer minimum, no X-Tenant-ID)
+`DELETE /api/v1/storage/my-bucket` (developer minimum, no X-Tenant-ID)
 
 Cache populated in middleware; ownership check in handler reads from cache —
 **1 DB call total** for the entire request.
@@ -374,7 +403,7 @@ sequenceDiagram
 
     participant Browser
     participant Session as SessionMiddleware
-    participant Middleware as RequireRole("deployer")
+    participant Middleware as RequireRole("developer")
     participant DB as PostgreSQL
     participant Handler as DeleteStorageBucket
 
@@ -383,7 +412,7 @@ sequenceDiagram
     Session->>Middleware: request with Principal in context
 
     Middleware->>DB: GetAllRolesForUser(Principal.UserID)
-    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "deployer", ...}
+    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "developer", ...}
     Note over Middleware: cache stored in request context
 
     Middleware->>Middleware: roleFromMap(cache, "") → max role = RoleDeployer<br/>RoleDeployer >= RoleDeployer → pass
@@ -399,7 +428,7 @@ sequenceDiagram
 
 ## API Sequence — platform-admin Cross-Tenant Access
 
-`GET /api/v1/databases` (viewer minimum, no X-Tenant-ID)
+`GET /api/v1/databases` (developer minimum, no X-Tenant-ID)
 
 ```mermaid
 sequenceDiagram
@@ -407,7 +436,7 @@ sequenceDiagram
 
     participant Browser
     participant Session as SessionMiddleware
-    participant Middleware as RequireRole("viewer")
+    participant Middleware as RequireRole("developer")
     participant DB as PostgreSQL
     participant Handler as ListDatabases
 
@@ -419,7 +448,7 @@ sequenceDiagram
     DB-->>Middleware: {"*": "platform-admin"}
     Note over Middleware: cache stored in request context
 
-    Middleware->>Middleware: roleFromMap(cache, "") → "*" key = platform-admin → RolePlatformAdmin (5)<br/>RolePlatformAdmin (5) >= RoleViewer (1) → pass
+    Middleware->>Middleware: roleFromMap(cache, "") → "*" key = platform-admin → RolePlatformAdmin (3)<br/>RolePlatformAdmin passes all permission checks → pass
 
     Middleware->>Handler: request with RolePlatformAdmin + cache in context
     Handler->>Handler: platform-admin bypasses tenant scope<br/>returns all tenants' resources
@@ -430,46 +459,54 @@ sequenceDiagram
 
 ## Verification
 
-### viewer blocked from POST
+### developer blocked from approve and credentials
 
 ```bash
-COOKIE="Cookie: session=<viewer-session>"
+COOKIE="Cookie: session=<developer-session>"
 
 # List — allowed
-curl -s -H "$COOKIE" -H "X-Tenant-ID: $TENANT" \
-  http://localhost:8080/api/v1/databases | jq '.count'
+curl -s -H "$COOKIE" "http://localhost:8080/api/v1/databases?tenantId=$TENANT" | jq '.count'
 # → 200
 
-# Create — blocked
-curl -s -X POST -H "$COOKIE" -H "X-Tenant-ID: $TENANT" \
-  -d '{"name":"test","provider":"gcp","engineVersion":"15","projectId":"..."}' \
+# Create — allowed
+curl -s -X POST -H "$COOKIE" \
+  -d '{"name":"test","provider":"gcp","engineVersion":"15","projectId":"...","tenantId":"'$TENANT'"}' \
   http://localhost:8080/api/v1/databases
-# {"error":"insufficient role: deployer required"}
-```
+# → 202
 
-### deployer blocked from credentials
+# Approve — blocked
+curl -s -X POST -H "$COOKIE" \
+  http://localhost:8080/api/v1/tenants/clsd-ucp/workflows/<id>/approve
+# {"error":"insufficient permission: approve required"}
 
-```bash
-COOKIE="Cookie: session=<deployer-session>"
-
-curl -s -X POST -H "$COOKIE" -H "X-Tenant-ID: $TENANT" \
+# Credentials — blocked
+curl -s -X POST -H "$COOKIE" \
   http://localhost:8080/api/v1/settings/credentials
-# {"error":"insufficient role: tenant-admin required"}
+# {"error":"insufficient permission: manage required"}
 ```
 
-### approver can approve, not provision
+### tenant-admin can approve and provision
 
 ```bash
-COOKIE="Cookie: session=<approver-session>"
+COOKIE="Cookie: session=<tenant-admin-session>"
 
 # Approve — allowed
-curl -s -X POST -H "$COOKIE" -H "X-Tenant-ID: $TENANT" \
-  http://localhost:8080/api/v1/workflows/<id>/approve
+curl -s -X POST -H "$COOKIE" \
+  http://localhost:8080/api/v1/tenants/clsd-ucp/workflows/<id>/approve
 # → 200
 
-# Create resource — blocked
-curl -s -X POST -H "$COOKIE" -H "X-Tenant-ID: $TENANT" \
+# Create resource — allowed
+curl -s -X POST -H "$COOKIE" \
   -d '{"name":"test","provider":"gcp",...}' \
   http://localhost:8080/api/v1/storage
-# {"error":"insufficient role: deployer required"}
+# → 202
+```
+
+### cross-tenant access blocked
+
+```bash
+# User is tenant-admin of clsd-ucp but not other-tenant
+curl -s -H "$COOKIE" \
+  "http://localhost:8080/api/v1/databases?tenantId=rns:roc:iam::other-tenant"
+# {"error":"insufficient permission: read required"}  (or 403)
 ```

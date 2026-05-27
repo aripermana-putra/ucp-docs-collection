@@ -10,13 +10,14 @@ parent_page_id: "../rbac.md"
 
 ## Permission-Based Role Model (Phase 2)
 
-The Phase 1 implementation uses a linear `Role int` hierarchy where
-`deployer (3) > approver (2)`, which means a deployer passes `hasMinRole('approver')`
-and can approve their own provisioning request — a separation-of-duties violation.
+UCP uses three roles: `developer`, `tenant-admin`, and `platform-admin`.
+Rather than a linear integer hierarchy, each role is defined as a set of
+**permissions** using a bitmask. The enforcement check changes from
+`role >= minRole` to `role.Has(permission)`.
 
-Phase 2 replaces the linear hierarchy with an **orthogonal permission model**.
-`deployer` and `approver` are parallel roles, neither inherits the other.
-The check changes from `role >= minRole` to `role.Has(permission)`.
+This ensures future roles can be added (e.g. a `drift-operator` that can
+approve drift alerts but not provision resources) without restructuring the
+hierarchy or renumbering constants.
 
 ```go
 // auth/context.go
@@ -31,9 +32,7 @@ const (
 )
 
 var RolePermissions = map[string]Permission{
-    "viewer":         PermRead,
-    "deployer":       PermRead | PermProvision,
-    "approver":       PermRead | PermApprove,
+    "developer":      PermRead | PermProvision,
     "tenant-admin":   PermRead | PermProvision | PermApprove | PermManage,
     "platform-admin": PermRead | PermProvision | PermApprove | PermManage | PermPlatform,
 }
@@ -43,8 +42,8 @@ func (p Permission) Has(required Permission) bool {
 }
 ```
 
-`deployer` has `PermProvision` but not `PermApprove`. `approver` has `PermApprove`
-but not `PermProvision`. `tenant-admin` has both.
+`developer` has `PermProvision` but not `PermApprove` — a developer cannot
+approve their own provisioning request. Approval is `tenant-admin` only.
 
 Adding a new role in the future (e.g. `drift-operator: PermRead | PermApprove | PermDrift`)
 is one line in `RolePermissions` — no schema change, no hierarchy restructuring.
@@ -82,9 +81,7 @@ api.Handle("/settings/credentials/all", server.requirePermHandler(authpkg.PermPl
 
 ```ts
 const ROLE_PERMISSIONS: Record<Role, Set<string>> = {
-  'viewer':         new Set(['read']),
-  'deployer':       new Set(['read', 'provision']),
-  'approver':       new Set(['read', 'approve']),
+  'developer':      new Set(['read', 'provision']),
   'tenant-admin':   new Set(['read', 'provision', 'approve', 'manage']),
   'platform-admin': new Set(['read', 'provision', 'approve', 'manage', 'platform']),
 }
@@ -105,21 +102,17 @@ type Role int
 
 const (
     RoleUnknown     Role = iota // 0 — unresolved / not a tenant member
-    RoleViewer                  // 1
-    RoleApprover                // 2
-    RoleDeployer                // 3
-    RoleTenantAdmin             // 4
-    RolePlatformAdmin           // 5
+    RoleDeveloper               // 1
+    RoleTenantAdmin             // 2
+    RolePlatformAdmin           // 3
 )
 
 func (r Role) String() string {
     switch r {
-    case RoleViewer:      return "viewer"
-    case RoleApprover:    return "approver"
-    case RoleDeployer:    return "deployer"
-    case RoleTenantAdmin: return "tenant-admin"
+    case RoleDeveloper:     return "developer"
+    case RoleTenantAdmin:   return "tenant-admin"
     case RolePlatformAdmin: return "platform-admin"
-    default:              return "unknown"
+    default:                return "unknown"
     }
 }
 
@@ -224,8 +217,7 @@ CREATE TABLE tenant_role_assignments (
     user_id    TEXT NOT NULL REFERENCES users(id),
     tenant_rns TEXT NOT NULL,
     role       TEXT NOT NULL CHECK (role IN (
-                   'platform-admin', 'tenant-admin',
-                   'deployer', 'approver', 'viewer')),
+                   'platform-admin', 'tenant-admin', 'developer')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, tenant_rns)
 );
@@ -369,15 +361,7 @@ not included as a tenant entry, it is expressed via `isPlatformAdmin`.
 tenant from the data already in `AuthProvider`. No extra API call needed.
 
 ```ts
-type Role = 'platform-admin' | 'tenant-admin' | 'deployer' | 'approver' | 'viewer'
-
-const ROLE_LEVEL: Record<Role, number> = {
-  'viewer': 1,
-  'approver': 2,
-  'deployer': 3,
-  'tenant-admin': 4,
-  'platform-admin': 5,
-}
+type Role = 'platform-admin' | 'tenant-admin' | 'developer'
 
 function useRole() {
   const { user } = useAuth()
@@ -401,15 +385,15 @@ function useRole() {
 Usage in components:
 
 ```tsx
-const { hasMinRole } = useRole()
+const { hasPermission } = useRole()
 
-{hasMinRole('deployer') && <CreateButton />}
-{hasMinRole('deployer') && <DeleteButton />}
-{hasMinRole('approver') && <ApproveButton />}
-{hasMinRole('tenant-admin') && <CredentialsMenuItem />}
+{hasPermission('provision') && <CreateButton />}
+{hasPermission('provision') && <DeleteButton />}
+{hasPermission('approve')   && <ApproveButton />}
+{hasPermission('manage')    && <CredentialsMenuItem />}
 ```
 
-When no tenant is selected, `role` is `null` and `hasMinRole` returns `false`
+When no tenant is selected, `role` is `null` and `hasPermission` returns `false`
 for all checks — all action buttons are hidden until the user selects a tenant.
 
 ---
@@ -609,42 +593,52 @@ On successful registration:
 
 ## OC → UCP Role Mapping
 
-Used during user seeding and periodic sync to derive a UCP role from a user's
-OC standing:
+Used during login-triggered sync to derive a UCP role from a user's OC standing:
 
-| OC Level 1 (tenant role) | OC Level 2 (service role) | UCP role assigned |
-|---|---|---|
-| Tenant Admin | any | `tenant-admin` |
-| Tenant Member | any | `viewer` |
+| OC Level 1 (tenant role) | UCP role assigned |
+|---|---|
+| Tenant Admin | `tenant-admin` (auto-assigned on login) |
+| Tenant Member | none (must be assigned manually by a UCP `tenant-admin`) |
 
-The mapping is intentionally conservative — OC Tenant Members get `viewer` by
-default and a UCP `tenant-admin` can upgrade them to `deployer` or `approver`
-manually. This avoids auto-granting provisioning permissions based on OC service
-roles alone.
+OC Tenant Members do not receive any UCP role automatically. They can log in,
+see their tenants, and know whether a tenant is registered in UCP — but they
+cannot take any action until a UCP `tenant-admin` grants them the `developer`
+or `tenant-admin` role explicitly.
 
-If Option 2 (OC service role check) is implemented in a future phase, the
-mapping would be extended to derive `deployer` from OC service-level roles
-(e.g. DBaaS `admin` or `operator`).
+This keeps provisioning permission explicitly controlled by the tenant-admin,
+not derived from OC membership level.
 
 ---
 
-## User Seeding on First Login
+## Login-Triggered OC Sync
 
-When a user logs in via OIDC (in `CallbackHandler`), after the session is
-created, UCP seeds their UCP roles from their OC standing:
+On every successful OIDC login (in `CallbackHandler`), UCP synchronises the
+caller's role assignments against their current OC standing. This replaces a
+periodic background job for the PoC.
 
 ```
-1. Call GET /v0/members/{email}/tenants?subscriptions=true (Core Data)
-2. For each tenant in the response:
-   a. Check if tenant is registered in ucp_registered_tenants
-   b. If registered and user has no existing UCP role for that tenant:
-      → Derive role from OC standing using OC → UCP mapping
-      → INSERT into tenant_role_assignments
-3. Skip unregistered tenants — they show as "not set up" in the UI
+1. Call GET /v0/members/{email}/tenants (Core Data / Horizon)
+2. For each tenant in the OC response:
+   a. If OC role = Tenant Admin:
+      - Current UCP role < tenant-admin (or none) → assign tenant-admin
+      - Current UCP role = tenant-admin or platform-admin → no change (keep)
+   b. If OC role = Tenant Member:
+      - Never touch UCP role — a manually-granted developer or tenant-admin
+        role from a UCP tenant-admin is preserved regardless of OC standing
+3. For each tenant where user has a UCP role assignment but is no longer
+   present in the OC response → revoke the UCP role
+4. platform-admin rows (tenant_rns = '*') are never touched by the sync
 ```
 
-Seeding is **additive only** — it never downgrades or removes existing UCP roles.
-Downgrades happen only through the periodic sync or manual revocation.
+**Sync rules summary:**
+- OC Admin → auto-assign `tenant-admin` (upgrade only, never downgrade)
+- OC Member → preserve any existing manually-assigned UCP role
+- Removed from OC tenant → revoke UCP role for that tenant
+- `platform-admin` → managed manually only, OC sync does not affect it
+
+**PoC gap:** if a user's OC role changes between logins, their UCP role
+reflects the stale state until their next login. A future periodic sync
+(see notes below) closes this window.
 
 ---
 
@@ -661,49 +655,110 @@ Used by the onboarding landing page.
       "name": "coupon-team",
       "ocRole": "Tenant Admin",
       "ucpRegistered": true,
-      "ucpRole": "tenant-admin"
+      "ucpRole": "tenant-admin",
+      "admins": null
     },
     {
       "rns": "rns:roc:iam::other-team",
       "name": "other-team",
       "ocRole": "Tenant Member",
       "ucpRegistered": true,
-      "ucpRole": null          ← no UCP role assigned yet
+      "ucpRole": null,
+      "admins": [
+        { "name": "Alice Smith", "email": "alice@example.com" }
+      ]
     },
     {
       "rns": "rns:roc:iam::new-team",
       "name": "new-team",
       "ocRole": "Tenant Admin",
-      "ucpRegistered": false   ← tenant not registered in UCP yet
+      "ucpRegistered": false,
+      "ucpRole": null,
+      "admins": null
+    },
+    {
+      "rns": "rns:roc:iam::locked-team",
+      "name": "locked-team",
+      "ocRole": "Tenant Member",
+      "ucpRegistered": false,
+      "ucpRole": null,
+      "admins": [
+        { "name": "Bob Jones", "email": "bob@example.com" }
+      ]
     }
   ]
 }
 ```
 
+`admins` is populated from the OC tenant's admin list whenever the user
+has no UCP role or the tenant is not registered — so they know who to
+contact. For tenants where the user already has a UCP role, `admins` is
+omitted.
+
 The frontend uses this to render three states per tenant:
 - `ucpRegistered: true` + `ucpRole` set → full access at that role level
-- `ucpRegistered: true` + `ucpRole: null` → "Contact your tenant-admin to get access"
-- `ucpRegistered: false` → "UCP not set up for this tenant — register it" (only shown to OC Tenant Admin)
+- `ucpRegistered: true` + `ucpRole: null` → "Contact your tenant-admin to get access" — `admins` list from OC is included so the user can see who to contact (name + email)
+- `ucpRegistered: false` + OC role = Tenant Admin → "UCP not set up — register this tenant" (register action available)
+- `ucpRegistered: false` + OC role = Tenant Member → "UCP not set up for this tenant" — `admins` list shown so the user can request setup
+
+The `admins` field is populated from OC for unregistered tenants and for
+registered tenants where the user has no UCP role.
 
 ---
 
-## Periodic Sync
+## Periodic Sync (deferred — notes only)
 
-A background job polls Core Data at a configurable interval (default: 15 minutes)
-to keep `tenant_role_assignments` consistent with OC membership.
+A background polling job to keep `tenant_role_assignments` consistent with OC
+membership between user logins is deferred for the PoC.
 
+The login-triggered sync handles the same use cases for active users. The gap
+is users whose OC role changes while they already have an active UCP session —
+their role reflects stale state until their next login.
+
+When implemented, the sync would:
 ```
 For each tenant in ucp_registered_tenants:
   1. GET /v0/tenants/{tenantRNS}/members  (Core Data)
-  2. Compare response against current tenant_role_assignments
-  3. New OC members not in UCP → seed using OC → UCP mapping
-  4. Members removed from OC → remove their UCP role assignment
-  5. OC role downgraded (Admin → Member) → downgrade UCP role
-     (tenant-admin → viewer, unless manually upgraded by another tenant-admin)
+  2. Apply the same login-triggered sync rules:
+     - OC Admin with lower UCP role → upgrade to tenant-admin
+     - User removed from OC → revoke UCP role
+     - OC Member with manually-granted UCP role → preserve
+     - platform-admin rows → never touched
 ```
 
-No event streaming is available from Core Data, so polling is the only option.
-The sync does not upgrade roles — a `viewer` manually promoted to `deployer` by
-a tenant-admin remains `deployer` even if their OC role stays `Tenant Member`.
-Only seeding on first login and the initial tenant registration seeding apply
-the OC → UCP mapping upward.
+No event streaming is available from Core Data, so polling would be the only
+option. The sync interval and acceptable staleness window are to be defined
+when this is implemented.
+
+---
+
+## Open Design Questions
+
+### Service-Level Roles for Public Cloud Resources
+
+OneCloud has a well-defined service-role system per service (DBaaS
+`admin`/`operator`/`viewer`, CaaS `admin`/`edit`/`view`, etc.). The PM's
+Confluence page (UCP Identity, Tenancy & Roles) documents OC service roles
+but does not define an equivalent UCP service-role model.
+
+For **OC resources**, two options exist (PM's open question):
+- **Option 1 — UCP tenant role only:** UCP checks only the caller's UCP
+  `developer` or `tenant-admin` role. The OC service account executes
+  requests on behalf of the team; OC service roles are not checked.
+- **Option 2 — UCP role + OC service-role check:** UCP additionally calls
+  Core Data API to verify the user holds the required OC service role for
+  the resource type being provisioned (e.g. DBaaS `operator` to provision
+  a database). Requires UCP to maintain an OC-service-to-resource-type
+  mapping.
+
+For **public cloud resources (GCP and future providers)**, there is no
+equivalent OC service-role concept. The PM's Confluence page does not
+address this case. The current implementation grants access to any public
+cloud resource based solely on the UCP tenant role (`developer` or
+`tenant-admin`) — a `developer` can provision any public cloud resource
+type the tenant's credentials cover, with no per-service restriction.
+
+A UCP-native service-role layer (independent of OC) is not defined and
+not implemented. Whether UCP should introduce its own per-service roles
+(e.g. `database-operator`, `compute-viewer`) for both OC and public cloud
+resources is an open question to be resolved with the PM.
