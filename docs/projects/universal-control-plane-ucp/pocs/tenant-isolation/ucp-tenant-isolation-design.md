@@ -12,27 +12,62 @@ namespace-per-tenant isolation.
 
 ---
 
-## Global Tenant Context and Automatic Header Injection
+## Global Tenant Context and Tenant Scope Propagation
 
 ### Design
 
 A global `TenantContext` is maintained at the React app root. It holds the currently
-selected tenant and exposes it via a `useTenantContext()` hook. The `useAuthFetch` hook
-reads from this context and injects `X-Tenant-ID: <tenant.rns>` on every outgoing
-request — no changes are needed in individual list components.
+selected tenant and exposes it via a `useTenantContext()` hook. Tenant scope is
+propagated differently per HTTP method, following REST conventions:
+
+**GET list — `?tenantId=` query param**
+
+`useAuthFetch` appends `?tenantId=<tenant.rns>` to GET requests when a tenant is
+selected. Tenant scope is part of the query, not a custom header, making it
+visible in URLs, logs, and compatible with any HTTP client without custom header support.
 
 ```ts
 // useAuthFetch.ts
 const { selectedTenant } = useTenantContext()
-if (selectedTenant) {
-    headers.set('X-Tenant-ID', selectedTenant.rns)
+const isGet = !options.method || options.method.toUpperCase() === 'GET'
+if (selectedTenant && isGet) {
+    const sep = url.includes('?') ? '&' : '?'
+    finalUrl = `${url}${sep}tenantId=${encodeURIComponent(selectedTenant.rns)}`
 }
 ```
 
-List handlers on the API server read the tenant ID exclusively from the header:
+List handlers on the API server read from the query param:
 
 ```go
-tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+tenantID := strings.TrimSpace(r.URL.Query().Get("tenantId"))
+```
+
+When `?tenantId=` is absent, the handler calls Horizon to fetch all tenants the caller
+belongs to and returns resources across all of them.
+
+**POST create — `tenantId` in request body**
+
+Tenant context is included as a field in the JSON body. The frontend create forms
+read `selectedTenant.rns` and include it as `tenantId`. No per-request URL manipulation
+is needed.
+
+**DELETE / approve / reject — `{tenantSlug}` path segment**
+
+Mutation endpoints include the tenant slug as the first path segment:
+
+```
+DELETE /api/v1/tenants/{tenantSlug}/databases/{name}
+POST   /api/v1/tenants/{tenantSlug}/workflows/{id}/approve
+```
+
+The slug (e.g. `clsd-ucp`) is the URL-safe short name stored in the `tenants.slug`
+column. The API resolves it to the canonical RNS via a DB lookup before the ownership
+check. Frontend list components construct the URL using `selectedTenant.name` (the slug).
+
+```ts
+// list component delete call
+authFetch(`/api/v1/tenants/${selectedTenant.name}/storage/${resource.name}`,
+          { method: 'DELETE' })
 ```
 
 ---
@@ -67,13 +102,13 @@ per-operation permission enforcement.
 
 ### Implementation Approach
 
-A `RequireRole(minRole string)` middleware reads the caller's roles from the Horizon API
-(or a cached token claim) and rejects requests that do not meet the minimum required role
-for the endpoint. All endpoints currently guarded by `isUserTenantAdmin()` are migrated
-to `RequireRole("tenant-admin")` as a starting point.
+A `RequireRole(minRole string)` middleware resolves the caller's role from the UCP
+`tenant_role_assignments` database table and rejects requests that do not meet the
+minimum required role for the endpoint.
 
-Role resolution requires the tenant context to be available on the request — provided by
-the `X-Tenant-ID` header. This is why the global tenant context work is a prerequisite.
+For GET requests, role resolution uses the `?tenantId=` query param. For mutation
+endpoints with `{tenantSlug}` in the path, the slug is resolved to the canonical RNS
+before the role check. See the RBAC PoC documentation for the full role model design.
 
 ---
 
