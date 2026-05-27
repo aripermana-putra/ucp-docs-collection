@@ -30,10 +30,22 @@ cannot supply or override it.
 
 ## Tenant Identity
 
-Tenant context is expressed as an RNS (Rakuten Name Space) string: `rns:roc:iam::clsd-ucp`.
+The canonical tenant identifier is an RNS (Rakuten Name Space) string:
+`rns:roc:iam::clsd-ucp`. Tenant context is expressed differently depending on the
+HTTP method:
 
-The API server verifies tenant admin membership for every mutating and tenant-scoped read
-operation by calling the Horizon API:
+| Operation | How tenant is expressed | Example |
+|---|---|---|
+| GET list (filter by tenant) | `?tenantId=` query param | `GET /api/v1/storage?tenantId=rns:roc:iam::clsd-ucp` |
+| POST create | `tenantId` field in request body | `{"tenantId": "rns:roc:iam::clsd-ucp", ...}` |
+| DELETE / approve / reject | `{tenantSlug}` path segment | `DELETE /api/v1/tenants/clsd-ucp/storage/my-bucket` |
+
+For GET list, `?tenantId=` is optional. When absent the API returns resources across
+all tenants the caller belongs to. When present the caller must be admin of the
+specified tenant.
+
+The API server verifies tenant admin membership for relevant operations by calling
+the Horizon API:
 
 ```
 GET https://qa-horizon-data-api.r-local.net/v0/tenants/{tenantRNS}
@@ -42,8 +54,26 @@ Authorization: Bearer {caller's Keycloak access token}
 Response: {"admins": [{"email": "user@example.com"}, ...]}
 ```
 
-The caller's email is checked against the `admins` list. Any operation that targets a
-specific tenant rejects non-admins with HTTP 403.
+The caller's email is checked against the `admins` list. Operations that target a
+specific tenant reject non-admins with HTTP 403.
+
+---
+
+## Tenant Slug
+
+The tenant slug is a short, URL-safe name for a tenant — for example `clsd-ucp`
+for `rns:roc:iam::clsd-ucp`. It is used as a path segment in mutation endpoints
+to avoid the `:` characters in the canonical RNS format, which require
+percent-encoding in URLs.
+
+The API resolves slug → canonical RNS via the `tenants` table:
+
+```sql
+SELECT external_id FROM tenants WHERE slug = $1
+```
+
+`external_id` holds the full RNS string. The slug appears only in the URL path;
+all internal operations use the canonical RNS.
 
 ---
 

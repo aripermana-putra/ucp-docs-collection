@@ -23,10 +23,14 @@ before delete operations.
 | Label + annotation stamping — XDatabase | `main.go` (`createXDatabaseYAML`) | Deployed |
 | Label + annotation stamping — XKubernetesCluster | `kubernetes_handler.go` (`createXKubernetesClusterYAML`) | Deployed |
 | Label + annotation stamping — XComputeInstance, XStorageBucket, XLoadBalancer | `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
-| Tenant-filtered list — all resource types (X-Tenant-ID or caller's tenants) | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
+| Tenant-filtered list — `?tenantId=` query param or caller's tenants via Horizon | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
 | Delete ownership check — all resource types | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
-| Global `TenantContext` + `X-Tenant-ID` header injection | `TenantContext.jsx`, `useAuthFetch.ts`, `MainLayout.jsx`, frontend | Deployed |
+| Global `TenantContext` + `?tenantId=` query param injection on GET requests | `TenantContext.jsx`, `useAuthFetch.ts`, `MainLayout.jsx`, frontend | Deployed |
 | `ValidatingAdmissionPolicy` — tenant label + annotation enforcement | `k8s/tenant-admission-policy.yaml` | Deployed |
+| Tenant slug resolver — `ResolveTenantExternalIDBySlug` | `db/tenants.go` | Not deployed |
+| Slug-based mutation paths — `DELETE/POST /api/v1/tenants/{tenantSlug}/...` | all resource handlers + `main.go` | Not deployed |
+| Tenant-slug URL construction for mutations | `useAuthFetch.ts`, frontend list components | Not deployed |
+| `tenantId` field in list response objects | all resource response structs | Not deployed |
 
 ---
 
@@ -36,11 +40,17 @@ before delete operations.
 
 - **Label stamping** — every XR creation stamps `platform.ucp.io/tenant` (label) and
   `platform.ucp.io/tenant-id` (annotation) on the Kubernetes object
-- **Tenant-filtered list endpoints** — `X-Tenant-ID` request header activates
-  tenant filtering; the caller must be admin of the specified tenant
+- **Tenant-filtered list endpoints** — optional `?tenantId=` query param scopes
+  results to a specific tenant (caller must be admin); when absent, results are scoped
+  to all tenants the caller belongs to via Horizon membership lookup
+- **Slug-based mutation paths** — DELETE, approve, and reject operations include the
+  tenant slug as the first path segment (`/api/v1/tenants/{tenantSlug}/...`); the API
+  resolves slug → canonical RNS via the `tenants` table before the ownership check
 - **Delete ownership enforcement** — delete endpoints read the XR's
   `platform.ucp.io/tenant-id` annotation and reject callers who are not admin of that
-  tenant (HTTP 403)
+  tenant (HTTP 403); 422 if the annotated tenant does not exist in Horizon
+- **Tenant ID in list responses** — each resource in a list response includes a
+  `tenantId` field so callers can identify which tenant owns each resource
 - **ProviderConfig injection** — `providerConfig` is always derived server-side from
   `gcpProviderConfigName(tenantID, env)`; callers cannot supply it
 - **ValidatingAdmissionPolicy** — Kubernetes admission webhook that rejects XR creation
@@ -103,29 +113,23 @@ reaching etcd.
 
 ## API Sequence — Tenant-Filtered List
 
-`GET /api/v1/databases`
+`GET /api/v1/databases?tenantId=rns:roc:iam::clsd-ucp`
 
 ```mermaid
 sequenceDiagram
     autonumber
 
     participant Browser
-    participant SessionDB as PostgreSQL<br/>(session store)
     participant Handler as API Server<br/>(ListDatabases)
     participant Horizon as Horizon API
     participant K8s as Kubernetes
 
-    Browser->>Handler: GET /api/v1/databases
-    Note over Browser,Handler: Cookie: session=abc123<br/>X-Environment: QA<br/>X-Tenant-ID: rns:roc:iam::clsd-ucp
+    Browser->>Handler: GET /api/v1/databases?tenantId=rns:roc:iam::clsd-ucp
+    Note over Browser,Handler: Cookie: session=abc123<br/>X-Environment: QA
 
-    Handler->>SessionDB: GetSessionWithUser("abc123")
-    SessionDB-->>Handler: session{enc_access_token, ...}
-    Note over Handler: decrypt → Principal{AccessToken} injected into context
-
-    Handler->>Handler: tenantID = "rns:roc:iam::clsd-ucp"
+    Handler->>Handler: tenantID = r.URL.Query().Get("tenantId")<br/>= "rns:roc:iam::clsd-ucp"
 
     Handler->>Horizon: GET /v0/tenants/rns:roc:iam::clsd-ucp
-    Note over Handler,Horizon: Authorization: Bearer {access_token}
     Horizon-->>Handler: {"admins": [{"email": "user@example.com"}]}
     Handler->>Handler: email ∈ admins → authorized
 
@@ -137,14 +141,20 @@ sequenceDiagram
         Note over Handler: skip if none match
     end
 
-    Handler-->>Browser: 200 OK {"databases": [...filtered...]}
+    Handler-->>Browser: 200 OK {"databases": [{..., "tenantId": "rns:roc:iam::clsd-ucp"}, ...]}
 ```
+
+When `?tenantId=` is absent the handler calls `getUserTenantIDs()` via Horizon to
+fetch all tenants the caller belongs to, and filters across all of them.
 
 ---
 
 ## API Sequence — Delete with Ownership Check
 
-`DELETE /api/v1/databases/{name}`
+`DELETE /api/v1/tenants/{tenantSlug}/databases/{name}`
+
+The tenant slug is a URL-safe short name (e.g. `clsd-ucp`). The handler resolves
+it to the canonical RNS before performing the ownership check.
 
 ```mermaid
 sequenceDiagram
@@ -152,10 +162,14 @@ sequenceDiagram
 
     participant Browser
     participant Handler as API Server<br/>(DeleteDatabase)
+    participant DB as PostgreSQL
     participant Horizon as Horizon API
     participant K8s as Kubernetes
 
-    Browser->>Handler: DELETE /api/v1/databases/my-db
+    Browser->>Handler: DELETE /api/v1/tenants/clsd-ucp/databases/my-db
+
+    Handler->>DB: ResolveTenantExternalIDBySlug("clsd-ucp")
+    DB-->>Handler: "rns:roc:iam::clsd-ucp"
 
     Handler->>K8s: GET xdatabase/my-db
     K8s-->>Handler: XDatabase object
@@ -234,12 +248,16 @@ kubectl get xdatabase <name> -o jsonpath='{.metadata.annotations}' | jq .
 ```bash
 COOKIE="Cookie: session=<value-from-browser-devtools>"
 
-# Own tenant → 200, filtered results
-curl -H "$COOKIE" -H "X-Environment: QA" -H "X-Tenant-ID: rns:roc:iam::clsd-ucp" \
-  "http://localhost:8080/api/v1/databases"
+# Own tenant → 200, filtered results (tenantId as query param)
+curl -H "$COOKIE" -H "X-Environment: QA" \
+  "http://localhost:8080/api/v1/databases?tenantId=rns:roc:iam::clsd-ucp"
 
 # Tenant the caller is not admin of → 403
-curl -H "$COOKIE" -H "X-Environment: QA" -H "X-Tenant-ID: rns:roc:iam::other-tenant" \
+curl -H "$COOKIE" -H "X-Environment: QA" \
+  "http://localhost:8080/api/v1/databases?tenantId=rns:roc:iam::other-tenant"
+
+# No tenantId → 200, all caller's tenants' resources
+curl -H "$COOKIE" -H "X-Environment: QA" \
   "http://localhost:8080/api/v1/databases"
 ```
 
@@ -249,14 +267,10 @@ curl -H "$COOKIE" -H "X-Environment: QA" -H "X-Tenant-ID: rns:roc:iam::other-ten
 # Stamp a foreign tenant on an existing XR
 kubectl annotate xdatabase <name> \
   platform.ucp.io/tenant-id=rns:roc:iam::other-tenant --overwrite
-kubectl label xdatabase <name> \
-  platform.ucp.io/tenant=rns-roc-iam--other-tenant --overwrite
-kubectl patch xdatabase <name> --type=merge \
-  -p '{"spec":{"parameters":{"providerConfig":"gcp-rns-roc-iam--other-tenant-qa"}}}'
 
-# Delete attempt → 403
+# Delete attempt using slug path — 403 (caller not admin of other-tenant)
 curl -X DELETE -H "$COOKIE" -H "X-Environment: QA" \
-  "http://localhost:8080/api/v1/databases/<name>"
+  "http://localhost:8080/api/v1/tenants/clsd-ucp/databases/<name>"
 ```
 
 ---
