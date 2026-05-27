@@ -86,9 +86,10 @@ Every XR created by the API server carries two tenant ownership markers:
 | Label | `platform.ucp.io/tenant` | `rns-roc-iam--clsd-ucp` | Kubernetes label selectors — `:` is not a valid label value character |
 | Annotation | `platform.ucp.io/tenant-id` | `rns:roc:iam::clsd-ucp` | Raw RNS format — required to call `isUserTenantAdmin()` and for exact string comparison |
 
-Both are set at XR creation time. The label is used for list filtering. The annotation is
-used in delete ownership checks and in-flight workflow matching, where the raw RNS string
-is needed.
+Both are set at XR creation time. The label drives all server-side Kubernetes filtering:
+list, delete ownership, and approve/reject ownership checks all pass it as a label
+selector to the Kubernetes API. The annotation stores the raw RNS string and is read
+by the `parseX` functions to populate the `tenantId` field in API responses.
 
 ### Why label values are restricted but annotation values are not
 
@@ -125,17 +126,30 @@ func sanitizeTenantID(tenantID string) string {
 
 ---
 
-## xrBelongsToTenant
+## buildTenantLabelSelector
 
-`xrBelongsToTenant` determines whether a Kubernetes XR object belongs to a given tenant.
-It checks three fallbacks in order:
+`buildTenantLabelSelector` converts a slice of tenant RNS strings into a Kubernetes
+label selector that can be passed directly to a `List` call:
 
-1. `platform.ucp.io/tenant-id` annotation (exact RNS match)
-2. `platform.ucp.io/tenant` label (sanitized match)
-3. `spec.parameters.providerConfig` name match against `gcpProviderConfigName(tenantID, env)`
+```go
+func buildTenantLabelSelector(tenantIDs []string) string {
+    sanitized := make([]string, len(tenantIDs))
+    for i, id := range tenantIDs {
+        sanitized[i] = sanitizeTenantID(id)
+    }
+    return "platform.ucp.io/tenant in (" + strings.Join(sanitized, ",") + ")"
+}
+```
 
-The third fallback covers XRs provisioned before the label/annotation stamping was
-introduced. Once all active XRs carry the annotation, the third check becomes redundant.
+For example, a caller belonging to two tenants produces:
+
+```
+platform.ucp.io/tenant in (rns-roc-iam--clsd-ucp,rns-roc-iam--other-tenant)
+```
+
+Kubernetes evaluates the selector server-side using its label index, so only matching
+XRs are returned. When the slice is empty the handler short-circuits with an empty
+response without making a Kubernetes call.
 
 ---
 
