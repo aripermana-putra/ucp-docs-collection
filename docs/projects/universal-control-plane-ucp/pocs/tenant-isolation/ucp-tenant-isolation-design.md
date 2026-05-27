@@ -80,25 +80,33 @@ per-operation permission enforcement.
 
 ### Roles
 
+Defined by the PM in the product requirements:
+
 | Role | Scope | Description |
 |---|---|---|
-| `platform-admin` | Platform | UCP operators. Full access across all tenants. |
-| `tenant-admin` | Tenant | Full access within their tenant. |
-| `deployer` | Tenant | Create and delete resources within their tenant. |
-| `approver` | Tenant | Approve and reject Temporal workflows. |
-| `viewer` | Tenant | Read-only access within their tenant. |
+| `developer` | Tenant | Browse the blueprint and service catalog, submit provisioning requests, view resource inventory and cost, take lifecycle actions on resources they provisioned, view their own audit logs. |
+| `tenant-admin` | Tenant | Everything a developer can do, plus: register OC tenants in UCP, register and manage service account credentials, manage UCP role assignments for team members, approve or reject provisioning requests, approve or reject drift alerts and reconciliation actions, manage quotas. |
+
+Note: MCUCP-191 introduces a finer-grained internal permission model
+(`viewer`, `approver`, `deployer`, `tenant-admin`, `platform-admin`) to support more
+granular access control within the `developer` and `tenant-admin` categories as the
+product evolves. The PM's two-role model maps to this as:
+`developer` ≈ `deployer`, `tenant-admin` ≈ `tenant-admin`.
 
 ### Permission Mapping
 
 | Operation | Minimum required role |
 |---|---|
-| Create resource | `deployer` |
-| List resources (own tenant) | `viewer` |
-| Get resource by name (own tenant) | `viewer` |
-| Delete resource | `deployer` |
-| Approve / reject workflow | `approver` |
-| Upload credentials | `tenant-admin` |
-| List resources (any tenant) | `platform-admin` |
+| Browse blueprint and service catalog | `developer` |
+| Submit provisioning request | `developer` |
+| View resource inventory | `developer` |
+| Take lifecycle actions (delete own resources) | `developer` |
+| Approve / reject provisioning request | `tenant-admin` |
+| Approve / reject drift alert | `tenant-admin` |
+| Register OC tenant in UCP | `tenant-admin` |
+| Upload and manage credentials | `tenant-admin` |
+| Manage UCP role assignments | `tenant-admin` |
+| Manage quotas | `tenant-admin` |
 
 ### Implementation Approach
 
