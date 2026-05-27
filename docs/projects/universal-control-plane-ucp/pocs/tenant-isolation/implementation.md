@@ -8,7 +8,7 @@ parent_page_id: "../tenant-isolation.md"
 
 The API server enforces tenant isolation through three mechanisms: ownership label
 stamping at XR creation, tenant-filtered list endpoints, and ownership verification
-before delete operations.
+before delete and approve/reject operations.
 
 ---
 
@@ -16,21 +16,22 @@ before delete operations.
 
 | Component | File | Status |
 |---|---|---|
-| `xrBelongsToTenant()` | `main.go` | Deployed |
-| `xrBelongsToAnyTenant()` | `main.go` | Deployed |
 | `getUserTenantIDs()` | `horizon_handler.go` | Deployed |
-| `errTenantNotFound` / `isTenantNotFound()` | `settings_handler.go` | Deployed |
+| `buildTenantLabelSelector()` | `main.go` | Deployed |
+| `sanitizeTenantID()` | `settings_handler.go` | Deployed |
 | Label + annotation stamping — XDatabase | `main.go` (`createXDatabaseYAML`) | Deployed |
 | Label + annotation stamping — XKubernetesCluster | `kubernetes_handler.go` (`createXKubernetesClusterYAML`) | Deployed |
 | Label + annotation stamping — XComputeInstance, XStorageBucket, XLoadBalancer | `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
-| Tenant-filtered list — `?tenantId=` query param or caller's tenants via Horizon | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
-| Delete ownership check — all resource types | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
+| Tenant-filtered list — K8s server-side label selector | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
+| Delete ownership check — single K8s List with field + label selector | `main.go`, `kubernetes_handler.go`, `compute_handler.go`, `storage_handler.go`, `load_balancer_handler.go` | Deployed |
+| Approve/reject tenant ownership check — `verifyWorkflowTenantOwnership()` | `main.go` | Deployed |
+| `tenantId` field in all list response objects incl. in-flight workflow entries | all resource response structs | Deployed |
+| In-flight workflow tenant filter in list handlers | `compute_handler.go`, `kubernetes_handler.go`, `storage_handler.go` | Deployed |
 | Global `TenantContext` + `?tenantId=` query param injection on GET requests | `TenantContext.jsx`, `useAuthFetch.ts`, `MainLayout.jsx`, frontend | Deployed |
 | `ValidatingAdmissionPolicy` — tenant label + annotation enforcement | `k8s/tenant-admission-policy.yaml` | Deployed |
-| Tenant slug resolver — `ResolveTenantExternalIDBySlug` | `db/tenants.go` | Not deployed |
-| Slug-based mutation paths — `DELETE/POST /api/v1/tenants/{tenantSlug}/...` | all resource handlers + `main.go` | Not deployed |
-| Tenant-slug URL construction for mutations | `useAuthFetch.ts`, frontend list components | Not deployed |
-| `tenantId` field in list response objects | all resource response structs | Not deployed |
+| Tenant slug resolver — `ResolveTenantExternalIDBySlug` | `db/tenants.go` | Deployed |
+| Slug-based mutation paths — `DELETE/POST /api/v1/tenants/{tenantSlug}/...` | all resource handlers + `main.go` | Deployed |
+| Tenant-slug URL construction for mutations | `useAuthFetch.ts`, frontend list components | Deployed |
 
 ---
 
@@ -133,19 +134,16 @@ sequenceDiagram
     Horizon-->>Handler: {"admins": [{"email": "user@example.com"}]}
     Handler->>Handler: email ∈ admins → authorized
 
-    Handler->>K8s: LIST xdatabases.platform.example.io (no server-side filter)
-    K8s-->>Handler: all XDatabase objects
-
-    loop for each XR
-        Handler->>Handler: xrBelongsToTenant(item, tenantID, env)<br/>1. annotation platform.ucp.io/tenant-id == tenantID?<br/>2. label platform.ucp.io/tenant == sanitizeTenantID(tenantID)?<br/>3. spec.parameters.providerConfig == gcpProviderConfigName(tenantID, env)?
-        Note over Handler: skip if none match
-    end
+    Handler->>K8s: LIST xdatabases<br/>LabelSelector: platform.ucp.io/tenant in (rns-roc-iam--clsd-ucp)
+    Note over Handler,K8s: Kubernetes filters server-side using its label index
+    K8s-->>Handler: only XDatabase objects for that tenant
 
     Handler-->>Browser: 200 OK {"databases": [{..., "tenantId": "rns:roc:iam::clsd-ucp"}, ...]}
 ```
 
 When `?tenantId=` is absent the handler calls `getUserTenantIDs()` via Horizon to
-fetch all tenants the caller belongs to, and filters across all of them.
+fetch all tenants the caller belongs to, then passes all of them in a single
+`platform.ucp.io/tenant in (t1,t2,...)` label selector to Kubernetes.
 
 ---
 
@@ -163,7 +161,6 @@ sequenceDiagram
     participant Browser
     participant Handler as API Server<br/>(DeleteDatabase)
     participant DB as PostgreSQL
-    participant Horizon as Horizon API
     participant K8s as Kubernetes
 
     Browser->>Handler: DELETE /api/v1/tenants/clsd-ucp/databases/my-db
@@ -171,26 +168,21 @@ sequenceDiagram
     Handler->>DB: ResolveTenantExternalIDBySlug("clsd-ucp")
     DB-->>Handler: "rns:roc:iam::clsd-ucp"
 
-    Handler->>K8s: GET xdatabase/my-db
-    K8s-->>Handler: XDatabase object
+    Handler->>K8s: LIST xdatabases<br/>FieldSelector: metadata.name=my-db<br/>LabelSelector: platform.ucp.io/tenant=rns-roc-iam--clsd-ucp
 
-    Handler->>Handler: xrTenantID = annotations["platform.ucp.io/tenant-id"]<br/>fallback: spec.parameters.tenantId
-
-    alt xrTenantID is set
-        Handler->>Horizon: GET /v0/tenants/{xrTenantID}
-        Horizon-->>Handler: admins list OR 404
-
-        alt Horizon returns 404 (unknown tenant)
-            Handler-->>Browser: 422 Unprocessable Entity<br/>"Resource belongs to an unknown tenant"
-        else caller not in admins
-            Handler-->>Browser: 403 Forbidden
-        end
+    alt list is empty
+        Note over Handler: resource not found or belongs to<br/>a different tenant — indistinguishable by design
+        Handler-->>Browser: 404 Not Found
+    else object returned
+        Handler->>K8s: DELETE xdatabase/my-db
+        K8s-->>Handler: 200 OK
+        Handler-->>Browser: 200 OK {"message": "deleted"}
     end
-
-    Handler->>K8s: DELETE xdatabase/my-db
-    K8s-->>Handler: 200 OK
-    Handler-->>Browser: 200 OK {"message": "deleted"}
 ```
+
+Returning 404 on any mismatch (rather than 403) avoids leaking resource existence
+across tenants — the caller cannot distinguish "resource does not exist" from
+"resource belongs to a different tenant".
 
 ---
 
@@ -199,7 +191,7 @@ sequenceDiagram
 ### gcpProviderConfigName
 
 ```go
-// settings_handler.go:236
+// settings_handler.go
 func gcpProviderConfigName(tenantID, env string) string {
     e := "production"
     if strings.ToLower(env) == "qa" {
@@ -211,21 +203,52 @@ func gcpProviderConfigName(tenantID, env string) string {
 
 Produces: `gcp-rns-roc-iam--clsd-ucp-qa`
 
-### xrBelongsToTenant
+### buildTenantLabelSelector
 
 ```go
-// main.go:1308
-func xrBelongsToTenant(obj *unstructured.Unstructured, tenantID, env string) bool {
-    if obj.GetAnnotations()["platform.ucp.io/tenant-id"] == tenantID {
-        return true
+// main.go
+func buildTenantLabelSelector(tenantIDs []string) string {
+    if len(tenantIDs) == 0 {
+        return ""
     }
-    if obj.GetLabels()["platform.ucp.io/tenant"] == sanitizeTenantID(tenantID) {
-        return true
+    sanitized := make([]string, len(tenantIDs))
+    for i, id := range tenantIDs {
+        sanitized[i] = sanitizeTenantID(id)
     }
-    providerConfig, _, _ := unstructured.NestedString(obj.Object, "spec", "parameters", "providerConfig")
-    return providerConfig == gcpProviderConfigName(tenantID, env)
+    return "platform.ucp.io/tenant in (" + strings.Join(sanitized, ",") + ")"
 }
 ```
+
+Used by all list handlers to push tenant filtering to the Kubernetes API server.
+Returns `""` when the caller belongs to no tenants, causing the handler to
+short-circuit with an empty response before making any K8s call.
+
+### verifyWorkflowTenantOwnership
+
+```go
+// main.go
+func (s *APIServer) verifyWorkflowTenantOwnership(ctx context.Context, workflowID, tenantSlug string) (bool, int, string) {
+    tenantRNS, err := s.resolveTenantIDBySlug(ctx, tenantSlug)
+    if err != nil || tenantRNS == "" {
+        return false, http.StatusNotFound, "tenant not found: " + tenantSlug
+    }
+    list, listErr := s.k8sClient.Resource(xDatabaseGVR).List(ctx, metav1.ListOptions{
+        LabelSelector: "platform.ucp.io/tenant=" + sanitizeTenantID(tenantRNS),
+    })
+    if listErr != nil {
+        return false, http.StatusInternalServerError, "failed to verify workflow ownership: " + listErr.Error()
+    }
+    for _, item := range list.Items {
+        if wfID, ok := item.GetAnnotations()["temporal.io/workflow-id"]; ok && wfID == workflowID {
+            return true, 0, ""
+        }
+    }
+    return false, http.StatusNotFound, workflowID + ": not found"
+}
+```
+
+Used by `ApproveWorkflow` and `RejectWorkflow` to confirm the target workflow
+belongs to a database in the requested tenant before signalling Temporal.
 
 ---
 
@@ -259,39 +282,44 @@ curl -H "$COOKIE" -H "X-Environment: QA" \
 # No tenantId → 200, all caller's tenants' resources
 curl -H "$COOKIE" -H "X-Environment: QA" \
   "http://localhost:8080/api/v1/databases"
+
+# Verify K8s label selector is applied — only tenant's XRs returned
+kubectl get xdatabases -l "platform.ucp.io/tenant=rns-roc-iam--clsd-ucp"
 ```
 
 ### Delete ownership
 
 ```bash
-# Stamp a foreign tenant on an existing XR
-kubectl annotate xdatabase <name> \
-  platform.ucp.io/tenant-id=rns:roc:iam::other-tenant --overwrite
-
-# Delete attempt using slug path — 403 (caller not admin of other-tenant)
+# Delete attempt using correct tenant slug → 200
 curl -X DELETE -H "$COOKIE" -H "X-Environment: QA" \
   "http://localhost:8080/api/v1/tenants/clsd-ucp/databases/<name>"
+
+# Delete attempt using wrong tenant slug → 404 (not 403 — avoids leaking existence)
+curl -X DELETE -H "$COOKIE" -H "X-Environment: QA" \
+  "http://localhost:8080/api/v1/tenants/other-tenant/databases/<name>"
 ```
 
 ---
 
 ## Limitations
 
-### List handlers scope to caller's tenants when X-Tenant-ID is absent
+### List handlers scope to all caller's tenants when ?tenantId= is absent
 
-When `X-Tenant-ID` is not set, list handlers call Horizon
+When `?tenantId=` is not provided, list handlers call Horizon
 `GET /v0/members/<email>/tenants` to fetch all tenants the caller belongs to and
-filter results to those tenants. This means a user who is a member of multiple
-tenants sees resources across all of them in the default (no header) view.
+pass all of them as a single label selector to Kubernetes. A user who is a member of
+multiple tenants sees resources across all of them in the default (no filter) view.
 
-### providerConfig fallback relies on naming convention
+### Label-based filtering does not match legacy XRs
 
-The third fallback in `xrBelongsToTenant` matches by ProviderConfig name. This relies on
-the naming convention `gcp-{sanitized-tenant-id}-{env}` being stable. XRs provisioned with
-a non-standard ProviderConfig name are not matched by any fallback.
+List and delete handlers filter exclusively by the `platform.ucp.io/tenant` label.
+XRs created before label stamping was deployed (carrying only the annotation or a
+matching `providerConfig` name) are not returned by list endpoints and cannot be
+deleted via the slug-based path.
 
-### Delete check is skipped when annotation is absent
+### Approve/reject tenant check covers databases only
 
-If an XR carries neither the `platform.ucp.io/tenant-id` annotation nor
-`spec.parameters.tenantId`, the delete ownership check is skipped and the deletion
-proceeds. This applies to XRs created before label stamping was deployed.
+`verifyWorkflowTenantOwnership` verifies tenant ownership by looking up the workflow ID
+in XDatabase annotations. If approval workflows for other resource types (compute,
+storage, etc.) are added in the future, the ownership check must be extended to
+cover those XR types.

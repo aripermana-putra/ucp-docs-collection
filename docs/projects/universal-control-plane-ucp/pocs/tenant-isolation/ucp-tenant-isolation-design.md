@@ -163,31 +163,29 @@ namespaced resources by namespace, providing isolation enforced by the Kubernete
 server independent of the UCP API server. With cluster-scoped XRs this is not possible —
 cluster-scoped resources have no namespace boundary for RBAC to act on.
 
-**List performance.** All current list endpoints fetch every XR of a given type
-cluster-wide and filter tenant ownership in the UCP API server's memory:
+**List performance.** List endpoints use a `platform.ucp.io/tenant in (...)` label
+selector pushed to the Kubernetes API server, so only the caller's tenants' resources
+are returned without any in-memory filtering:
 
 ```go
-// Today: fetches all tenants' resources, filters in UCP API server memory
-list, err := s.k8sClient.Resource(xObjectStorageGVR).List(ctx, metav1.ListOptions{})
-for _, item := range list.Items {
-    if !xrBelongsToAnyTenant(&item, allowedTenantIDs, env) {
-        continue
-    }
-}
+// List: Kubernetes filters server-side using its label index
+list, err := s.k8sClient.Resource(xObjectStorageGVR).List(ctx, metav1.ListOptions{
+    LabelSelector: buildTenantLabelSelector(allowedTenantIDs),
+})
 ```
 
-With namespace-scoped XRs, the list call is scoped to the tenant's namespace and
-Kubernetes filters server-side using its namespace index:
+With namespace-scoped XRs, filtering shifts from a label selector to a namespace scope,
+which uses Kubernetes's namespace index directly:
 
 ```go
-// After MCUCP-119: only this tenant's resources returned, no in-memory filtering needed
+// After MCUCP-119: namespace index used instead of label scan
 list, err := s.k8sClient.Resource(xObjectStorageGVR).Namespace(tenantNamespace).List(ctx, metav1.ListOptions{})
 ```
 
-This eliminates the `getUserTenantIDs` Horizon call, the `xrBelongsToAnyTenant`
-in-memory loop, and the three-fallback ownership check on every list request. Memory
-pressure and latency in the UCP API server grow with the requesting tenant's resource
-count rather than with the total across all tenants.
+Namespace-scoped filtering eliminates the `getUserTenantIDs` Horizon call entirely —
+the namespace itself is the tenant boundary. Memory pressure and latency in the UCP
+API server grow with the requesting tenant's resource count rather than with the
+total across all tenants.
 
 The approach is blocked until all required providers ship namespace-scoped managed resource
 (MR) support:
