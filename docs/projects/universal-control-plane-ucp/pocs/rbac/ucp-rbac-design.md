@@ -224,7 +224,7 @@ CREATE TABLE tenant_role_assignments (
 ```
 
 `platform-admin` is stored as a row with `tenant_rns = '*'` — not tied to any
-specific tenant, matches regardless of the `X-Tenant-ID` in the request.
+specific tenant, matches regardless of the `?tenantId=` in the request.
 
 ---
 
@@ -262,7 +262,7 @@ func roleFromMap(allRoles map[string]string, tenantID string) Role {
     if tenantID != "" {
         return stringToRole(allRoles[tenantID])  // specific tenant
     }
-    // X-Tenant-ID absent — return highest role across all tenants
+    // ?tenantId= absent — return highest role across all tenants
     max := RoleUnknown
     for _, roleStr := range allRoles {
         if r := stringToRole(roleStr); r > max { max = r }
@@ -271,11 +271,12 @@ func roleFromMap(allRoles map[string]string, tenantID string) Role {
 }
 ```
 
-When `X-Tenant-ID` is absent, the caller's maximum role across all their
-tenants is used. This allows `RequireRole` checks to pass without requiring
-the header — for example, a user with `deployer` in tenant-A can delete
-their resource without specifying the header. The per-handler ownership
-check then verifies their role against the resource's annotated tenant.
+When `?tenantId=` is absent, the caller's maximum role across all their
+tenants is used. This allows `RequirePermission` checks to pass without
+requiring the param — for example, a user with `developer` in tenant-A can
+delete a resource without specifying `?tenantId=`. The label-based K8s
+ownership filter in the handler verifies the resource belongs to a tenant
+the user has the required role in.
 
 ### resolveUserRole
 
@@ -318,7 +319,7 @@ func (s *APIServer) RevokeRole(w http.ResponseWriter, r *http.Request)
 `AssignRole` request body:
 
 ```json
-{ "userEmail": "user@example.com", "role": "deployer" }
+{ "userEmail": "user@example.com", "role": "developer" }
 ```
 
 The handler resolves `userEmail` to a `user_id` via the `users` table (user
@@ -342,8 +343,8 @@ Extended response:
   "email": "user@example.com",
   "name": "User Name",
   "roles": {
-    "rns:roc:iam::clsd-ucp": "deployer",
-    "rns:roc:iam::other-tenant": "viewer"
+    "rns:roc:iam::clsd-ucp": "developer",
+    "rns:roc:iam::other-tenant": "developer"
   },
   "isPlatformAdmin": false
 }
@@ -454,7 +455,7 @@ any subsequent `resolveUserRole` calls in the same request hit the cache.
 func (s *APIServer) RequireRole(minRole authpkg.Role) mux.MiddlewareFunc {
     return func(next http.Handler) http.Handler {
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+            tenantID := strings.TrimSpace(r.URL.Query().Get("tenantId"))
 
             // Populate cache — at most 1 DB call per request.
             var err error
@@ -486,64 +487,47 @@ func (s *APIServer) RequireRole(minRole authpkg.Role) mux.MiddlewareFunc {
 
 ---
 
-## Route Grouping
+## Route Registration
 
-Routes are grouped by minimum required role. Each group gets a dedicated
-subrouter with the appropriate middleware applied once — replacing the ad-hoc
-`isUserTenantAdmin()` calls in individual handlers.
+Routes are registered with `requirePermHandler(perm, handler)` — a per-route
+wrapper that enforces the required permission without subrouters. The
+`isUserTenantAdmin()` calls previously in individual handlers are removed.
 
 ```go
 // main.go — route registration
-viewerRoutes := api.PathPrefix("").Subrouter()
-viewerRoutes.Use(server.RequireRole(authpkg.RoleViewer))
-
-deployerRoutes := api.PathPrefix("").Subrouter()
-deployerRoutes.Use(server.RequireRole(authpkg.RoleDeployer))
-
-approverRoutes := api.PathPrefix("").Subrouter()
-approverRoutes.Use(server.RequireRole(authpkg.RoleApprover))
-
-tenantAdminRoutes := api.PathPrefix("").Subrouter()
-tenantAdminRoutes.Use(server.RequireRole(authpkg.RoleTenantAdmin))
-
-platformAdminRoutes := api.PathPrefix("").Subrouter()
-platformAdminRoutes.Use(server.RequireRole(authpkg.RolePlatformAdmin))
-
-// Resource reads
-viewerRoutes.HandleFunc("/databases", server.ListDatabases).Methods("GET")
-viewerRoutes.HandleFunc("/databases/{name}", server.GetDatabase).Methods("GET")
+// Resource reads — PermRead
+api.Handle("/databases",              server.requirePermHandler(authpkg.PermRead,      server.ListDatabases)).Methods("GET")
+api.Handle("/databases/{name}",       server.requirePermHandler(authpkg.PermRead,      server.GetDatabase)).Methods("GET")
 // ... other GET endpoints
 
-// Resource mutations
-deployerRoutes.HandleFunc("/databases", server.CreateDatabase).Methods("POST")
-deployerRoutes.HandleFunc("/databases/{name}", server.DeleteDatabase).Methods("DELETE")
+// Resource mutations — PermProvision (slug-based delete paths from MCUCP-192)
+api.Handle("/databases",              server.requirePermHandler(authpkg.PermProvision,  server.CreateDatabase)).Methods("POST")
+api.Handle("/tenants/{tenantSlug}/databases/{name}", server.requirePermHandler(authpkg.PermProvision, server.DeleteDatabase)).Methods("DELETE")
 // ... other POST/DELETE endpoints
 
-// Workflow approval
-approverRoutes.HandleFunc("/workflows/{workflowId}/approve", server.ApproveWorkflow).Methods("POST")
-approverRoutes.HandleFunc("/workflows/{workflowId}/reject", server.RejectWorkflow).Methods("POST")
+// Workflow approval — PermApprove
+api.Handle("/tenants/{tenantSlug}/workflows/{workflowId}/approve", server.requirePermHandler(authpkg.PermApprove, server.ApproveWorkflow)).Methods("POST")
+api.Handle("/tenants/{tenantSlug}/workflows/{workflowId}/reject",  server.requirePermHandler(authpkg.PermApprove, server.RejectWorkflow)).Methods("POST")
 
-// Credential management
-tenantAdminRoutes.HandleFunc("/settings/credentials", server.GetCredentials).Methods("GET")
-tenantAdminRoutes.HandleFunc("/settings/credentials", server.UpsertCredentials).Methods("POST")
-tenantAdminRoutes.HandleFunc("/settings/credentials/{provider}", server.DeleteCredentials).Methods("DELETE")
+// Credential management — PermManage
+api.Handle("/settings/credentials", server.requirePermHandler(authpkg.PermManage, server.GetCredentials)).Methods("GET")
+api.Handle("/settings/credentials", server.requirePermHandler(authpkg.PermManage, server.UpsertCredentials)).Methods("POST")
 
-// Platform-wide operations
-platformAdminRoutes.HandleFunc("/settings/credentials/all", server.ListAllCredentials).Methods("GET")
+// Platform-wide operations — PermPlatform
+api.Handle("/settings/credentials/all", server.requirePermHandler(authpkg.PermPlatform, server.ListAllCredentials)).Methods("GET")
 ```
 
 ---
 
 ## Handler Cleanup
 
-Once `RequireRole` enforces access at the route level, individual handlers
-remove their `isUserTenantAdmin()` calls for create operations. The role check
-at the middleware layer is the single enforcement point.
+`RequirePermission` enforces access at the route level. Individual handlers
+no longer call `isUserTenantAdmin()` for create operations.
 
-Delete handlers retain `isUserTenantAdmin()` for the **ownership check** — this
-reads the tenant from the XR annotation (not from `X-Tenant-ID`) and is a
-distinct check that verifies the resource belongs to the caller's tenant. It is
-not replaced by `RequireRole`.
+Delete handlers use the label-based K8s ownership check from MCUCP-192 — the
+single `List(FieldSelector=name, LabelSelector=tenant)` call both fetches the
+resource and verifies tenant ownership in one round-trip. No Horizon call or
+per-handler role check is needed for delete operations.
 
 ---
 

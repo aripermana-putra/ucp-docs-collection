@@ -261,7 +261,8 @@ mapping to be applied at the middleware layer rather than only at seed/sync time
 
 Navigation items are hidden when the caller lacks the minimum role. Direct URL
 access (bookmark, address bar) is also blocked — a `RequireRole` route wrapper
-renders a 403 page instead of the content if the check fails.
+in the frontend renders a 403 page instead of the content if the permission
+check fails.
 
 | Item | Route | Minimum role | If insufficient role |
 |---|---|---|---|
@@ -357,9 +358,9 @@ sequenceDiagram
 
 ## API Sequence — RequireRole Check (create)
 
-`POST /api/v1/databases` (developer minimum, X-Tenant-ID present)
+`POST /api/v1/databases` (developer minimum, ?tenantId= present)
 
-`RequireRole` calls `loadRoles` first — **1 DB call** fetches all role
+`RequirePermission` calls `loadRoles` first — **1 DB call** fetches all role
 assignments and caches them in the request context.
 
 ```mermaid
@@ -368,11 +369,11 @@ sequenceDiagram
 
     participant Browser
     participant Session as SessionMiddleware
-    participant Middleware as RequireRole("developer")
+    participant Middleware as RequirePermission(PermProvision)
     participant DB as PostgreSQL
     participant Handler as CreateDatabase
 
-    Browser->>Session: POST /api/v1/databases<br/>Cookie: session=...<br/>X-Tenant-ID: rns:roc:iam::clsd-ucp
+    Browser->>Session: POST /api/v1/databases<br/>Cookie: session=...<br/>?tenantId=rns:roc:iam::clsd-ucp
     Session->>Session: decrypt access_token → inject Principal{UserID, ...}
     Session->>Middleware: request with Principal in context
 
@@ -382,7 +383,7 @@ sequenceDiagram
 
     Middleware->>Middleware: roleFromMap(cache, "rns:roc:iam::clsd-ucp") → RoleDeveloper (1)<br/>RoleDeveloper (1) >= RoleDeveloper (1) → pass
 
-    Middleware->>Handler: inject RoleDeployer + cache into context
+    Middleware->>Handler: inject RoleDeveloper + cache into context
     Handler-->>Browser: 202 Accepted
 
     note over Middleware: unknown (0) < developer (1) → 403<br/>tenant-admin (2) >= developer (1) → pass
@@ -392,7 +393,7 @@ sequenceDiagram
 
 ## API Sequence — RequireRole Check (delete with ownership)
 
-`DELETE /api/v1/storage/my-bucket` (developer minimum, no X-Tenant-ID)
+`DELETE /api/v1/storage/my-bucket` (developer minimum, no ?tenantId=)
 
 Cache populated in middleware; ownership check in handler reads from cache —
 **1 DB call total** for the entire request.
@@ -403,11 +404,11 @@ sequenceDiagram
 
     participant Browser
     participant Session as SessionMiddleware
-    participant Middleware as RequireRole("developer")
+    participant Middleware as RequirePermission(PermProvision)
     participant DB as PostgreSQL
     participant Handler as DeleteStorageBucket
 
-    Browser->>Session: DELETE /api/v1/storage/my-bucket<br/>Cookie: session=... (no X-Tenant-ID)
+    Browser->>Session: DELETE /api/v1/storage/my-bucket<br/>Cookie: session=... (no ?tenantId=)
     Session->>Session: inject Principal
     Session->>Middleware: request with Principal in context
 
@@ -415,12 +416,12 @@ sequenceDiagram
     DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "developer", ...}
     Note over Middleware: cache stored in request context
 
-    Middleware->>Middleware: roleFromMap(cache, "") → max role = RoleDeployer<br/>RoleDeployer >= RoleDeployer → pass
+    Middleware->>Middleware: roleFromMap(cache, "") → max role = RoleDeveloper<br/>RoleDeveloper >= RoleDeveloper → pass
 
     Middleware->>Handler: request with cache in context
     Handler->>Handler: read platform.ucp.io/tenant-id from XR annotation<br/>xrTenantID = "rns:roc:iam::clsd-ucp"
-    Handler->>Handler: resolveUserRole(r, xrTenantID) → reads cache (0 DB calls)<br/>roleFromMap(cache, "rns:roc:iam::clsd-ucp") = RoleDeployer
-    Handler->>Handler: RoleDeployer >= RoleDeployer → authorized
+    Handler->>Handler: resolveUserRole(r, xrTenantID) → reads cache (0 DB calls)<br/>roleFromMap(cache, "rns:roc:iam::clsd-ucp") = RoleDeveloper
+    Handler->>Handler: RoleDeveloper >= RoleDeveloper → authorized
     Handler-->>Browser: 200 OK
 ```
 
@@ -428,7 +429,7 @@ sequenceDiagram
 
 ## API Sequence — platform-admin Cross-Tenant Access
 
-`GET /api/v1/databases` (developer minimum, no X-Tenant-ID)
+`GET /api/v1/databases` (developer minimum, no ?tenantId=)
 
 ```mermaid
 sequenceDiagram
@@ -436,11 +437,11 @@ sequenceDiagram
 
     participant Browser
     participant Session as SessionMiddleware
-    participant Middleware as RequireRole("developer")
+    participant Middleware as RequirePermission(PermProvision)
     participant DB as PostgreSQL
     participant Handler as ListDatabases
 
-    Browser->>Session: GET /api/v1/databases<br/>Cookie: session=... (no X-Tenant-ID)
+    Browser->>Session: GET /api/v1/databases<br/>Cookie: session=... (no ?tenantId=)
     Session->>Session: decrypt access_token → inject Principal
     Session->>Middleware: request with Principal in context
 
