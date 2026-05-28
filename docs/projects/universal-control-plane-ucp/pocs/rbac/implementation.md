@@ -55,7 +55,9 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 | `ucp_registered_tenants` DB table | `db/` | Not deployed |
 | DB methods — `RegisterTenant`, `IsRegistered`, `GetRegisteredTenants` | `db/tenants.go` | Not deployed |
 | Tenant registration endpoint `POST /api/v1/tenants/register` | `tenant_handler.go` | Not deployed |
-| Login-triggered OC sync in `CallbackHandler` — auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted roles | `bff_auth.go` | Not deployed |
+| `oc_role_cache` DB table — stores OC tenant role + service roles (JSONB) per user per tenant | `db/` | Not deployed |
+| DB methods — `UpsertOCRoleCache`, `DeleteOCRoleCache`, `GetOCRoles` | `db/roles.go` | Not deployed |
+| Login-triggered OC sync in `CallbackHandler` — UPSERT `oc_role_cache`, auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted UCP roles | `bff_auth.go` | Not deployed |
 | `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Not deployed |
 | Tenant page — register flow + member picker from Horizon for role assignment | frontend | Not deployed |
 | Onboarding landing page — 4-state tenant rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) | frontend | Not deployed |
@@ -85,7 +87,8 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 
 **Phase 3 — Tenant onboarding + login-triggered sync**
 - **Tenant registration** — `ucp_registered_tenants` table; a tenant must be explicitly registered by an OC Tenant Admin before UCP operations are allowed
-- **Login-triggered OC sync** — on every OIDC callback, UCP calls Horizon `GET /v0/members/{email}/tenants`, and for each tenant: auto-assigns `tenant-admin` if the user is an OC Admin (upgrade only), preserves manually-granted roles for OC Members, and revokes UCP roles for tenants the user has been removed from
+- **`oc_role_cache` table** — populated on every login with each user's OC tenant role and service roles (JSONB). Not used for access control today; wired up for Option 2 (runtime OC service-role check) when needed
+- **Login-triggered OC sync** — on every OIDC callback, UCP calls Horizon `GET /v0/members/{email}/tenants`, UPSERTs `oc_role_cache` with current OC data, and for `tenant_role_assignments`: auto-assigns `tenant-admin` if OC Admin (upgrade only), preserves manually-granted roles for OC Members, revokes for removed members
 - **`GET /api/v1/me/tenants`** — returns the user's OC tenants enriched with UCP registration status, UCP role, and tenant-admin contact info (name + email) for tenants where the user has no role or the tenant is unregistered
 - **Tenant page** — register flow + OC member picker from Horizon for role assignment (no manual email input)
 - **Onboarding landing page** — 4-state rendering per tenant: registered+role / registered+no-role (contact admin) / unregistered+OC-admin (register action) / unregistered+OC-member (contact admin)

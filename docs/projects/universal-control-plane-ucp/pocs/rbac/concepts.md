@@ -148,6 +148,28 @@ by the login-triggered OC sync.
 
 ---
 
+## OC Role Cache
+
+During the login-triggered sync, UCP writes the user's raw OC roles to an
+`oc_role_cache` table — one row per user per tenant:
+
+```
+oc_role_cache
+  user_id          UUID
+  tenant_rns       TEXT
+  oc_tenant_role   TEXT    -- 'Tenant Admin' or 'Tenant Member'
+  oc_service_roles JSONB   -- {"DBaaS": "operator", "CaaS": "admin", ...}
+  synced_at        TIMESTAMPTZ
+```
+
+This table is **not used for access control today**. UCP's `RequirePermission`
+checks read only from `tenant_role_assignments`. The cache exists so that if
+runtime OC service-role validation (Confluence Option 2) is ever enabled, the
+data is already present — no additional Horizon calls or schema changes are
+required. Wiring it up is a middleware change only.
+
+---
+
 ## Tenant Onboarding and Role Seeding
 
 When a user logs in via OIDC, UCP synchronises their role assignments against

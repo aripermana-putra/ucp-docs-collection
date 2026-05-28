@@ -187,10 +187,19 @@ erDiagram
         TIMESTAMPTZ created_at
     }
 
+    oc_role_cache {
+        UUID user_id FK
+        TEXT tenant_rns
+        TEXT oc_tenant_role
+        JSONB oc_service_roles
+        TIMESTAMPTZ synced_at
+    }
+
     identity_providers ||--o{ users : "idp_id"
     users ||--o{ sessions : "user_id"
     users ||--o{ audit_logs : "user_id"
     users ||--o{ tenant_role_assignments : "user_id"
+    users ||--o{ oc_role_cache : "user_id"
 ```
 
 | Table | Origin | Modified by MCUCP-191 |
@@ -200,10 +209,11 @@ erDiagram
 | `sessions` | Pre-existing | No |
 | `audit_logs` | Pre-existing | No |
 | `tenant_role_assignments` | **Added by MCUCP-191** | — |
+| `oc_role_cache` | **Added by MCUCP-191** | — |
 
-No pre-existing tables were altered. MCUCP-191 only adds the new
-`tenant_role_assignments` table and the query methods in `db/roles.go`
-that operate on it.
+No pre-existing tables were altered. MCUCP-191 adds `tenant_role_assignments`
+(UCP's own access control) and `oc_role_cache` (a read-through cache of OC
+role data populated during the login sync).
 
 `tenant_rns = '*'` in `tenant_role_assignments` denotes a platform-admin — a
 cross-tenant role not bound to any specific tenant RNS.
@@ -221,10 +231,28 @@ CREATE TABLE tenant_role_assignments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, tenant_rns)
 );
+
+CREATE TABLE oc_role_cache (
+    user_id         UUID NOT NULL REFERENCES users(id),
+    tenant_rns      TEXT NOT NULL,
+    -- OC Level 1 tenant role: 'Tenant Admin' or 'Tenant Member'
+    oc_tenant_role  TEXT NOT NULL,
+    -- OC Level 2 service roles: {"DBaaS": "operator", "CaaS": "admin", ...}
+    -- Null when service roles have not been fetched for this tenant yet.
+    oc_service_roles JSONB,
+    synced_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, tenant_rns)
+);
 ```
 
-`platform-admin` is stored as a row with `tenant_rns = '*'` — not tied to any
-specific tenant, matches regardless of the `?tenantId=` in the request.
+`tenant_role_assignments` is UCP's own access-control table — rows here
+drive all `RequirePermission` checks. `platform-admin` is stored with
+`tenant_rns = '*'`, not tied to any specific tenant.
+
+`oc_role_cache` is a read-through snapshot of OC data populated during the
+login-triggered sync. It is not used for access control today. When Option 2
+(runtime OC role check) is enabled, the permission middleware reads from this
+table instead of (or in addition to) calling the Horizon API at request time.
 
 ---
 
@@ -601,24 +629,28 @@ caller's role assignments against their current OC standing. This replaces a
 periodic background job for the PoC.
 
 ```
-1. Call GET /v0/members/{email}/tenants (Core Data / Horizon)
+1. Call GET /v0/members/{email}/tenants (Horizon)
 2. For each tenant in the OC response:
-   a. If OC role = Tenant Admin:
-      - Current UCP role < tenant-admin (or none) → assign tenant-admin
-      - Current UCP role = tenant-admin or platform-admin → no change (keep)
-   b. If OC role = Tenant Member:
-      - Never touch UCP role — a manually-granted developer or tenant-admin
-        role from a UCP tenant-admin is preserved regardless of OC standing
+   a. UPSERT oc_role_cache with oc_tenant_role from OC response.
+      Optionally call GET /v0/tenants/{rns}/members/{email} to populate
+      oc_service_roles if service-role data is available.
+   b. Apply UCP role sync:
+      - OC role = Tenant Admin AND current UCP role < tenant-admin (or none)
+        → assign tenant-admin in tenant_role_assignments
+      - OC role = Tenant Admin AND current UCP role ≥ tenant-admin → no change
+      - OC role = Tenant Member → never touch UCP role (preserve any
+        manually-granted developer or tenant-admin role)
 3. For each tenant where user has a UCP role assignment but is no longer
-   present in the OC response → revoke the UCP role
+   present in the OC response → revoke the UCP role; delete from oc_role_cache
 4. platform-admin rows (tenant_rns = '*') are never touched by the sync
 ```
 
 **Sync rules summary:**
 - OC Admin → auto-assign `tenant-admin` (upgrade only, never downgrade)
 - OC Member → preserve any existing manually-assigned UCP role
-- Removed from OC tenant → revoke UCP role for that tenant
+- Removed from OC tenant → revoke UCP role; remove OC cache row
 - `platform-admin` → managed manually only, OC sync does not affect it
+- **OC roles always written to `oc_role_cache`** regardless of UCP role outcome
 
 **PoC gap:** if a user's OC role changes between logins, their UCP role
 reflects the stale state until their next login. A future periodic sync
@@ -729,20 +761,21 @@ For **OC resources**, two options exist (PM's open question):
 - **Option 1 — UCP tenant role only:** UCP checks only the caller's UCP
   `developer` or `tenant-admin` role. The OC service account executes
   requests on behalf of the team; OC service roles are not checked.
-- **Option 2 — UCP role + OC service-role check:** UCP additionally calls
-  Core Data API to verify the user holds the required OC service role for
-  the resource type being provisioned (e.g. DBaaS `operator` to provision
-  a database). Requires UCP to maintain an OC-service-to-resource-type
-  mapping.
+- **Option 2 — UCP role + OC service-role check:** UCP additionally verifies
+  the user holds the required OC service role for the resource type being
+  provisioned (e.g. DBaaS `operator` to provision a database). Requires a
+  UCP-maintained OC-service-to-resource-type mapping.
+
+The `oc_role_cache` table stores both the OC tenant role and OC service roles
+(JSONB) per user per tenant, populated on every login. Enabling Option 2
+requires only wiring the permission middleware to read from `oc_role_cache`
+at provisioning time — no additional data collection or schema changes needed.
 
 For **public cloud resources (GCP and future providers)**, there is no
-equivalent OC service-role concept. The PM's Confluence page does not
-address this case. The current implementation grants access to any public
-cloud resource based solely on the UCP tenant role (`developer` or
-`tenant-admin`) — a `developer` can provision any public cloud resource
+OC service-role concept. Access is controlled solely by the UCP tenant role
+(`developer` or `tenant-admin`). A `developer` can provision any resource
 type the tenant's credentials cover, with no per-service restriction.
 
-A UCP-native service-role layer (independent of OC) is not defined and
-not implemented. Whether UCP should introduce its own per-service roles
-(e.g. `database-operator`, `compute-viewer`) for both OC and public cloud
-resources is an open question to be resolved with the PM.
+A UCP-native service-role layer (independent of OC) is not defined. Whether
+UCP should introduce per-service roles (e.g. `database-operator`) for both
+OC and public cloud resources is an open question to be resolved with the PM.
