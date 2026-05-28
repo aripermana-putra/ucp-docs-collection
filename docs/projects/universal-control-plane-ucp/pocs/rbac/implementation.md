@@ -107,36 +107,30 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 
 ## Open Questions
 
-### 1. Can a tenant-admin grant a UCP role to a user outside their OC tenant?
+### 1. Can a tenant-admin grant UCP roles to users who are not OC members?
 
-`AssignRole` accepts any valid email address and looks up the user by email.
-There is currently no check verifying that the target user is actually an OC
-member of the tenant being managed.
+**How role management works in the PoC:**
 
-**Example:** Tenant A has Ari (OC Tenant Admin → UCP `tenant-admin`) and Ira
-(OC Tenant Member → no UCP role yet). Can Ari assign a `developer` UCP role
-to Ria, who is **not** in Tenant A's OC membership at all?
+On every login, the sync fetches all members of every tenant the logged-in
+user belongs to (`GET /v0/tenants/{rns}/members`) and updates UCP's local
+data. The role management UI shows this locally-synced member list. A
+tenant-admin assigns roles by picking from that list — only OC Tenant Members
+of the tenant appear, so non-members cannot be assigned a role through the
+normal UI flow.
 
-The PoC does not enforce this — `AssignRole` will succeed as long as Ria has
-logged in to UCP at least once (so a user record exists). The login-triggered
-sync does not revoke a manually-granted role for a user who is simply not in
-OC for that tenant; it only revokes roles for users who previously appeared
-in OC and have since been removed.
+`AssignRole` itself does not make a live Horizon call; it relies on the
+member already having a UCP user record (created on first OIDC login).
 
-Arguments for restricting to OC members only:
-- UCP RBAC should mirror OC's access boundary — if a user is not in the OC
-  tenant, they should not be able to provision resources for it.
-- Allowing cross-tenant role grants undermines the OC tenant as the access
-  boundary.
+**The open question:**
 
-Arguments for allowing it:
-- UCP may manage resources beyond the OC model (GCP projects, future clouds)
-  where OC membership is not the right boundary.
-- Platform teams may need to grant internal access to users not formally in OC.
+Should a tenant-admin be able to **add a user to the tenant from UCP** — i.e.
+invite someone who is not yet an OC Tenant Member? Currently the answer is no:
+membership must be managed in OC Portal first, and UCP picks it up on the next
+login sync. The question is whether to keep this constraint or allow UCP to
+manage OC tenant membership directly via the Core Data API.
 
-The PoC leaves this unrestricted. Whether `AssignRole` should validate OC
-membership before inserting is an open question to be resolved before
-production use.
+The PoC keeps the OC Portal as the source of truth for tenant membership.
+Adding a user to a tenant from UCP is out of scope.
 
 ---
 
