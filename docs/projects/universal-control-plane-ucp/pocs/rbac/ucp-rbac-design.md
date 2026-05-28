@@ -177,11 +177,18 @@ erDiagram
         TIMESTAMPTZ synced_at
     }
 
+    ucp_registered_tenants {
+        TEXT tenant_rns PK
+        UUID registered_by FK
+        TIMESTAMPTZ registered_at
+    }
+
     identity_providers ||--o{ users : "idp_id"
     users ||--o{ sessions : "user_id"
     users ||--o{ audit_logs : "user_id"
     users ||--o{ tenant_role_assignments : "user_id"
     users ||--o{ oc_roles : "user_id"
+    users ||--o{ ucp_registered_tenants : "registered_by"
 ```
 
 | Table | Origin | Modified by MCUCP-191 |
@@ -192,10 +199,13 @@ erDiagram
 | `audit_logs` | Pre-existing | No |
 | `tenant_role_assignments` | **Added by MCUCP-191** | — |
 | `oc_roles` | **Added by MCUCP-191** | — |
+| `ucp_registered_tenants` | **Added by MCUCP-191** | — |
 
-No pre-existing tables were altered. MCUCP-191 adds `tenant_role_assignments`
-(UCP's own access control) and `oc_roles` (a persistent mirror of OC
-role data populated during the login sync).
+No pre-existing tables were altered. MCUCP-191 adds three new tables:
+`tenant_role_assignments` (UCP's own access control), `oc_roles` (a
+persistent mirror of OC role data populated during the login sync), and
+`ucp_registered_tenants` (the registry of OC tenants explicitly onboarded
+into UCP).
 
 `tenant_rns = '*'` in `tenant_role_assignments` denotes a platform-admin — a
 cross-tenant role not bound to any specific tenant RNS.

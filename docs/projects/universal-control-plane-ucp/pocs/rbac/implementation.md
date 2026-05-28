@@ -54,13 +54,13 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 
 | Component | File | Status |
 |---|---|---|
-| `ucp_registered_tenants` DB table | `db/` | Not deployed |
-| DB methods — `RegisterTenant`, `IsRegistered`, `GetRegisteredTenants` | `db/tenants.go` | Not deployed |
-| Tenant registration endpoint `POST /api/v1/tenants/register` | `tenant_handler.go` | Not deployed |
-| `oc_roles` DB table — stores OC tenant role + service roles (JSONB) per user per tenant | `db/` | Not deployed |
-| DB methods — `UpsertOCRoles`, `DeleteOCRoles`, `GetOCRoles` | `db/roles.go` | Not deployed |
-| Login-triggered OC sync in `CallbackHandler` — UPSERT `oc_roles`, auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted UCP roles | `bff_auth.go` | Not deployed |
-| `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Not deployed |
+| `ucp_registered_tenants` DB table | `db/` | Deployed |
+| DB methods — `RegisterTenant`, `IsTenantRegistered`, `GetRegisteredTenants` | `db/registered_tenants.go` | Deployed |
+| Tenant registration endpoint `POST /api/v1/tenants/register` | `tenant_handler.go` | Deployed |
+| `oc_roles` DB table — stores OC tenant role + service roles (JSONB) per user per tenant | `db/` | Deployed |
+| DB methods — `UpsertOCRoles`, `DeleteOCRoles`, `GetOCRolesForUser` | `db/roles.go` | Deployed |
+| Login-triggered OC sync in `CallbackHandler` — UPSERT `oc_roles`, auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted UCP roles | `bff_auth.go` | Deployed |
+| `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Deployed |
 | Tenant page — register flow + member picker from Horizon for role assignment | frontend | Not deployed |
 | Onboarding landing page — 4-state tenant rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) | frontend | Not deployed |
 | ~~Background sync job~~ | — | Deferred — notes only (login sync is sufficient for PoC) |
