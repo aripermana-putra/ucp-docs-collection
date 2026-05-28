@@ -107,7 +107,40 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 
 ## Open Questions
 
-### 1. Service-level roles for public cloud resources
+### 1. Can a tenant-admin grant a UCP role to a user outside their OC tenant?
+
+`AssignRole` accepts any valid email address and looks up the user by email.
+There is currently no check verifying that the target user is actually an OC
+member of the tenant being managed.
+
+**Example:** Tenant A has Ari (OC Tenant Admin → UCP `tenant-admin`) and Ira
+(OC Tenant Member → no UCP role yet). Can Ari assign a `developer` UCP role
+to Ria, who is **not** in Tenant A's OC membership at all?
+
+The PoC does not enforce this — `AssignRole` will succeed as long as Ria has
+logged in to UCP at least once (so a user record exists). The login-triggered
+sync does not revoke a manually-granted role for a user who is simply not in
+OC for that tenant; it only revokes roles for users who previously appeared
+in OC and have since been removed.
+
+Arguments for restricting to OC members only:
+- UCP RBAC should mirror OC's access boundary — if a user is not in the OC
+  tenant, they should not be able to provision resources for it.
+- Allowing cross-tenant role grants undermines the OC tenant as the access
+  boundary.
+
+Arguments for allowing it:
+- UCP may manage resources beyond the OC model (GCP projects, future clouds)
+  where OC membership is not the right boundary.
+- Platform teams may need to grant internal access to users not formally in OC.
+
+The PoC leaves this unrestricted. Whether `AssignRole` should validate OC
+membership before inserting is an open question to be resolved before
+production use.
+
+---
+
+### 2. Service-level roles for public cloud resources
 
 OneCloud defines per-service roles (DBaaS `admin`/`operator`/`viewer`, CaaS
 `admin`/`edit`/`view`, etc.). The PM's Confluence page (UCP Identity, Tenancy
@@ -132,7 +165,7 @@ such system is designed.
 
 ---
 
-### 2. Environment boundary in OneCloud — same tenant or separate tenants?
+### 3. Environment boundary in OneCloud — same tenant or separate tenants?
 
 In OneCloud, does a single tenant span multiple deployment environments
 (e.g. staging and production), or is each environment represented as a
@@ -152,7 +185,7 @@ environments as a separate dimension.
 
 ---
 
-### 3. Impact of OneCloud access revocation on UCP
+### 4. Impact of OneCloud access revocation on UCP
 
 **Partially addressed in Phase 3.** The login-triggered sync revokes UCP role
 assignments for users removed from OC. However there is a window — from when
@@ -165,7 +198,7 @@ OC webhook integration if it becomes available.
 
 ---
 
-### 4. OC role validation at request time vs sync-based consistency
+### 5. OC role validation at request time vs sync-based consistency
 
 A user could hold UCP `tenant-admin` but have been downgraded to `Tenant Member`
 in OC. The login-triggered sync catches this on next login, but during
