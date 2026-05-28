@@ -156,13 +156,19 @@ checks read only from `tenant_role_assignments`. The purpose of populating it
 in the PoC is twofold:
 
 1. **Prove the sync works** — by writing OC roles during the login sync and
-   verifying the data lands correctly, we validate the entire Horizon → UCP
-   data pipeline end-to-end. If we ever go with
+   verifying the data lands correctly, we validate the pipeline end-to-end.
+   If we ever go with
    [Option 2 — UCP Identity, Tenancy & Roles](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles),
    the collection method is already tested and trusted.
 2. **Make Option 2 a wire-up only** — the data is already present. Enabling
    runtime OC service-role validation requires only a middleware change, no new
    Horizon calls, no schema changes.
+
+**Note on data source:** the Keycloak JWT `groups` claim already contains all
+OC service roles in the format `rns:roc:{service}::{tenant}:roles:{role}`. The
+PoC populates `oc_roles` via Horizon API calls, but once the JWT `groups` format
+is confirmed for Tenant Members, both the Horizon calls and the `oc_roles` writes
+can be replaced with direct JWT parsing — see the Design doc for details.
 
 ---
 

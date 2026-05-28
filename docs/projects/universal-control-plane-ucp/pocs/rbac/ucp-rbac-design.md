@@ -762,7 +762,7 @@ The Keycloak access token issued by the ROC realm contains a `groups` claim
 that encodes the user's tenant membership, tenant-level role, and all
 service-level roles across every tenant they belong to.
 
-**Observed format (QA2 realm):**
+**Observed format (QA2 realm, Tenant Admin account):**
 
 ```json
 {
@@ -785,31 +785,92 @@ service-level roles across every tenant they belong to.
 | Entry | Meaning |
 |---|---|
 | `rns:roc:iam::{tenant}:roles:admin` | OC Tenant Admin for this tenant |
-| `rns:roc:iam::{tenant}:roles:member` | OC Tenant Member (if present) |
+| `rns:roc:iam::{tenant}:roles:member` | OC Tenant Member for this tenant |
 | `rns:roc:dbaas::{tenant}:roles:admin` | DBaaS admin service role |
 | `rns:roc:caas::{tenant}:roles:edit` | CaaS edit service role |
+| `rns:roc:lbaas::{tenant}:roles:lbaas-operator` | LBaaS operator service role |
 
-**Implications:**
+The `iam` service entry is the canonical **tenant-level** role. All other service
+entries are **service-level** roles within that tenant. The assumption (unverified
+for Tenant Member accounts — see open questions) is that both admin and member
+have a corresponding `rns:roc:iam::{tenant}:roles:{admin|member}` entry.
 
-1. **Tenant membership and admin status can be derived from the JWT directly**,
-   without calling Horizon `GET /v0/members/{email}/tenants`. Every entry with
-   `rns:roc:iam::{tenant}:roles:admin` = OC Tenant Admin.
+---
 
-2. **All OC service roles are in the JWT** — `rns:roc:dbaas::{tenant}:roles:*`
-   etc. are available without a separate Core Data API call. This makes
-   [Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles)
-   (runtime OC service-role check) achievable from the token alone —
-   no Horizon call at request time needed.
+### JWT-Based Sync (planned replacement for Horizon calls)
 
-3. **The login-triggered sync could parse `groups` directly** instead of calling
-   Horizon, reducing the number of external API calls on each login to zero.
-   This is a future optimisation — the PoC uses Horizon calls for correctness
-   and to populate the `oc_roles` table (which stores the raw data for potential
-   Option 2 use).
+The `groups` claim makes it possible to replace all Horizon API calls in the
+login sync with direct JWT parsing. The redesigned sync:
 
-**Open question:** does `rns:roc:iam::{tenant}:roles:member` appear for OC
-Tenant Members, or do members simply have no `iam` group entry for that tenant?
-This needs verification with a non-admin account.
+```
+1. Parse groups from JWT access token
+2. For each group matching rns:roc:iam::{tenant}:roles:{role}:
+   a. Extract tenant slug and OC tenant role (admin or member)
+   b. Apply UCP role sync rules (same as current — admin→tenant-admin, member→preserve)
+   c. Collect all service roles for this tenant from other groups entries
+   d. UPSERT oc_roles with oc_tenant_role and oc_service_roles (JSONB)
+3. For each UCP role assignment not in any JWT group → revoke
+4. platform-admin rows ('*') never touched
+```
+
+**Helper — parse groups from JWT:**
+
+```go
+type OCTenantFromJWT struct {
+    TenantSlug   string
+    TenantRole   string            // 'admin' or 'member'
+    ServiceRoles map[string]string // {"dbaas": "admin", "caas": "edit"}
+}
+
+func parseOCGroupsFromJWT(groups []string) map[string]OCTenantFromJWT {
+    result := map[string]OCTenantFromJWT{}
+    for _, g := range groups {
+        // rns:roc:{service}::{tenant-slug}:roles:{role}
+        parts := strings.SplitN(g, "::", 2) // ["rns:roc:{service}", "{tenant-slug}:roles:{role}"]
+        if len(parts) != 2 { continue }
+        svcParts := strings.Split(parts[0], ":")         // ["rns","roc","{service}"]
+        roleParts := strings.SplitN(parts[1], ":roles:", 2) // ["{tenant-slug}", "{role}"]
+        if len(svcParts) < 3 || len(roleParts) != 2 { continue }
+
+        service    := svcParts[2]
+        tenantSlug := roleParts[0]
+        role       := roleParts[1]
+
+        entry := result[tenantSlug]
+        entry.TenantSlug = tenantSlug
+        if service == "iam" {
+            entry.TenantRole = role
+        } else {
+            if entry.ServiceRoles == nil { entry.ServiceRoles = map[string]string{} }
+            entry.ServiceRoles[service] = role
+        }
+        result[tenantSlug] = entry
+    }
+    return result
+}
+```
+
+**Advantages over current Horizon-based sync:**
+- Zero external API calls on login — all data is in the token
+- Simpler code — no HTTP client, no error handling for network failures
+- Sync is atomic with the login — no goroutine needed
+- Service roles are parsed in the same pass, populating `oc_roles` naturallyThe current PoC uses Horizon calls because the JWT approach still has one open
+question (see below). Once the member `groups` format is confirmed, the
+Horizon calls should be replaced with JWT parsing.
+
+---
+
+### Service Roles from JWT and Option 2
+
+Because all OC service roles are in the `groups` claim, enabling
+[Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles)
+(runtime OC service-role check at provisioning time) requires only:
+
+1. Parse `groups` from the JWT at login → store in `oc_roles` (already done)
+2. At provisioning time: read from `oc_roles` and check the required service role
+
+No live Horizon call at request time. The `oc_roles` table already stores
+`oc_service_roles` as JSONB populated from the JWT groups on every login.
 
 ---
 

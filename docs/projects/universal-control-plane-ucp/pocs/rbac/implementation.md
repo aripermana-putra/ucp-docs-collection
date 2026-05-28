@@ -59,7 +59,7 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 | Tenant registration endpoint `POST /api/v1/tenants/register` | `tenant_handler.go` | Deployed |
 | `oc_roles` DB table — stores OC tenant role + service roles (JSONB) per user per tenant | `db/` | Deployed |
 | DB methods — `UpsertOCRoles`, `DeleteOCRoles`, `GetOCRolesForUser` | `db/roles.go` | Deployed |
-| Login-triggered OC sync in `CallbackHandler` — UPSERT `oc_roles`, auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted UCP roles | `bff_auth.go` | Deployed |
+| Login-triggered OC sync in `CallbackHandler` — UPSERT `oc_roles`, auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted UCP roles (currently Horizon-based; planned replacement: parse JWT `groups` directly — see open question #6) | `bff_auth.go` | Deployed |
 | `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Deployed |
 | Tenant page — register flow + member picker from Horizon for role assignment | frontend | Not deployed |
 | Onboarding landing page — 4-state tenant rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) | frontend | Not deployed |
@@ -198,13 +198,32 @@ A user could hold UCP `tenant-admin` but have been downgraded to `Tenant Member`
 in OC. The login-triggered sync catches this on next login, but during
 that window the user retains elevated UCP access.
 
-Should UCP validate the user's current OC standing on every protected request
-([PM's Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles))? This would make access revocation near-instant but adds a
-Core Data API call to every hot path.
+The Keycloak JWT `groups` claim (see Design doc — Keycloak JWT Structure) makes
+[Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles)
+feasible without a live Horizon call: the access token already contains the
+user's current OC standing. Middleware could parse `groups` from the token on
+each request to verify the user's OC role has not been downgraded. This would
+be near-instant revocation at negligible cost (JWT parsing, no external call).
 
-The PoC chooses sync-based consistency (polling) as the simpler approach.
-Request-time OC validation is deferred and would require the OC → UCP role
-mapping to be applied at the middleware layer rather than only at seed/sync time.
+The PoC chooses sync-on-login as the simpler approach. JWT-based request-time
+validation is a future improvement.
+
+---
+
+### 6. JWT `groups` format for OC Tenant Members
+
+The observed JWT `groups` claim for a Tenant Admin contains
+`rns:roc:iam::{tenant}:roles:admin`. The assumption is that Tenant Members
+have `rns:roc:iam::{tenant}:roles:member`. This needs verification with a
+non-admin account.
+
+If confirmed, the entire login-triggered sync (currently using two Horizon API
+calls: `GET /v0/members/{email}/tenants` + `GET /v0/tenants/{rns}/members`)
+can be replaced with direct JWT `groups` parsing — zero external API calls,
+simpler code, and sync is atomic with the login rather than in a goroutine.
+
+See the Design doc (Keycloak JWT Structure — JWT-Based Sync) for the planned
+implementation once this is confirmed.
 
 ---
 
