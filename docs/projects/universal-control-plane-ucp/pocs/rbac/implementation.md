@@ -87,7 +87,7 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 
 **Phase 3 — Tenant onboarding + login-triggered sync**
 - **Tenant registration** — `ucp_registered_tenants` table; a tenant must be explicitly registered by an OC Tenant Admin before UCP operations are allowed
-- **`oc_roles` table** — populated on every login with each user's OC tenant role and service roles (JSONB). Not used for access control today; wired up for Option 2 (runtime OC service-role check) when needed
+- **`oc_roles` table** — populated on every login with each user's OC tenant role and service roles (JSONB). Not used for access control today; wired up for [Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles) (runtime OC service-role check) when needed
 - **Login-triggered OC sync** — on every OIDC callback, UCP calls Horizon `GET /v0/members/{email}/tenants`, UPSERTs `oc_roles` with current OC data, and for `tenant_role_assignments`: auto-assigns `tenant-admin` if OC Admin (upgrade only), preserves manually-granted roles for OC Members, revokes for removed members
 - **`GET /api/v1/me/tenants`** — returns the user's OC tenants enriched with UCP registration status, UCP role, and tenant-admin contact info (name + email) for tenants where the user has no role or the tenant is unregistered
 - **Tenant page** — register flow + OC member picker from Horizon for role assignment (no manual email input)
@@ -113,7 +113,7 @@ For **OC resources**, two options exist (PM's open question):
 - **Option 1 — UCP tenant role only:** `developer` in UCP is sufficient to
   provision any OC service the tenant is subscribed to, regardless of the
   user's OC service-level roles.
-- **Option 2 — UCP role + OC service-role check:** UCP additionally verifies
+- **[Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles) — UCP role + OC service-role check:** UCP additionally verifies
   the user's OC service role per resource type at provisioning time.
 
 For **public cloud resources (GCP and future providers)**, there is no OC
@@ -209,7 +209,7 @@ in OC. The Phase 3 sync catches this within the polling interval, but during
 that window the user retains elevated UCP access.
 
 Should UCP validate the user's current OC standing on every protected request
-(PM's Option 2)? This would make access revocation near-instant but adds a
+([PM's Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles))? This would make access revocation near-instant but adds a
 Core Data API call to every hot path.
 
 The PoC chooses sync-based consistency (polling) as the simpler approach.

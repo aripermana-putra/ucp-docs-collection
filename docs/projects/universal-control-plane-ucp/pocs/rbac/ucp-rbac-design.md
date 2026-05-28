@@ -250,9 +250,13 @@ drive all `RequirePermission` checks. `platform-admin` is stored with
 `tenant_rns = '*'`, not tied to any specific tenant.
 
 `oc_roles` is a persistent mirror of OC data populated during the
-login-triggered sync. It is not used for access control today. When Option 2
-(runtime OC role check) is enabled, the permission middleware reads from this
-table instead of (or in addition to) calling the Horizon API at request time.
+login-triggered sync. It is not used for access control today. Populating it
+in the PoC proves the Horizon → UCP data pipeline works end-to-end. If
+[Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles)
+(runtime OC service-role check at provisioning time) is ever chosen, the
+collection method is already tested and trusted — enabling it is a middleware
+change only, with the permission middleware reading from `oc_roles` instead of
+calling the Horizon API at request time.
 
 ---
 
@@ -766,15 +770,18 @@ For **OC resources**, two options exist (PM's open question):
 - **Option 1 — UCP tenant role only:** UCP checks only the caller's UCP
   `developer` or `tenant-admin` role. The OC service account executes
   requests on behalf of the team; OC service roles are not checked.
-- **Option 2 — UCP role + OC service-role check:** UCP additionally verifies
+- **[Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles) — UCP role + OC service-role check:** UCP additionally verifies
   the user holds the required OC service role for the resource type being
   provisioned (e.g. DBaaS `operator` to provision a database). Requires a
   UCP-maintained OC-service-to-resource-type mapping.
 
 The `oc_roles` table stores both the OC tenant role and OC service roles
-(JSONB) per user per tenant, populated on every login. Enabling Option 2
-requires only wiring the permission middleware to read from `oc_roles`
-at provisioning time — no additional data collection or schema changes needed.
+(JSONB) per user per tenant, populated on every login. This proves the
+data collection pipeline end-to-end in the PoC. If
+[Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles)
+is chosen, the sync method is already tested and trusted — enabling it requires
+only wiring the permission middleware to read from `oc_roles` at provisioning
+time, with no additional data collection or schema changes.
 
 For **public cloud resources (GCP and future providers)**, there is no
 OC service-role concept. Access is controlled solely by the UCP tenant role
