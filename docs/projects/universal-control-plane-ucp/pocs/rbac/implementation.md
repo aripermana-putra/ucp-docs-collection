@@ -152,23 +152,7 @@ environments as a separate dimension.
 
 ---
 
-### 3. Multiple cloud provider projects per tenant
-
-The PoC operates on the assumption that one OC tenant maps to exactly
-one GCP project (or one project per public cloud provider). It is unclear
-whether a team may have multiple GCP projects under the same OC tenant —
-for example, one project per service or one project per environment.
-
-If multiple projects per tenant are required:
-- The current `ProviderConfig` naming convention
-  (`gcp-{sanitized-tenant-id}-{env}`) assumes a single project and would
-  need to be extended.
-- The "UCP Project" entity proposed by the PM would need to model a
-  one-to-many relationship between an OC tenant and its cloud projects.
-
----
-
-### 4. Impact of OneCloud access revocation on UCP
+### 3. Impact of OneCloud access revocation on UCP
 
 **Partially addressed in Phase 3.** The login-triggered sync revokes UCP role
 assignments for users removed from OC. However there is a window — from when
@@ -181,31 +165,7 @@ OC webhook integration if it becomes available.
 
 ---
 
-### 5. Service account credential lifecycle and key rotation
-
-UCP stores GCP (and OC) service account credentials in Kubernetes Secrets
-(PoC) or GCP Secret Manager (production target). No key rotation mechanism
-is implemented.
-
-Questions to resolve:
-- When a service account key expires or is rotated externally, Crossplane
-  will start failing reconciliation for that tenant's resources with
-  authentication errors. Does UCP surface this clearly to the tenant-admin,
-  or does it silently leave resources in an error state?
-- Should UCP implement automatic key rotation (e.g. via ESO + GCP Secret
-  Manager rotation policies), or is manual update via the credentials
-  endpoint (`POST /api/v1/settings/credentials`) sufficient?
-- What is the expected SLA for a tenant-admin to respond to a broken
-  credential — can provisioning/reconciliation be paused rather than
-  failing?
-
-The PoC treats credentials as static — no rotation logic is implemented.
-Stale credentials will cause Crossplane reconciliation errors that require
-manual credential re-upload to resolve.
-
----
-
-### 6. OC role validation at request time vs sync-based consistency
+### 4. OC role validation at request time vs sync-based consistency
 
 A user could hold UCP `tenant-admin` but have been downgraded to `Tenant Member`
 in OC. The login-triggered sync catches this on next login, but during
