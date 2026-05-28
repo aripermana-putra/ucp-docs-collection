@@ -269,9 +269,8 @@ stores them in the request context; all subsequent checks read from there.
 ### loadRoles
 
 `loadRoles` takes the resolved `tenantID` and branches based on whether it is
-known. A user can belong to many tenants (e.g. an L2 manager with access to
-every team in a Rakuten group), so fetching all their rows when only one is
-needed is wasteful.
+known. A user can belong to many tenants, so fetching all their rows when only
+one is needed is wasteful.
 
 ```go
 func (s *APIServer) loadRoles(r *http.Request, tenantID string) (*http.Request, map[string]string, error) {
