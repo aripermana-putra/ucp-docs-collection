@@ -48,25 +48,7 @@ approve their own provisioning request. Approval is `tenant-admin` only.
 Adding a new role in the future (e.g. `drift-operator: PermRead | PermApprove | PermDrift`)
 is one line in `RolePermissions` — no schema change, no hierarchy restructuring.
 
-### RequirePermission middleware
-
-```go
-func (s *APIServer) RequirePermission(perm authpkg.Permission) mux.MiddlewareFunc {
-    return func(next http.Handler) http.Handler {
-        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            r, _, err = s.loadRoles(r)
-            userPerms := resolvedPermissions(r, tenantID)  // derives Permission from role string
-            if !userPerms.Has(perm) {
-                respondError(w, http.StatusForbidden,
-                    fmt.Sprintf("insufficient permission: %s required", perm))
-                return
-            }
-            next.ServeHTTP(w, r)
-        })
-    }
-}
-```
-
+See `RequirePermission Middleware` section for the full implementation.
 Route registrations become self-documenting:
 
 ```go

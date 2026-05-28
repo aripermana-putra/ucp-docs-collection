@@ -60,23 +60,6 @@ Role assignments are stored in the `tenant_role_assignments` table in the
 existing PostgreSQL database. Role changes take effect on the user's next login.
 Roles are managed via a dedicated admin API and the role management UI.
 
-## Role Management
-
-Roles are assigned and revoked through the API and a role management page in
-the UI. The endpoints are gated behind `tenant-admin` for tenant-scoped
-operations and `platform-admin` for cross-tenant operations:
-
-| Endpoint | Method | Minimum role | Description |
-|---|---|---|---|
-| `/api/v1/admin/tenants/{tenantSlug}/roles` | GET | `tenant-admin` | List role assignments for a tenant |
-| `/api/v1/admin/tenants/{tenantSlug}/roles` | POST | `tenant-admin` | Assign a role to a user |
-| `/api/v1/admin/tenants/{tenantSlug}/roles/{userID}` | DELETE | `tenant-admin` | Remove a role assignment |
-
-`platform-admin` can access these endpoints across all tenants regardless of
-which tenant is in scope.
-
----
-
 ## Role Type and Permission Model
 
 The `Role` type is still an integer constant but enforcement uses a permission
