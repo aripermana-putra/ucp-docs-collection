@@ -756,6 +756,63 @@ registered tenants where the user has no UCP role.
 
 ---
 
+## Keycloak JWT Structure
+
+The Keycloak access token issued by the ROC realm contains a `groups` claim
+that encodes the user's tenant membership, tenant-level role, and all
+service-level roles across every tenant they belong to.
+
+**Observed format (QA2 realm):**
+
+```json
+{
+  "iss": "https://qa2-accounts-onecloud.rakuten-it.com/auth/realms/roc",
+  "sub": "<keycloak-user-id>",
+  "email": "user@rakuten.com",
+  "preferred_username": "user.name",
+  "groups": [
+    "rns:roc:iam::clsd-ucp:roles:admin",
+    "rns:roc:dbaas::clsd-ucp:roles:admin",
+    "rns:roc:caas::clsd-ucp:roles:admin",
+    "rns:roc:lbaas::clsd-ucp:roles:lbaas-operator",
+    "rns:roc:staas::clsd-ucp:roles:admin"
+  ]
+}
+```
+
+**Pattern:** `rns:roc:{service}::{tenant-slug}:roles:{role}`
+
+| Entry | Meaning |
+|---|---|
+| `rns:roc:iam::{tenant}:roles:admin` | OC Tenant Admin for this tenant |
+| `rns:roc:iam::{tenant}:roles:member` | OC Tenant Member (if present) |
+| `rns:roc:dbaas::{tenant}:roles:admin` | DBaaS admin service role |
+| `rns:roc:caas::{tenant}:roles:edit` | CaaS edit service role |
+
+**Implications:**
+
+1. **Tenant membership and admin status can be derived from the JWT directly**,
+   without calling Horizon `GET /v0/members/{email}/tenants`. Every entry with
+   `rns:roc:iam::{tenant}:roles:admin` = OC Tenant Admin.
+
+2. **All OC service roles are in the JWT** — `rns:roc:dbaas::{tenant}:roles:*`
+   etc. are available without a separate Core Data API call. This makes
+   [Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles)
+   (runtime OC service-role check) achievable from the token alone —
+   no Horizon call at request time needed.
+
+3. **The login-triggered sync could parse `groups` directly** instead of calling
+   Horizon, reducing the number of external API calls on each login to zero.
+   This is a future optimisation — the PoC uses Horizon calls for correctness
+   and to populate the `oc_roles` table (which stores the raw data for potential
+   Option 2 use).
+
+**Open question:** does `rns:roc:iam::{tenant}:roles:member` appear for OC
+Tenant Members, or do members simply have no `iam` group entry for that tenant?
+This needs verification with a non-admin account.
+
+---
+
 ## Periodic Sync (deferred — notes only)
 
 A background polling job to keep `tenant_role_assignments` consistent with OC
