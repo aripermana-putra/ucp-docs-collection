@@ -262,29 +262,57 @@ calling the Horizon API at request time.
 
 ## Role Resolution — Design
 
-Role resolution uses a **per-request cache** to avoid repeated DB queries.
-A single `GetAllRolesForUser` call is made at most once per request; all
-subsequent checks within the same request read from the Go context.
+Role resolution uses a **per-request in-memory store** to avoid repeated DB
+queries. At most one DB call per request fetches the relevant role rows and
+stores them in the request context; all subsequent checks read from there.
 
 ### loadRoles
 
-`loadRoles` fetches all role assignments for the caller and stores them in
-the request context. Returns immediately on cache hit.
+`loadRoles` takes the resolved `tenantID` and branches based on whether it is
+known. A user can belong to many tenants (e.g. an L2 manager with access to
+every team in a Rakuten group), so fetching all their rows when only one is
+needed is wasteful.
 
 ```go
-func (s *APIServer) loadRoles(r *http.Request) (*http.Request, map[string]string, error) {
+func (s *APIServer) loadRoles(r *http.Request, tenantID string) (*http.Request, map[string]string, error) {
     if cached, ok := r.Context().Value(cachedRolesKey{}).(map[string]string); ok {
-        return r, cached, nil  // cache hit — 0 DB calls
+        return r, cached, nil  // already loaded this request
     }
-    roles, err := s.db.GetAllRolesForUser(principal.UserID)  // 1 DB call
+
+    var roles map[string]string
+    var err error
+
+    if tenantID != "" {
+        // Tenant is known — fetch only this tenant's row + the platform-admin
+        // sentinel ('*'). Two rows max regardless of total tenant membership.
+        roles, err = s.db.GetRolesForUserInTenant(principal.UserID, tenantID)
+    } else {
+        // No tenant context — need the full set to derive the max role.
+        roles, err = s.db.GetAllRolesForUser(principal.UserID)
+    }
+
+    if err != nil {
+        return r, nil, fmt.Errorf("failed to load roles: %w", err)
+    }
     r = r.WithContext(context.WithValue(r.Context(), cachedRolesKey{}, roles))
     return r, roles, nil
 }
 ```
 
+`GetRolesForUserInTenant` issues a targeted query:
+
+```sql
+SELECT tenant_rns, role
+FROM tenant_role_assignments
+WHERE user_id = $1
+  AND tenant_rns IN ($2, '*')
+```
+
+At most 2 rows — the specific tenant and the platform-admin sentinel.
+
 ### roleFromMap
 
-Derives a `Role` from the cached map for a given `tenantID`:
+Derives a `Role` from the loaded map for a given `tenantID`:
 
 ```go
 func roleFromMap(allRoles map[string]string, tenantID string) Role {
@@ -294,7 +322,7 @@ func roleFromMap(allRoles map[string]string, tenantID string) Role {
     if tenantID != "" {
         return stringToRole(allRoles[tenantID])  // specific tenant
     }
-    // ?tenantId= absent — return highest role across all tenants
+    // No tenant context — return highest role across all tenants.
     max := RoleUnknown
     for _, roleStr := range allRoles {
         if r := stringToRole(roleStr); r > max { max = r }
@@ -303,22 +331,16 @@ func roleFromMap(allRoles map[string]string, tenantID string) Role {
 }
 ```
 
-When `?tenantId=` is absent, the caller's maximum role across all their
-tenants is used. This allows `RequirePermission` checks to pass without
-requiring the param — for example, a user with `developer` in tenant-A can
-delete a resource without specifying `?tenantId=`. The label-based K8s
-ownership filter in the handler verifies the resource belongs to a tenant
-the user has the required role in.
-
 ### resolveUserRole
 
-Reads from context cache — zero additional DB calls after `loadRoles` has run:
+Reads from the in-memory store — zero additional DB calls after `loadRoles`
+has run:
 
 ```go
 func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, error) {
     allRoles, ok := r.Context().Value(cachedRolesKey{}).(map[string]string)
     if !ok {
-        _, allRoles, _ = s.loadRoles(r)  // fallback if cache not populated
+        _, allRoles, _ = s.loadRoles(r, tenantID)  // fallback
     }
     return roleFromMap(allRoles, tenantID), nil
 }
@@ -326,12 +348,13 @@ func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, err
 
 ### DB call count per request
 
-| Scenario | DB calls |
-|---|---|
-| Any request through `RequireRole` | 1 (`GetAllRolesForUser` in middleware) |
-| Delete handler ownership check | 0 (reads context cache) |
-| Any subsequent check in same request | 0 (cache hit) |
-| `/auth/me` | 1 (`GetAllRolesForUser` directly, independent of cache) |
+| Scenario | Slug resolve | Role fetch | Total |
+|---|---|---|---|
+| `GET /databases?tenantId=rns:...` | 0 | `GetRolesForUserInTenant` (≤2 rows) | 1 |
+| `DELETE /tenants/clsd-ucp/databases/foo` | 1 (`resolveTenantIDBySlug`) | `GetRolesForUserInTenant` (≤2 rows) | 2 |
+| `GET /databases` (no tenantId) | 0 | `GetAllRolesForUser` (full scan) | 1 |
+| `/auth/me` | 0 | `GetAllRolesForUser` (independent of middleware) | 1 |
+| Any subsequent check in same request | 0 | 0 (in-memory store hit) | 0 |
 
 ---
 
@@ -476,41 +499,52 @@ making it harder to diagnose misconfigured role assignments.
 
 ---
 
-## RequireRole Middleware
+## RequirePermission Middleware
 
-`RequireRole` calls `loadRoles` first to populate the per-request cache,
-then resolves the effective role and enforces the minimum. The handler and
-any subsequent `resolveUserRole` calls in the same request hit the cache.
+`RequirePermission` resolves the tenant from whichever source is present
+(`?tenantId=` query param for GETs, `{tenantSlug}` path var for mutations),
+calls `loadRoles` with the resolved tenant for a targeted DB fetch, then
+checks the permission bitmask.
 
 ```go
 // rbac_handler.go
-func (s *APIServer) RequireRole(minRole authpkg.Role) mux.MiddlewareFunc {
+func (s *APIServer) RequirePermission(required authpkg.Permission) mux.MiddlewareFunc {
     return func(next http.Handler) http.Handler {
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            tenantID := strings.TrimSpace(r.URL.Query().Get("tenantId"))
 
-            // Populate cache — at most 1 DB call per request.
+            // Derive tenant context from whichever source is present.
+            tenantID := strings.TrimSpace(r.URL.Query().Get("tenantId"))
+            if tenantID == "" {
+                if slug := mux.Vars(r)["tenantSlug"]; slug != "" {
+                    // Mutations carry tenant as path slug — resolve to RNS.
+                    // 1 extra DB call, but avoids a full role scan for users
+                    // with many tenant memberships.
+                    tenantID, _ = s.resolveTenantIDBySlug(r.Context(), slug)
+                }
+            }
+
             var err error
-            r, _, err = s.loadRoles(r)
+            r, _, err = s.loadRoles(r, tenantID)  // targeted fetch when tenantID is known
             if err != nil {
                 respondError(w, http.StatusInternalServerError,
                     "Failed to load roles: "+err.Error())
                 return
             }
 
-            role, err := s.resolveUserRole(r, tenantID)  // reads cache
+            role, err := s.resolveUserRole(r, tenantID)  // reads in-memory store
             if err != nil {
                 respondError(w, http.StatusInternalServerError,
                     "Failed to resolve user role: "+err.Error())
                 return
             }
-            if role < minRole {
+
+            perms := authpkg.RolePermissions[role]
+            if !perms.Has(required) {
                 respondError(w, http.StatusForbidden,
-                    fmt.Sprintf("insufficient role: %s required", minRole))
+                    fmt.Sprintf("insufficient permission: %s required", required))
                 return
             }
 
-            // Pass updated request (with cache + resolved role in context).
             next.ServeHTTP(w, r.WithContext(authpkg.WithRole(r.Context(), role)))
         })
     }

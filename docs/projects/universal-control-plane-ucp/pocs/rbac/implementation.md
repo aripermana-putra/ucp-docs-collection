@@ -42,7 +42,9 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 |---|---|---|
 | 3-role model: `RoleDeveloper`, `RoleTenantAdmin`, `RolePlatformAdmin` (remove `RoleViewer`, `RoleApprover`, `RoleDeployer`) | `auth/context.go` | Not deployed |
 | `Permission` bitmask type + `RolePermissions` map | `auth/context.go` | Not deployed |
-| `RequirePermission(perm)` middleware replacing `RequireRole` | `rbac_handler.go` | Not deployed |
+| `loadRoles(r, tenantID)` — branches on whether tenant is known: `GetRolesForUserInTenant` (≤2 rows) vs `GetAllRolesForUser` (full scan) | `rbac_handler.go` | Not deployed |
+| DB method `GetRolesForUserInTenant(userID, tenantRNS)` — `WHERE tenant_rns IN ($tenantRNS, '*')` | `db/roles.go` | Not deployed |
+| `RequirePermission(perm)` middleware — resolves tenant from `?tenantId=` or `{tenantSlug}` (1 DB call for slug), then targeted role fetch + bitmask check | `rbac_handler.go` | Not deployed |
 | Route registrations updated to use permissions | `main.go` | Not deployed |
 | `hasPermission(perm)` replacing `hasMinRole(min)` in `useRole()` | `hooks/useRole.ts` | Not deployed |
 | All frontend components updated to use `hasPermission` | all components | Not deployed |
@@ -82,6 +84,8 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 - `developer` has `PermProvision` but not `PermApprove` — a developer cannot approve their own request
 - `RolePermissions` map defines each role as a set of permissions
 - All route registrations use `RequirePermission(perm)` instead of `RequireRole(minRole)`
+- `loadRoles` branches: targeted `GetRolesForUserInTenant` (≤2 rows) when tenant is known, full `GetAllRolesForUser` only when absent — avoids scanning all tenant memberships for users in many tenants
+- `RequirePermission` resolves tenant from `?tenantId=` (GET) or `{tenantSlug}` (mutations, 1 extra DB call) before the role fetch
 - Frontend `hasPermission(perm)` replaces `hasMinRole(min)` throughout
 - DB migration: update `CHECK` constraint to the 3 new role names
 
@@ -363,7 +367,7 @@ sequenceDiagram
 
 `POST /api/v1/databases` (developer minimum, ?tenantId= present)
 
-`RequirePermission` calls `loadRoles` first — **1 DB call** fetches all role
+`RequirePermission` calls `loadRoles` with the resolved tenant — **1 targeted DB call** fetches at most 2 role
 assignments and caches them in the request context.
 
 ```mermaid

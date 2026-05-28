@@ -38,16 +38,23 @@ is one line in the `RolePermissions` map with no schema changes.
 `resolveUserRole(r, tenantID)` is called by `RequirePermission` on every
 protected request. By the time it runs, `SessionMiddleware` has already
 executed and injected the `Principal` into the request context.
-`Principal.UserID` is the internal DB UUID used to look up all role
-assignments for the caller in one query:
+
+`loadRoles` branches based on whether the tenant is known to avoid scanning
+all memberships for users who belong to many tenants:
 
 ```go
-allRoles, _ := s.db.GetAllRolesForUser(principal.UserID)
-// returns map[tenantRNS]roleString for all tenants the user has a role in
+if tenantID != "" {
+    // Targeted: fetch only this tenant's row + platform-admin sentinel.
+    // WHERE tenant_rns IN ($tenantRNS, '*') — at most 2 rows.
+    roles, _ = s.db.GetRolesForUserInTenant(principal.UserID, tenantID)
+} else {
+    // Full scan: needed when no tenant context is present (e.g. no ?tenantId=).
+    roles, _ = s.db.GetAllRolesForUser(principal.UserID)
+}
 ```
 
-The result is cached in the request context — at most one DB call per request,
-regardless of how many permission checks happen downstream.
+The result is stored in the request context — at most one role DB call per
+request, regardless of how many permission checks happen downstream.
 
 Role assignments are stored in the `tenant_role_assignments` table in the
 existing PostgreSQL database. Role changes take effect on the user's next login.
@@ -113,12 +120,11 @@ its `Permission` set, and passes only if `permissions.Has(PermApprove)`. A
 
 `RequirePermission(perm Permission)` is a per-route middleware. It:
 
-1. Reads `tenantId` from the `?tenantId=` query param (GET requests) or
-   `{tenantSlug}` path segment (mutations).
-2. Calls `loadRoles(r)` — fetches all role assignments for the caller from DB
-   and caches them in the request context (at most one DB call per request).
-3. Calls `resolveUserRole(r, tenantID)` to derive the caller's `Role` for
-   that tenant.
+1. Reads tenant from `?tenantId=` query param (GET) or resolves `{tenantSlug}`
+   path var to RNS via DB (mutations — 1 extra DB call).
+2. Calls `loadRoles(r, tenantID)` — targeted fetch (≤2 rows) when tenant is
+   known, full scan only when absent. Stores result in request context.
+3. Calls `resolveUserRole(r, tenantID)` to derive the caller's `Role`.
 4. Maps `Role` → `Permission` set via `RolePermissions`.
 5. If `permissions.Has(perm)` → injects the resolved role into the request
    context and calls the next handler.
