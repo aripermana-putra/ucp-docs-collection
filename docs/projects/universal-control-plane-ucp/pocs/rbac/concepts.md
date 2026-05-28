@@ -164,11 +164,15 @@ in the PoC is twofold:
    runtime OC service-role validation requires only a middleware change, no new
    Horizon calls, no schema changes.
 
-**Note on data source:** the Keycloak JWT `groups` claim already contains all
-OC service roles in the format `rns:roc:{service}::{tenant}:roles:{role}`. The
-PoC populates `oc_roles` via Horizon API calls, but once the JWT `groups` format
-is confirmed for Tenant Members, both the Horizon calls and the `oc_roles` writes
-can be replaced with direct JWT parsing — see the Design doc for details.
+**Note on data source:** the Keycloak JWT `groups` claim already contains the
+logged-in user's OC service roles in the format `rns:roc:{service}::{tenant}:roles:{role}`.
+The PoC populates `oc_roles` via Horizon API calls. Once the JWT `groups` format
+for Tenant Members is confirmed, the `fetchOCMemberTenants` Horizon call can be
+replaced with direct JWT parsing for the logged-in user's own data.
+
+The `GET /v0/tenants/{rns}/members` Horizon call still remains — it is needed
+to sync all OTHER members of a tenant, since the JWT only contains the
+currently authenticated user's data.
 
 ---
 

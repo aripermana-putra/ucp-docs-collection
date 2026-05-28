@@ -797,20 +797,41 @@ have a corresponding `rns:roc:iam::{tenant}:roles:{admin|member}` entry.
 
 ---
 
-### JWT-Based Sync (planned replacement for Horizon calls)
+### JWT-Based Sync (planned optimisation for logged-in user's own data)
 
-The `groups` claim makes it possible to replace all Horizon API calls in the
-login sync with direct JWT parsing. The redesigned sync:
+The `groups` claim can replace **one** of the two Horizon calls in the login
+sync: the call that fetches the logged-in user's own tenant memberships
+(`GET /v0/members/{email}/tenants`). The second call — fetching all OTHER
+members of a tenant (`GET /v0/tenants/{rns}/members`) — still requires Horizon
+because the JWT only contains the currently authenticated user's data. No other
+user's roles are encoded in someone else's token.
+
+**What JWT replaces:**
+
+| Current | Replacement |
+|---|---|
+| `GET /v0/members/{email}/tenants` | Parse `rns:roc:iam::{tenant}:roles:{role}` from JWT `groups` |
+| `oc_roles` service role data | Parse `rns:roc:{service}::{tenant}:roles:{role}` from JWT `groups` |
+
+**What still requires Horizon:**
+
+| Still needed | Why |
+|---|---|
+| `GET /v0/tenants/{rns}/members` | JWT only encodes the logged-in user — fetching all other members of a tenant requires an API call |
+
+The redesigned sync for the logged-in user's own data:
 
 ```
 1. Parse groups from JWT access token
 2. For each group matching rns:roc:iam::{tenant}:roles:{role}:
    a. Extract tenant slug and OC tenant role (admin or member)
-   b. Apply UCP role sync rules (same as current — admin→tenant-admin, member→preserve)
-   c. Collect all service roles for this tenant from other groups entries
+   b. Apply UCP role sync rules (admin→tenant-admin upgrade, member→preserve)
+   c. Collect all service roles for this tenant from other group entries
    d. UPSERT oc_roles with oc_tenant_role and oc_service_roles (JSONB)
-3. For each UCP role assignment not in any JWT group → revoke
+3. For each UCP role assignment not covered by JWT groups → revoke
 4. platform-admin rows ('*') never touched
+5. For each tenant the user is admin of: still call GET /v0/tenants/{rns}/members
+   to sync all other members' UCP data (no JWT available for other users)
 ```
 
 **Helper — parse groups from JWT:**
@@ -826,16 +847,13 @@ func parseOCGroupsFromJWT(groups []string) map[string]OCTenantFromJWT {
     result := map[string]OCTenantFromJWT{}
     for _, g := range groups {
         // rns:roc:{service}::{tenant-slug}:roles:{role}
-        parts := strings.SplitN(g, "::", 2) // ["rns:roc:{service}", "{tenant-slug}:roles:{role}"]
+        parts := strings.SplitN(g, "::", 2)
         if len(parts) != 2 { continue }
-        svcParts := strings.Split(parts[0], ":")         // ["rns","roc","{service}"]
-        roleParts := strings.SplitN(parts[1], ":roles:", 2) // ["{tenant-slug}", "{role}"]
+        svcParts  := strings.Split(parts[0], ":")
+        roleParts := strings.SplitN(parts[1], ":roles:", 2)
         if len(svcParts) < 3 || len(roleParts) != 2 { continue }
 
-        service    := svcParts[2]
-        tenantSlug := roleParts[0]
-        role       := roleParts[1]
-
+        service, tenantSlug, role := svcParts[2], roleParts[0], roleParts[1]
         entry := result[tenantSlug]
         entry.TenantSlug = tenantSlug
         if service == "iam" {
@@ -850,13 +868,9 @@ func parseOCGroupsFromJWT(groups []string) map[string]OCTenantFromJWT {
 }
 ```
 
-**Advantages over current Horizon-based sync:**
-- Zero external API calls on login — all data is in the token
-- Simpler code — no HTTP client, no error handling for network failures
-- Sync is atomic with the login — no goroutine needed
-- Service roles are parsed in the same pass, populating `oc_roles` naturallyThe current PoC uses Horizon calls because the JWT approach still has one open
-question (see below). Once the member `groups` format is confirmed, the
-Horizon calls should be replaced with JWT parsing.
+The current PoC uses Horizon for the first call too (for simplicity and because
+the JWT member format is unconfirmed — see open questions). Once confirmed,
+`fetchOCMemberTenants` can be removed and replaced with `parseOCGroupsFromJWT`.
 
 ---
 

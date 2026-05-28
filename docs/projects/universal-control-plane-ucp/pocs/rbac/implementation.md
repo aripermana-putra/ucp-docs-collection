@@ -217,13 +217,16 @@ The observed JWT `groups` claim for a Tenant Admin contains
 have `rns:roc:iam::{tenant}:roles:member`. This needs verification with a
 non-admin account.
 
-If confirmed, the entire login-triggered sync (currently using two Horizon API
-calls: `GET /v0/members/{email}/tenants` + `GET /v0/tenants/{rns}/members`)
-can be replaced with direct JWT `groups` parsing — zero external API calls,
-simpler code, and sync is atomic with the login rather than in a goroutine.
+If confirmed, `fetchOCMemberTenants` (the first Horizon call in the login sync)
+can be replaced with `parseOCGroupsFromJWT` — the logged-in user's own tenant
+membership, tenant role, and all service roles are read directly from the token.
+
+Note: `GET /v0/tenants/{rns}/members` (the second Horizon call) is still needed
+to sync OTHER members' data. The JWT only encodes the currently authenticated
+user — no other user's roles are available in it.
 
 See the Design doc (Keycloak JWT Structure — JWT-Based Sync) for the planned
-implementation once this is confirmed.
+implementation once the member `groups` format is confirmed.
 
 ---
 
