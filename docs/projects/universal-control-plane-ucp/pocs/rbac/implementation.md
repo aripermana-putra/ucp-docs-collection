@@ -101,7 +101,7 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 ### Out of Scope
 
 - **Keycloak configuration** — no changes to Keycloak; roles are owned entirely by UCP.
-- **OC role validation at request time** — UCP does not call Core Data on every API request to verify OC standing; consistency is maintained through seeding and periodic sync instead.
+- **OC role validation at request time** — UCP does not call Core Data on every API request to verify OC standing; consistency is maintained through the login-triggered sync instead.
 
 ---
 
@@ -152,7 +152,7 @@ environments as a separate dimension.
 
 ---
 
-### 2. Multiple cloud provider projects per tenant
+### 3. Multiple cloud provider projects per tenant
 
 The PoC operates on the assumption that one OC tenant maps to exactly
 one GCP project (or one project per public cloud provider). It is unclear
@@ -168,21 +168,20 @@ If multiple projects per tenant are required:
 
 ---
 
-### 3. Impact of OneCloud access revocation on UCP
+### 4. Impact of OneCloud access revocation on UCP
 
-**Partially addressed in Phase 3.** The periodic sync job detects OC membership
-removals and removes the corresponding UCP role assignments. However there is a
-window of up to the sync interval (default 15 min) during which a revoked OC
+**Partially addressed in Phase 3.** The login-triggered sync revokes UCP role
+assignments for users removed from OC. However there is a window — from when
+the OC change happens until the user next logs in — during which the revoked
 member retains their UCP access.
 
-Remaining open question: whether the sync interval is acceptable or whether
-near-realtime revocation requires a different approach (e.g. OC webhook
-integration if it becomes available, or a shorter polling interval for
-high-sensitivity tenants).
+Remaining open question: whether this login-gap is acceptable or whether
+near-realtime revocation requires the periodic sync (see deferred notes) or
+OC webhook integration if it becomes available.
 
 ---
 
-### 4. Service account credential lifecycle and key rotation
+### 5. Service account credential lifecycle and key rotation
 
 UCP stores GCP (and OC) service account credentials in Kubernetes Secrets
 (PoC) or GCP Secret Manager (production target). No key rotation mechanism
@@ -206,10 +205,10 @@ manual credential re-upload to resolve.
 
 ---
 
-### 5. OC role validation at request time vs sync-based consistency
+### 6. OC role validation at request time vs sync-based consistency
 
 A user could hold UCP `tenant-admin` but have been downgraded to `Tenant Member`
-in OC. The Phase 3 sync catches this within the polling interval, but during
+in OC. The login-triggered sync catches this on next login, but during
 that window the user retains elevated UCP access.
 
 Should UCP validate the user's current OC standing on every protected request
@@ -356,19 +355,20 @@ sequenceDiagram
     Component->>useRole: useRole()
     useRole->>useRole: user.isPlatformAdmin? → false<br/>role = user.roles["rns:roc:iam::clsd-ucp"] → "developer"
 
-    useRole-->>Component: {role: "developer", hasMinRole}
+    useRole-->>Component: {role: "developer", hasPermission}
 
     Note over Component: hasPermission("read")      → true  → list shown<br/>hasPermission("provision") → true  → Create button shown<br/>hasPermission("approve")   → false → Approve button hidden<br/>hasPermission("manage")    → false → Credentials menu hidden
 ```
 
 ---
 
-## API Sequence — RequireRole Check (create)
+## API Sequence — RequirePermission Check (create)
 
-`POST /api/v1/databases` (developer minimum, ?tenantId= present)
+`POST /api/v1/databases` (PermProvision required)
 
-`RequirePermission` calls `loadRoles` with the resolved tenant — **1 targeted DB call** fetches at most 2 role
-assignments and caches them in the request context.
+`POST` create requests carry `tenantId` in the request body, not the URL.
+The middleware cannot read it, so `loadRoles` falls back to a full scan.
+This is acceptable — creates are infrequent compared to reads.
 
 ```mermaid
 sequenceDiagram
@@ -380,30 +380,30 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant Handler as CreateDatabase
 
-    Browser->>Session: POST /api/v1/databases<br/>Cookie: session=...<br/>?tenantId=rns:roc:iam::clsd-ucp
+    Browser->>Session: POST /api/v1/databases<br/>Cookie: session=...<br/>Body: {name, tenantId: "rns:roc:iam::clsd-ucp", ...}
     Session->>Session: decrypt access_token → inject Principal{UserID, ...}
     Session->>Middleware: request with Principal in context
 
+    Note over Middleware: No ?tenantId= or {tenantSlug} — full scan
     Middleware->>DB: GetAllRolesForUser(Principal.UserID)
-    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "developer", ...}
-    Note over Middleware: cache stored in request context
+    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "developer"}
+    Note over Middleware: stored in request context
 
-    Middleware->>Middleware: roleFromMap(cache, "rns:roc:iam::clsd-ucp") → RoleDeveloper (1)<br/>RoleDeveloper (1) >= RoleDeveloper (1) → pass
+    Middleware->>Middleware: roleFromMap(roles, "") → max role = RoleDeveloper<br/>RolePermissions[RoleDeveloper] = PermRead|PermProvision<br/>Has(PermProvision)? → true → pass
 
-    Middleware->>Handler: inject RoleDeveloper + cache into context
+    Middleware->>Handler: inject RoleDeveloper into context
     Handler-->>Browser: 202 Accepted
-
-    note over Middleware: unknown (0) < developer (1) → 403<br/>tenant-admin (2) >= developer (1) → pass
 ```
 
 ---
 
-## API Sequence — RequireRole Check (delete with ownership)
+## API Sequence — RequirePermission Check (delete)
 
-`DELETE /api/v1/storage/my-bucket` (developer minimum, no ?tenantId=)
+`DELETE /api/v1/tenants/clsd-ucp/storage/my-bucket` (PermProvision required)
 
-Cache populated in middleware; ownership check in handler reads from cache —
-**1 DB call total** for the entire request.
+Slug is resolved to RNS (1 DB call) enabling a targeted role fetch (≤2 rows).
+Tenant ownership is enforced by the K8s label filter in the handler — no
+separate role check needed inside the handler.
 
 ```mermaid
 sequenceDiagram
@@ -413,30 +413,33 @@ sequenceDiagram
     participant Session as SessionMiddleware
     participant Middleware as RequirePermission(PermProvision)
     participant DB as PostgreSQL
+    participant K8s as Kubernetes
     participant Handler as DeleteStorageBucket
 
-    Browser->>Session: DELETE /api/v1/storage/my-bucket<br/>Cookie: session=... (no ?tenantId=)
+    Browser->>Session: DELETE /api/v1/tenants/clsd-ucp/storage/my-bucket<br/>Cookie: session=...
     Session->>Session: inject Principal
     Session->>Middleware: request with Principal in context
 
-    Middleware->>DB: GetAllRolesForUser(Principal.UserID)
-    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "developer", ...}
-    Note over Middleware: cache stored in request context
+    Middleware->>DB: resolveTenantIDBySlug("clsd-ucp")
+    DB-->>Middleware: "rns:roc:iam::clsd-ucp"
 
-    Middleware->>Middleware: roleFromMap(cache, "") → max role = RoleDeveloper<br/>RoleDeveloper >= RoleDeveloper → pass
+    Middleware->>DB: GetRolesForUserInTenant(Principal.UserID, "rns:roc:iam::clsd-ucp")
+    DB-->>Middleware: {"rns:roc:iam::clsd-ucp": "developer"}
+    Note over Middleware: stored in request context
 
-    Middleware->>Handler: request with cache in context
-    Handler->>Handler: read platform.ucp.io/tenant-id from XR annotation<br/>xrTenantID = "rns:roc:iam::clsd-ucp"
-    Handler->>Handler: resolveUserRole(r, xrTenantID) → reads cache (0 DB calls)<br/>roleFromMap(cache, "rns:roc:iam::clsd-ucp") = RoleDeveloper
-    Handler->>Handler: RoleDeveloper >= RoleDeveloper → authorized
-    Handler-->>Browser: 200 OK
+    Middleware->>Middleware: RolePermissions[RoleDeveloper] = PermRead|PermProvision<br/>Has(PermProvision)? → true → pass
+
+    Middleware->>Handler: request with RoleDeveloper in context
+    Handler->>K8s: LIST XObjectStorage<br/>FieldSelector: metadata.name=my-bucket<br/>LabelSelector: platform.ucp.io/tenant=rns-roc-iam--clsd-ucp
+    K8s-->>Handler: [{...}] or []
+    Handler-->>Browser: 200 OK or 404
 ```
 
 ---
 
 ## API Sequence — platform-admin Cross-Tenant Access
 
-`GET /api/v1/databases` (developer minimum, no ?tenantId=)
+`GET /api/v1/databases` (PermRead required, no ?tenantId=)
 
 ```mermaid
 sequenceDiagram
@@ -444,7 +447,7 @@ sequenceDiagram
 
     participant Browser
     participant Session as SessionMiddleware
-    participant Middleware as RequirePermission(PermProvision)
+    participant Middleware as RequirePermission(PermRead)
     participant DB as PostgreSQL
     participant Handler as ListDatabases
 
@@ -452,13 +455,14 @@ sequenceDiagram
     Session->>Session: decrypt access_token → inject Principal
     Session->>Middleware: request with Principal in context
 
+    Note over Middleware: No ?tenantId= — full scan
     Middleware->>DB: GetAllRolesForUser(Principal.UserID)
     DB-->>Middleware: {"*": "platform-admin"}
-    Note over Middleware: cache stored in request context
+    Note over Middleware: stored in request context
 
-    Middleware->>Middleware: roleFromMap(cache, "") → "*" key = platform-admin → RolePlatformAdmin (3)<br/>RolePlatformAdmin passes all permission checks → pass
+    Middleware->>Middleware: roleFromMap(roles, "") → "*" key = platform-admin → RolePlatformAdmin (3)<br/>RolePermissions[RolePlatformAdmin] has all perms → Has(PermRead)? → true → pass
 
-    Middleware->>Handler: request with RolePlatformAdmin + cache in context
+    Middleware->>Handler: request with RolePlatformAdmin in context
     Handler->>Handler: platform-admin bypasses tenant scope<br/>returns all tenants' resources
     Handler-->>Browser: 200 OK
 ```
