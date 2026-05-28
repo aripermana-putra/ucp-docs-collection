@@ -187,7 +187,7 @@ erDiagram
         TIMESTAMPTZ created_at
     }
 
-    oc_role_cache {
+    oc_roles {
         UUID user_id FK
         TEXT tenant_rns
         TEXT oc_tenant_role
@@ -199,7 +199,7 @@ erDiagram
     users ||--o{ sessions : "user_id"
     users ||--o{ audit_logs : "user_id"
     users ||--o{ tenant_role_assignments : "user_id"
-    users ||--o{ oc_role_cache : "user_id"
+    users ||--o{ oc_roles : "user_id"
 ```
 
 | Table | Origin | Modified by MCUCP-191 |
@@ -209,10 +209,10 @@ erDiagram
 | `sessions` | Pre-existing | No |
 | `audit_logs` | Pre-existing | No |
 | `tenant_role_assignments` | **Added by MCUCP-191** | — |
-| `oc_role_cache` | **Added by MCUCP-191** | — |
+| `oc_roles` | **Added by MCUCP-191** | — |
 
 No pre-existing tables were altered. MCUCP-191 adds `tenant_role_assignments`
-(UCP's own access control) and `oc_role_cache` (a read-through cache of OC
+(UCP's own access control) and `oc_roles` (a persistent mirror of OC
 role data populated during the login sync).
 
 `tenant_rns = '*'` in `tenant_role_assignments` denotes a platform-admin — a
@@ -232,7 +232,7 @@ CREATE TABLE tenant_role_assignments (
     PRIMARY KEY (user_id, tenant_rns)
 );
 
-CREATE TABLE oc_role_cache (
+CREATE TABLE oc_roles (
     user_id         UUID NOT NULL REFERENCES users(id),
     tenant_rns      TEXT NOT NULL,
     -- OC Level 1 tenant role: 'Tenant Admin' or 'Tenant Member'
@@ -249,7 +249,7 @@ CREATE TABLE oc_role_cache (
 drive all `RequirePermission` checks. `platform-admin` is stored with
 `tenant_rns = '*'`, not tied to any specific tenant.
 
-`oc_role_cache` is a read-through snapshot of OC data populated during the
+`oc_roles` is a persistent mirror of OC data populated during the
 login-triggered sync. It is not used for access control today. When Option 2
 (runtime OC role check) is enabled, the permission middleware reads from this
 table instead of (or in addition to) calling the Horizon API at request time.
@@ -631,7 +631,7 @@ periodic background job for the PoC.
 ```
 1. Call GET /v0/members/{email}/tenants (Horizon)
 2. For each tenant in the OC response:
-   a. UPSERT oc_role_cache with oc_tenant_role from OC response.
+   a. UPSERT oc_roles with oc_tenant_role from OC response.
       Optionally call GET /v0/tenants/{rns}/members/{email} to populate
       oc_service_roles if service-role data is available.
    b. Apply UCP role sync:
@@ -641,16 +641,16 @@ periodic background job for the PoC.
       - OC role = Tenant Member → never touch UCP role (preserve any
         manually-granted developer or tenant-admin role)
 3. For each tenant where user has a UCP role assignment but is no longer
-   present in the OC response → revoke the UCP role; delete from oc_role_cache
+   present in the OC response → revoke the UCP role; delete from oc_roles
 4. platform-admin rows (tenant_rns = '*') are never touched by the sync
 ```
 
 **Sync rules summary:**
 - OC Admin → auto-assign `tenant-admin` (upgrade only, never downgrade)
 - OC Member → preserve any existing manually-assigned UCP role
-- Removed from OC tenant → revoke UCP role; remove OC cache row
+- Removed from OC tenant → revoke UCP role; remove OC roles row
 - `platform-admin` → managed manually only, OC sync does not affect it
-- **OC roles always written to `oc_role_cache`** regardless of UCP role outcome
+- **OC roles always written to `oc_roles`** regardless of UCP role outcome
 
 **PoC gap:** if a user's OC role changes between logins, their UCP role
 reflects the stale state until their next login. A future periodic sync
@@ -766,9 +766,9 @@ For **OC resources**, two options exist (PM's open question):
   provisioned (e.g. DBaaS `operator` to provision a database). Requires a
   UCP-maintained OC-service-to-resource-type mapping.
 
-The `oc_role_cache` table stores both the OC tenant role and OC service roles
+The `oc_roles` table stores both the OC tenant role and OC service roles
 (JSONB) per user per tenant, populated on every login. Enabling Option 2
-requires only wiring the permission middleware to read from `oc_role_cache`
+requires only wiring the permission middleware to read from `oc_roles`
 at provisioning time — no additional data collection or schema changes needed.
 
 For **public cloud resources (GCP and future providers)**, there is no
