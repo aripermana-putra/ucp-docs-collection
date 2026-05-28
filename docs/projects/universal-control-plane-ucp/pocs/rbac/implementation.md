@@ -59,7 +59,7 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 | Tenant registration endpoint `POST /api/v1/tenants/register` | `tenant_handler.go` | Deployed |
 | `oc_roles` DB table — stores OC tenant role + service roles (JSONB) per user per tenant | `db/` | Deployed |
 | DB methods — `UpsertOCRoles`, `DeleteOCRoles`, `GetOCRolesForUser` | `db/roles.go` | Deployed |
-| Login-triggered OC sync in `CallbackHandler` — UPSERT `oc_roles`, auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted UCP roles (currently Horizon-based; planned replacement: parse JWT `groups` directly — see open question #6) | `bff_auth.go` | Deployed |
+| Login-triggered OC sync in `CallbackHandler` — UPSERT `oc_roles`, auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted UCP roles (JWT-based for logged-in user (parse groups from access token); Horizon still used for other tenant members) | `bff_auth.go` | Deployed |
 | `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Deployed |
 | Tenant page — register flow + member picker from Horizon for role assignment | frontend | Not deployed |
 | Onboarding landing page — 4-state tenant rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) | frontend | Not deployed |
