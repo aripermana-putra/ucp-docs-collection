@@ -543,6 +543,11 @@ api.Handle("/settings/credentials", server.requirePermHandler(authpkg.PermManage
 
 // Platform-wide operations — PermPlatform
 api.Handle("/settings/credentials/all", server.requirePermHandler(authpkg.PermPlatform, server.ListAllCredentials)).Methods("GET")
+
+// Role management — PermManage (slug resolved to RNS inside handler)
+api.Handle("/admin/tenants/{tenantSlug}/roles",          server.requirePermHandler(authpkg.PermManage, server.ListRoleAssignments)).Methods("GET")
+api.Handle("/admin/tenants/{tenantSlug}/roles",          server.requirePermHandler(authpkg.PermManage, server.AssignRole)).Methods("POST")
+api.Handle("/admin/tenants/{tenantSlug}/roles/{userID}", server.requirePermHandler(authpkg.PermManage, server.RevokeRole)).Methods("DELETE")
 ```
 
 ---

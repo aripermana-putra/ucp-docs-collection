@@ -61,9 +61,9 @@ operations and `platform-admin` for cross-tenant operations:
 
 | Endpoint | Method | Minimum role | Description |
 |---|---|---|---|
-| `/api/v1/admin/tenants/{tenantRNS}/roles` | GET | `tenant-admin` | List role assignments for a tenant |
-| `/api/v1/admin/tenants/{tenantRNS}/roles` | POST | `tenant-admin` | Assign a role to a user |
-| `/api/v1/admin/tenants/{tenantRNS}/roles/{userID}` | DELETE | `tenant-admin` | Remove a role assignment |
+| `/api/v1/admin/tenants/{tenantSlug}/roles` | GET | `tenant-admin` | List role assignments for a tenant |
+| `/api/v1/admin/tenants/{tenantSlug}/roles` | POST | `tenant-admin` | Assign a role to a user |
+| `/api/v1/admin/tenants/{tenantSlug}/roles/{userID}` | DELETE | `tenant-admin` | Remove a role assignment |
 
 `platform-admin` can access these endpoints across all tenants regardless of
 which tenant is in scope.
@@ -195,9 +195,9 @@ the UI. The role management endpoints are gated behind `tenant-admin`:
 
 | Endpoint | Method | Minimum permission | Description |
 |---|---|---|---|
-| `/api/v1/admin/tenants/{tenantRNS}/roles` | GET | `manage` | List role assignments for a tenant |
-| `/api/v1/admin/tenants/{tenantRNS}/roles` | POST | `manage` | Assign a role to a user |
-| `/api/v1/admin/tenants/{tenantRNS}/roles/{userID}` | DELETE | `manage` | Remove a role assignment |
+| `/api/v1/admin/tenants/{tenantSlug}/roles` | GET | `manage` | List role assignments for a tenant |
+| `/api/v1/admin/tenants/{tenantSlug}/roles` | POST | `manage` | Assign a role to a user |
+| `/api/v1/admin/tenants/{tenantSlug}/roles/{userID}` | DELETE | `manage` | Remove a role assignment |
 
 The role management UI presents the OC tenant member list fetched from
 Horizon, so a `tenant-admin` can assign roles by selecting from the list
