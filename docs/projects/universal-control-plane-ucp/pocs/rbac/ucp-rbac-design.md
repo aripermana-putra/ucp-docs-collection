@@ -351,12 +351,19 @@ func (s *APIServer) resolveUserRole(r *http.Request, tenantID string) (Role, err
 
 ## Admin API
 
-Role assignments are managed via three endpoints, all gated behind
-`RequireRole(RoleTenantAdmin)`. `platform-admin` passes all role checks
-automatically.
+The role management API has two access tiers:
 
+**Open to all authenticated users:**
 ```go
-// rbac_handler.go
+func (s *APIServer) ListTenantMembers(w http.ResponseWriter, r *http.Request)
+// GET /admin/tenants/{tenantSlug}/members
+// Returns all OC-synced members with their OC role and current UCP role.
+// Any logged-in user can view — no UCP role required.
+// Sourced from oc_roles table (no live Horizon call).
+```
+
+**Requires PermManage (tenant-admin or platform-admin):**
+```go
 func (s *APIServer) ListRoleAssignments(w http.ResponseWriter, r *http.Request)
 func (s *APIServer) AssignRole(w http.ResponseWriter, r *http.Request)
 func (s *APIServer) RevokeRole(w http.ResponseWriter, r *http.Request)
@@ -578,6 +585,9 @@ api.Handle("/settings/credentials", server.requirePermHandler(authpkg.PermManage
 
 // Platform-wide operations — PermPlatform
 api.Handle("/settings/credentials/all", server.requirePermHandler(authpkg.PermPlatform, server.ListAllCredentials)).Methods("GET")
+
+// Member list — open to all authenticated users (no permission gate)
+api.HandleFunc("/admin/tenants/{tenantSlug}/members", server.ListTenantMembers).Methods("GET")
 
 // Role management — PermManage (slug resolved to RNS inside handler)
 api.Handle("/admin/tenants/{tenantSlug}/roles",          server.requirePermHandler(authpkg.PermManage, server.ListRoleAssignments)).Methods("GET")

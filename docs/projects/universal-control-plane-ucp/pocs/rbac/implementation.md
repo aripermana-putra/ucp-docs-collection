@@ -46,7 +46,9 @@ parent_page_id: "../rbac.md"
 | `parseOCGroupsFromJWT` — derives tenant list + service roles from JWT `groups` claim | `bff_auth.go` | Deployed |
 | `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Deployed |
 | Tenant page — 4-state rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) + inline role management | `TenantInfo.jsx`, frontend | Deployed |
-| Member picker — GET /admin/tenants/{slug}/members returns OC-synced member list; role management shows all members with assign/revoke inline | `TenantInfo.jsx`, `rbac_handler.go`, `db/roles.go` | Deployed |
+| `GetTenantMembers` DB method — oc_roles ⋈ users LEFT JOIN tenant_role_assignments | `db/roles.go` | Deployed |
+| `GET /api/v1/admin/tenants/{slug}/members` — open to all authenticated users; returns member list with OC role + UCP role | `rbac_handler.go` | Deployed |
+| Member list in tenant page — read-only for all users (State A + B); assign/revoke actions visible only for tenant-admin | `TenantInfo.jsx` | Deployed |
 | ~~Background sync job~~ | — | Deferred — notes only (login sync is sufficient for PoC) |
 
 ---
@@ -68,7 +70,7 @@ parent_page_id: "../rbac.md"
 - **`oc_roles` table** — populated on every login with each user's OC tenant role and service roles (JSONB). Not used for access control today; wired up for [Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles) (runtime OC service-role check) when needed
 - **Login-triggered OC sync** — on every OIDC callback, UCP parses the JWT `groups` claim for the logged-in user's own tenant membership and service roles (zero Horizon calls for own data), then calls `GET /v0/tenants/{rns}/members` to sync all other members of each tenant. UPSERTs `oc_roles`, auto-assigns `tenant-admin` for OC Admins, preserves manually-granted UCP roles for OC Members, revokes for removed members
 - **`GET /api/v1/me/tenants`** — returns the user's OC tenants enriched with UCP registration status, UCP role, and tenant-admin contact info (name + email) for tenants where the user has no role or the tenant is unregistered
-- **Tenant page** — 4-state rendering per tenant: registered+role / registered+no-role (contact admin) / unregistered+OC-admin (register action) / unregistered+OC-member (contact admin). Inline role management for tenant-admins. OC member picker deployed — sources from locally-synced oc_roles table (no live Horizon call at assignment time).
+- **Tenant page** — 4-state rendering per tenant. Member list (`GET /admin/tenants/{slug}/members`) visible to all authenticated users in both State A (has role) and State B (no role) — read-only for non-admins, assign/revoke actions for tenant-admins only. Sources from locally-synced `oc_roles` table — no live Horizon call at view time.
 
 - **Periodic sync** — deferred, notes only; login sync is sufficient for PoC
 
@@ -87,10 +89,11 @@ parent_page_id: "../rbac.md"
 
 On every login, the sync fetches all members of every tenant the logged-in
 user belongs to (`GET /v0/tenants/{rns}/members`) and updates UCP's local
-data. The role management UI shows this locally-synced member list. A
-tenant-admin assigns roles by picking from that list — only OC Tenant Members
-of the tenant appear, so non-members cannot be assigned a role through the
-normal UI flow.
+data. The member list (`GET /api/v1/admin/tenants/{slug}/members`) is open to
+all authenticated users — any tenant member can see who else is in the tenant
+and their UCP role. Only tenant-admins see assign/revoke actions. Non-members
+cannot be assigned a role through the normal UI flow since only OC-synced
+members appear in the list.
 
 `AssignRole` itself does not make a live Horizon call; it relies on the
 member already having a UCP user record (created on first OIDC login).
@@ -230,6 +233,7 @@ members of a tenant. The JWT only encodes the currently authenticated user.
 | `/api/v1/settings/credentials/{provider}` | DELETE | `tenant-admin` | Remove a provider's credentials for the tenant |
 | `/api/v1/settings/credentials/roc` | GET, POST | `tenant-admin` | Read or configure ROC (Omnia) credentials for the tenant |
 | `/api/v1/settings/credentials/all` | GET | `platform-admin` | List all credentials across all tenants |
+| `/api/v1/admin/tenants/{tenantSlug}/members` | GET | — (any authenticated user) | List OC-synced members with their UCP role |
 | `/api/v1/admin/tenants/{tenantSlug}/roles` | GET | `tenant-admin` | List role assignments for a tenant |
 | `/api/v1/admin/tenants/{tenantSlug}/roles` | POST | `tenant-admin` | Assign a role to a user within a tenant |
 | `/api/v1/admin/tenants/{tenantSlug}/roles/{userID}` | DELETE | `tenant-admin` | Revoke a user's role within a tenant |
@@ -272,6 +276,7 @@ check fails.
 | Approve button | Workflows page | `tenant-admin` |
 | Reject button | Workflows page | `tenant-admin` |
 | Upload credentials | Settings → Credentials | `tenant-admin` |
+| View member list | Tenant page (inline) | — (any authenticated user) |
 | Assign / revoke role | Tenant page (inline) | `tenant-admin` |
 
 ---

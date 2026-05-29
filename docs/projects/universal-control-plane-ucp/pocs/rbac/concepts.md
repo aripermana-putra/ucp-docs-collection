@@ -201,10 +201,13 @@ the UI. The role management endpoints are gated behind `tenant-admin`:
 
 | Endpoint | Method | Minimum permission | Description |
 |---|---|---|---|
+| `/api/v1/admin/tenants/{tenantSlug}/members` | GET | — (any authenticated) | List OC-synced members with OC role + UCP role |
 | `/api/v1/admin/tenants/{tenantSlug}/roles` | GET | `manage` | List role assignments for a tenant |
 | `/api/v1/admin/tenants/{tenantSlug}/roles` | POST | `manage` | Assign a role to a user |
 | `/api/v1/admin/tenants/{tenantSlug}/roles/{userID}` | DELETE | `manage` | Remove a role assignment |
 
-The role management UI presents the OC tenant member list fetched from
-Horizon, so a `tenant-admin` can assign roles by selecting from the list
-rather than typing email addresses manually.
+The member list endpoint is open to all authenticated users — any tenant
+member can see who else is in the tenant and their current UCP role.
+The assign/revoke actions are only shown to users with the `manage` permission
+(`tenant-admin` or `platform-admin`). The list is sourced from the locally-synced
+`oc_roles` table — no live Horizon call at view time.
