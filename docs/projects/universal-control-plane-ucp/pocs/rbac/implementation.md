@@ -519,6 +519,75 @@ sequenceDiagram
 
 ---
 
+## API Sequence — Login Sync (Tenant + Member Synchronization)
+
+`POST /auth/callback` (OIDC callback after Keycloak login)
+
+The sync runs **synchronously** before the redirect response. All data is ready
+by the time the browser loads the frontend.
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    participant Browser
+    participant BFF as API Server<br/>(CallbackHandler)
+    participant Keycloak
+    participant CoreData as Horizon Core Data API
+    participant DB as PostgreSQL
+
+    Browser->>BFF: GET /auth/callback?code=...&state=...
+    BFF->>Keycloak: Exchange code for tokens
+    Keycloak-->>BFF: {access_token (JWT), id_token, refresh_token}
+
+    BFF->>BFF: UpsertUserOnLogin → create/update users record
+
+    Note over BFF: seedOwnRolesFromJWT (synchronous, fast — no network calls)
+    BFF->>BFF: ParseUnverified(access_token)<br/>parseOCGroupsFromJWT(groups)<br/>→ [{rns, role="Tenant Admin", serviceRoles}]
+    BFF->>DB: UpsertOCRoles(userID, rns, "Tenant Admin", serviceRoles)
+    BFF->>DB: IsTenantRegistered(rns) → true
+    BFF->>DB: AssignTenantRole(userID, rns, "tenant-admin")
+
+    Note over BFF: syncOCRolesOnLogin (synchronous, Horizon calls)
+    loop for each tenant from JWT groups
+        BFF->>CoreData: GET /v0/tenants/{rns}<br/>Authorization: Bearer access_token
+        CoreData-->>BFF: {admins: [{email, name, type}]}
+
+        BFF->>CoreData: GET /v0/tenants/{rns}/members<br/>Authorization: Bearer access_token
+        CoreData-->>BFF: {items: [{email, name, type}]}
+
+        BFF->>BFF: Derive oc_role: email in admins[] → "Tenant Admin"<br/>else → "Tenant Member"
+
+        loop for each member
+            BFF->>DB: UpsertTenantMember(rns, email, name, oc_role, member_type)
+            Note over DB: oc_tenant_members — ALL members, no FK to users
+
+            BFF->>DB: FindUserByEmail(email)
+            alt user has UCP account
+                DB-->>BFF: User record
+                BFF->>DB: UpsertOCRoles(userID, rns, oc_role, svcRoles)
+                BFF->>DB: IsTenantRegistered(rns) → if true + OC Admin
+                BFF->>DB: AssignTenantRole(userID, rns, "tenant-admin")
+            else not logged in to UCP yet
+                DB-->>BFF: nil — skip oc_roles + role assignment
+            end
+        end
+
+        BFF->>DB: Revoke roles for members removed from OC
+    end
+
+    BFF->>DB: CreateSession(encryptedTokens)
+    BFF-->>Browser: 302 Redirect → /
+```
+
+**Key points:**
+- JWT `groups` claim is parsed locally (zero network calls) to get the logged-in user's own tenant memberships and roles
+- Horizon `GET /v0/tenants/{rns}` provides the admins list — used to derive `oc_role` because the `/members` endpoint does not return a reliable role field
+- `oc_tenant_members` stores ALL Horizon members including those without UCP accounts
+- `oc_roles` and `tenant_role_assignments` only updated for members with existing UCP user records
+
+---
+
 ## Verification
 
 ### developer blocked from approve and credentials
