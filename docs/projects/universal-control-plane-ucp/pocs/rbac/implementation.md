@@ -46,7 +46,7 @@ parent_page_id: "../rbac.md"
 | `parseOCGroupsFromJWT` — derives tenant list + service roles from JWT `groups` claim | `bff_auth.go` | Deployed |
 | `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Deployed |
 | Tenant page — 4-state rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) + inline role management | `TenantInfo.jsx`, frontend | Deployed |
-| Member picker from Horizon for role assignment in tenant page | frontend | Not deployed |
+| Member picker — GET /admin/tenants/{slug}/members returns OC-synced member list; role management shows all members with assign/revoke inline | `TenantInfo.jsx`, `rbac_handler.go`, `db/roles.go` | Deployed |
 | ~~Background sync job~~ | — | Deferred — notes only (login sync is sufficient for PoC) |
 
 ---
@@ -68,7 +68,7 @@ parent_page_id: "../rbac.md"
 - **`oc_roles` table** — populated on every login with each user's OC tenant role and service roles (JSONB). Not used for access control today; wired up for [Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles) (runtime OC service-role check) when needed
 - **Login-triggered OC sync** — on every OIDC callback, UCP parses the JWT `groups` claim for the logged-in user's own tenant membership and service roles (zero Horizon calls for own data), then calls `GET /v0/tenants/{rns}/members` to sync all other members of each tenant. UPSERTs `oc_roles`, auto-assigns `tenant-admin` for OC Admins, preserves manually-granted UCP roles for OC Members, revokes for removed members
 - **`GET /api/v1/me/tenants`** — returns the user's OC tenants enriched with UCP registration status, UCP role, and tenant-admin contact info (name + email) for tenants where the user has no role or the tenant is unregistered
-- **Tenant page** — 4-state rendering per tenant: registered+role / registered+no-role (contact admin) / unregistered+OC-admin (register action) / unregistered+OC-member (contact admin). Inline role management for tenant-admins. OC member picker from Horizon for role assignment is not yet deployed.
+- **Tenant page** — 4-state rendering per tenant: registered+role / registered+no-role (contact admin) / unregistered+OC-admin (register action) / unregistered+OC-member (contact admin). Inline role management for tenant-admins. OC member picker deployed — sources from locally-synced oc_roles table (no live Horizon call at assignment time).
 
 - **Periodic sync** — deferred, notes only; login sync is sufficient for PoC
 
