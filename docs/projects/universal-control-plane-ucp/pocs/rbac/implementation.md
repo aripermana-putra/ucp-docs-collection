@@ -199,26 +199,37 @@ members of a tenant. The JWT only encodes the currently authenticated user.
 
 ---
 
-### 7. Pre-assigning UCP roles to OC Tenant Admins before first login
+### 7. Should OC tenant members share the `users` table or stay separate?
 
-When a tenant is registered, `RegisterTenant` assigns `tenant-admin` to all OC
-Tenant Admins who already have a UCP user record (i.e. have logged in at least
-once). Those who haven't logged in yet cannot be assigned because `tenant_role_assignments`
-has a FK to `users(id)` — there is no user record to reference.
+Currently UCP uses two tables for people:
 
-Those admins are correctly handled on their **first login** — `seedOwnRolesFromJWT`
-checks `IsTenantRegistered` and assigns `tenant-admin` from the JWT groups claim.
-The gap is the window between tenant registration and those admins' first login.
+- **`users`** — only people who have logged in to UCP at least once (JIT via OIDC callback). Has `idp_id`, `external_id`, `last_login_at`.
+- **`oc_tenant_members`** — ALL Horizon members (email, display_name, oc_role, member_type). No FK to `users`. Populated from the login sync regardless of UCP login status.
 
-**Two design options:**
+The gap this creates: role assignments (`tenant_role_assignments`) have a FK to `users(id)`, so OC members who haven't logged in can't be pre-assigned a UCP role. They get it automatically on their first login, but there's a window where they appear in the member list with no UCP role.
 
-| Option | Description | Trade-off |
-|---|---|---|
-| **Pending table** | `pending_role_assignments(email, tenant_rns, role)` — no FK to users; applied and deleted on first login | Extra table, extra query on login |
-| **Pre-provision users** | Insert into `users` with `last_login_at = null` as a "pre-provisioned" flag; apply role immediately | Requires `idp_id` + `external_id` which UCP doesn't have before OIDC; changes JIT provisioning assumptions |
+**Option A — Keep separate (current approach)**
 
-The PoC defers this — OC Tenant Admins who haven't logged in get `tenant-admin` on
-first login. Pre-provisioning is a Phase 4 improvement.
+| Aspect | Detail |
+|---|---|
+| Simplicity | Two tables, clear separation between "OC member" and "UCP user" |
+| Role assignment | Can only assign to members who have logged in |
+| Table size | `users` stays lean — only active UCP users |
+| Pre-login gap | OC Tenant Admins get role on first login, not at registration |
+
+**Option B — Merge into `users` with an activity flag**
+
+OC members are pre-provisioned into `users` with `last_login_at = null` (or an `is_active` flag). `tenant_role_assignments` can reference them immediately.
+
+| Aspect | Detail |
+|---|---|
+| Simplicity | One table, simpler FK model |
+| Role assignment | Can pre-assign roles at registration for all OC admins |
+| Table size | `users` grows with all OC members even if they never use UCP |
+| `idp_id`/`external_id` | Unknown before OIDC — require placeholder values or nullable columns |
+| JIT provisioning | Must be updated on first login to fill in Keycloak identity fields |
+
+The PoC uses Option A. Option B would eliminate `oc_tenant_members` and the pre-login gap but requires schema changes to `users` and a two-phase provisioning model.
 
 ---
 
