@@ -23,7 +23,7 @@ parent_page_id: "../rbac.md"
 | `resolveUserRole()` with per-request in-memory store | `rbac_handler.go` | Deployed |
 | `RequirePermission(perm)` middleware — resolves tenant from `?tenantId=` or `{tenantSlug}`, bitmask check | `rbac_handler.go` | Deployed |
 | `requirePermHandler` per-route permission wrapper | `rbac_handler.go` | Deployed |
-| Admin API — `ListRoleAssignments`, `AssignRole`, `RevokeRole` (slug-based paths) | `rbac_handler.go` | Deployed |
+| Admin API — `ListRoleAssignments`, `AssignRole`, `RevokeRole` (slug-based paths; self-revoke blocked with 403) | `rbac_handler.go` | Deployed |
 | All routes updated to `requirePermHandler(PermXxx, handler)` | `main.go` | Deployed |
 | Remove `isUserTenantAdmin()` from all handlers | all resource + settings handlers | Deployed |
 | `/auth/me` role extension | `bff_auth.go` | Deployed |
@@ -39,16 +39,15 @@ parent_page_id: "../rbac.md"
 |---|---|---|
 | `ucp_registered_tenants` DB table | `db/` | Deployed |
 | DB methods — `RegisterTenant`, `IsTenantRegistered`, `GetRegisteredTenants` | `db/registered_tenants.go` | Deployed |
-| Tenant registration endpoint `POST /api/v1/tenants/register` | `tenant_handler.go` | Deployed |
-| `oc_roles` DB table — stores OC tenant role + service roles (JSONB) per user per tenant | `db/` | Deployed |
-| DB methods — `UpsertOCRoles`, `DeleteOCRoles`, `GetOCRolesForUser` | `db/roles.go` | Deployed |
-| Login-triggered OC sync in `CallbackHandler` — parses JWT `groups` for logged-in user's own data (zero Horizon calls); calls `GET /v0/tenants/{rns}/members` for other members; UPSERTs `oc_roles`, auto-assigns `tenant-admin` for OC Admins, revokes for removed members | `bff_auth.go` | Deployed |
+| Tenant registration endpoint `POST /api/v1/tenants/register` — open to any authenticated OC Tenant Admin (verified via `oc_tenant_members`); auto-assigns `tenant-admin` to ALL OC Tenant Admins of the tenant | `tenant_handler.go` | Deployed |
+| `oc_roles` DB table — stores OC tenant role + service roles (JSONB) per user per tenant (requires users FK) | `db/` | Deployed |
+| `oc_tenant_members` DB table — stores ALL Horizon members by email/display_name/oc_role, no FK to users; source for member picker | `db/` | Deployed |
+| DB methods — `UpsertOCRoles`, `DeleteOCRoles`, `GetOCRolesForUser`, `UpsertTenantMember`, `DeleteTenantMember`, `GetTenantAdmins`, `GetTenantMembers` | `db/roles.go` | Deployed |
+| Login-triggered OC sync in `CallbackHandler` — **synchronous** (no goroutine). Parses JWT for own data; calls `GET /v0/tenants/{rns}` (admins list) + `GET /v0/tenants/{rns}/members` to derive roles; writes ALL members to `oc_tenant_members`; writes UCP users to `oc_roles`; assigns `tenant-admin` for registered tenants | `bff_auth.go` | Deployed |
 | `parseOCGroupsFromJWT` — derives tenant list + service roles from JWT `groups` claim | `bff_auth.go` | Deployed |
-| `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Deployed |
-| Tenant page — 4-state rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) + inline role management | `TenantInfo.jsx`, frontend | Deployed |
-| `GetTenantMembers` DB method — oc_roles ⋈ users LEFT JOIN tenant_role_assignments | `db/roles.go` | Deployed |
-| `GET /api/v1/admin/tenants/{slug}/members` — open to all authenticated users; returns member list with OC role + UCP role | `rbac_handler.go` | Deployed |
-| Member list in tenant page — read-only for all users (State A + B); assign/revoke actions visible only for tenant-admin | `TenantInfo.jsx` | Deployed |
+| `GET /api/v1/me/tenants` — reads from `oc_roles` + `ucp_registered_tenants` + `tenant_role_assignments`; admin contacts from `oc_tenant_members`; zero Horizon calls | `tenant_handler.go` | Deployed |
+| Tenant page — 4-state rendering + inline role management; Revoke button hidden for current user's own row | `TenantInfo.jsx`, frontend | Deployed |
+| `GET /api/v1/admin/tenants/{slug}/members` — open to all authenticated users; reads from `oc_tenant_members` LEFT JOIN users + `tenant_role_assignments` | `rbac_handler.go` | Deployed |
 | ~~Background sync job~~ | — | Deferred — notes only (login sync is sufficient for PoC) |
 
 ---
@@ -68,7 +67,8 @@ parent_page_id: "../rbac.md"
 **Phase 3 — Tenant onboarding + login-triggered sync**
 - **Tenant registration** — `ucp_registered_tenants` table; a tenant must be explicitly registered by an OC Tenant Admin before UCP operations are allowed
 - **`oc_roles` table** — populated on every login with each user's OC tenant role and service roles (JSONB). Not used for access control today; wired up for [Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles) (runtime OC service-role check) when needed
-- **Login-triggered OC sync** — on every OIDC callback, UCP parses the JWT `groups` claim for the logged-in user's own tenant membership and service roles (zero Horizon calls for own data), then calls `GET /v0/tenants/{rns}/members` to sync all other members of each tenant. UPSERTs `oc_roles`, auto-assigns `tenant-admin` for OC Admins, preserves manually-granted UCP roles for OC Members, revokes for removed members
+- **Login-triggered OC sync** — runs **synchronously** in the OIDC callback (no goroutine) so all data is ready before the browser redirects. Parses JWT groups for own data; calls `GET /v0/tenants/{rns}` (admins list) + `GET /v0/tenants/{rns}/members` for all members. Writes ALL members to `oc_tenant_members` (no UCP account required). OC role is derived by cross-referencing: email in `admins[]` = "Tenant Admin", else "Tenant Member". UPSERTs `oc_roles` for members with UCP accounts. Assigns `tenant-admin` only for registered tenants. Revokes for removed members.
+- **Tenant registration** — open to any authenticated OC Tenant Admin (verified via `oc_tenant_members`, no UCP role required). Auto-assigns `tenant-admin` to ALL OC Tenant Admins of the tenant found in `oc_tenant_members` — not just the registrant.
 - **`GET /api/v1/me/tenants`** — returns the user's OC tenants enriched with UCP registration status, UCP role, and tenant-admin contact info (name + email) for tenants where the user has no role or the tenant is unregistered
 - **Tenant page** — 4-state rendering per tenant. Member list (`GET /admin/tenants/{slug}/members`) visible to all authenticated users in both State A (has role) and State B (no role) — read-only for non-admins, assign/revoke actions for tenant-admins only. Sources from locally-synced `oc_roles` table — no live Horizon call at view time.
 
@@ -196,6 +196,23 @@ is implemented but not yet verified with a non-admin test account.
 
 `GET /v0/tenants/{rns}/members` (Horizon) remains in use for syncing other
 members of a tenant. The JWT only encodes the currently authenticated user.
+
+---
+
+### 7. Can a tenant-admin demote another OC Tenant Admin?
+
+A UCP `tenant-admin` can revoke another user's UCP role via `DELETE /admin/tenants/{slug}/roles/{userID}`. However, if the target user is an OC Tenant Admin and the tenant is registered, the login sync will re-assign them `tenant-admin` on their next login.
+
+This means:
+- Revoking a UCP role from an OC Tenant Admin is **transient** — it is restored on next login
+- There is no mechanism in the PoC to permanently suppress a UCP role that the sync would re-grant
+
+Open questions:
+- Should `RevokeRole` block revocation of other OC Tenant Admins (since it would be restored anyway)?
+- Or should revocation be permanent and the sync respect a "manually revoked" flag?
+- Should a `tenant-admin` be able to demote another `tenant-admin` at all, or is that a `platform-admin`-only operation?
+
+The PoC does not restrict this — a `tenant-admin` can revoke any other user's role (except their own), but the sync will restore OC Tenant Admins on next login.
 
 ---
 

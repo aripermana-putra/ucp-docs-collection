@@ -183,6 +183,14 @@ erDiagram
         TIMESTAMPTZ registered_at
     }
 
+    oc_tenant_members {
+        TEXT tenant_rns
+        TEXT email
+        TEXT display_name
+        TEXT oc_role
+        TIMESTAMPTZ synced_at
+    }
+
     identity_providers ||--o{ users : "idp_id"
     users ||--o{ sessions : "user_id"
     users ||--o{ audit_logs : "user_id"
@@ -200,12 +208,13 @@ erDiagram
 | `tenant_role_assignments` | **Added by MCUCP-191** | — |
 | `oc_roles` | **Added by MCUCP-191** | — |
 | `ucp_registered_tenants` | **Added by MCUCP-191** | — |
+| `oc_tenant_members` | **Added by MCUCP-191** | — |
 
-No pre-existing tables were altered. MCUCP-191 adds three new tables:
-`tenant_role_assignments` (UCP's own access control), `oc_roles` (a
-persistent mirror of OC role data populated during the login sync), and
-`ucp_registered_tenants` (the registry of OC tenants explicitly onboarded
-into UCP).
+No pre-existing tables were altered. MCUCP-191 adds four new tables:
+- `tenant_role_assignments` — UCP's own access control
+- `oc_roles` — OC role mirror per user (requires users FK; only for logged-in members)
+- `ucp_registered_tenants` — registry of OC tenants onboarded into UCP
+- `oc_tenant_members` — ALL Horizon members by email, **no FK to users**; source for the member picker, works for members who haven't logged in yet
 
 `tenant_rns = '*'` in `tenant_role_assignments` denotes a platform-admin — a
 cross-tenant role not bound to any specific tenant RNS.
@@ -367,6 +376,7 @@ func (s *APIServer) ListTenantMembers(w http.ResponseWriter, r *http.Request)
 func (s *APIServer) ListRoleAssignments(w http.ResponseWriter, r *http.Request)
 func (s *APIServer) AssignRole(w http.ResponseWriter, r *http.Request)
 func (s *APIServer) RevokeRole(w http.ResponseWriter, r *http.Request)
+// Returns 403 if the caller attempts to revoke their own role (self-revoke blocked).
 ```
 
 `AssignRole` request body:
@@ -643,13 +653,14 @@ CREATE TABLE ucp_registered_tenants (
 ```
 POST /api/v1/tenants/register
 Body: { "tenantRNS": "rns:roc:iam::coupon-team" }
-Requires: caller is OC Tenant Admin (verified via Core Data GET /v0/tenants/{rns})
+Requires: caller is OC Tenant Admin (verified via oc_tenant_members table — no UCP role required)
 ```
 
 On successful registration:
 1. Insert row into `ucp_registered_tenants`
-2. Fetch all OC members of the tenant via `GET /v0/tenants/{tenantRNS}/members`
-3. Seed `tenant_role_assignments` for each member (see OC → UCP role mapping below)
+2. Query `oc_tenant_members` for all users with `oc_role = 'Tenant Admin'` for this tenant
+3. For each OC Tenant Admin who has a UCP user record: assign `tenant-admin` in `tenant_role_assignments`
+   (Members who haven't logged in yet will be assigned on their next login sync)
 
 ---
 
