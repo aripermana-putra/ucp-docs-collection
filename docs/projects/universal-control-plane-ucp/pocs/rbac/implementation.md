@@ -199,7 +199,30 @@ members of a tenant. The JWT only encodes the currently authenticated user.
 
 ---
 
-### 7. How should non-user member types be handled?
+### 7. Pre-assigning UCP roles to OC Tenant Admins before first login
+
+When a tenant is registered, `RegisterTenant` assigns `tenant-admin` to all OC
+Tenant Admins who already have a UCP user record (i.e. have logged in at least
+once). Those who haven't logged in yet cannot be assigned because `tenant_role_assignments`
+has a FK to `users(id)` — there is no user record to reference.
+
+Those admins are correctly handled on their **first login** — `seedOwnRolesFromJWT`
+checks `IsTenantRegistered` and assigns `tenant-admin` from the JWT groups claim.
+The gap is the window between tenant registration and those admins' first login.
+
+**Two design options:**
+
+| Option | Description | Trade-off |
+|---|---|---|
+| **Pending table** | `pending_role_assignments(email, tenant_rns, role)` — no FK to users; applied and deleted on first login | Extra table, extra query on login |
+| **Pre-provision users** | Insert into `users` with `last_login_at = null` as a "pre-provisioned" flag; apply role immediately | Requires `idp_id` + `external_id` which UCP doesn't have before OIDC; changes JIT provisioning assumptions |
+
+The PoC defers this — OC Tenant Admins who haven't logged in get `tenant-admin` on
+first login. Pre-provisioning is a Phase 4 improvement.
+
+---
+
+### 8. How should non-user member types be handled?
 
 The OC member list includes a `type` field on each member (`"user"`,
 `"service_account"`, `"team"`, etc.). UCP stores this in `oc_tenant_members.member_type`
