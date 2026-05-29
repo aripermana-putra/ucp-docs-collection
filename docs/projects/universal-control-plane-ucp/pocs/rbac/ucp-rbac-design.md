@@ -410,22 +410,28 @@ tenant from the data already in `AuthProvider`. No extra API call needed.
 ```ts
 type Role = 'platform-admin' | 'tenant-admin' | 'developer'
 
+const ROLE_PERMISSIONS: Record<Role, Set<string>> = {
+  'developer':      new Set(['read', 'provision']),
+  'tenant-admin':   new Set(['read', 'provision', 'approve', 'manage']),
+  'platform-admin': new Set(['read', 'provision', 'approve', 'manage', 'platform']),
+}
+
 function useRole() {
   const { user } = useAuth()
   const { selectedTenant } = useTenantContext()
 
   if (user?.isPlatformAdmin) {
-    return { role: 'platform-admin', hasMinRole: () => true }
+    return { role: 'platform-admin', hasPermission: () => true }
   }
 
   const role: Role | null = selectedTenant
     ? (user?.roles?.[selectedTenant.rns] ?? null)
     : null
 
-  const hasMinRole = (min: Role) =>
-    role !== null && ROLE_LEVEL[role] >= ROLE_LEVEL[min]
+  const hasPermission = (perm: string): boolean =>
+    role !== null && (ROLE_PERMISSIONS[role]?.has(perm) ?? false)
 
-  return { role, hasMinRole }
+  return { role, hasPermission }
 }
 ```
 
@@ -453,10 +459,10 @@ component renders a 403 page instead of the route content when the check fails:
 
 ```tsx
 // components/RequireRole.tsx
-function RequireRole({ min, children }: { min: Role; children: ReactNode }) {
-  const { hasMinRole } = useRole()
+function RequireRole({ perm, children }: { perm: string; children: ReactNode }) {
+  const { hasPermission } = useRole()
 
-  if (!hasMinRole(min)) {
+  if (!hasPermission(perm)) {
     return <ForbiddenPage />
   }
   return <>{children}</>
@@ -663,19 +669,22 @@ caller's role assignments against their current OC standing. This replaces a
 periodic background job for the PoC.
 
 ```
-1. Call GET /v0/members/{email}/tenants (Horizon)
-2. For each tenant in the OC response:
-   a. UPSERT oc_roles with oc_tenant_role from OC response.
-      Optionally call GET /v0/tenants/{rns}/members/{email} to populate
-      oc_service_roles if service-role data is available.
-   b. Apply UCP role sync:
-      - OC role = Tenant Admin AND current UCP role < tenant-admin (or none)
-        → assign tenant-admin in tenant_role_assignments
-      - OC role = Tenant Admin AND current UCP role ≥ tenant-admin → no change
-      - OC role = Tenant Member → never touch UCP role (preserve any
-        manually-granted developer or tenant-admin role)
-3. For each tenant where user has a UCP role assignment but is no longer
-   present in the OC response → revoke the UCP role; delete from oc_roles
+1. Parse JWT access token groups claim → parseOCGroupsFromJWT(claims.Groups)
+   Derives all tenants, tenant-level roles, and service roles for the
+   logged-in user. No Horizon API call needed for own data.
+
+2. For each tenant from JWT groups:
+   a. UPSERT oc_roles with oc_tenant_role and oc_service_roles from JWT.
+   b. Call GET /v0/tenants/{rns}/members (Horizon) to get ALL other members.
+   c. For each member (including logged-in user):
+      - Apply UCP role sync:
+        OC role = Tenant Admin AND UCP role < tenant-admin → assign tenant-admin
+        OC role = Tenant Admin AND UCP role ≥ tenant-admin → no change
+        OC role = Tenant Member → preserve any manually-granted UCP role
+   d. Revoke UCP roles for members no longer in OC member list.
+
+3. For each tenant where logged-in user has a UCP role but is no longer
+   in JWT groups → revoke their UCP role; delete from oc_roles
 4. platform-admin rows (tenant_rns = '*') are never touched by the sync
 ```
 
