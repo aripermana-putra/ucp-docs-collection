@@ -10,47 +10,30 @@ parent_page_id: "../rbac.md"
 
 ## Implementation
 
-### Phase 1 — Core RBAC (deployed)
+### Phase 1 + 2 — Core RBAC + Permission model (deployed)
 
 | Component | File | Status |
 |---|---|---|
-| `Role` type + context helpers | `auth/context.go` | Deployed |
-| `tenant_role_assignments` DB schema + migration | `db/` | Deployed |
-| DB methods — `GetTenantRole`, `GetAllRolesForUser`, `GetRoleAssignmentsForTenant`, `AssignTenantRole`, `RevokeTenantRole` | `db/roles.go` | Deployed |
+| 3-role model: `RoleDeveloper`, `RoleTenantAdmin`, `RolePlatformAdmin` | `auth/context.go` | Deployed |
+| `Permission` bitmask type + `RolePermissions` map | `auth/context.go` | Deployed |
+| `tenant_role_assignments` DB schema + migration (3-role CHECK constraint) | `db/` | Deployed |
+| DB methods — `GetTenantRole`, `GetAllRolesForUser`, `GetRoleAssignmentsForTenant`, `GetRolesForUserInTenant`, `AssignTenantRole`, `RevokeTenantRole` | `db/roles.go` | Deployed |
 | `db.FindUserByEmail()` | `db/roles.go` | Deployed |
-| `resolveUserRole()` with per-request cache | `rbac_handler.go` | Deployed |
-| `RequireRole(minRole)` middleware | `rbac_handler.go` | Deployed |
-| Admin API — `ListRoleAssignments`, `AssignRole`, `RevokeRole` | `rbac_handler.go` | Deployed |
-| Route grouping by role level + admin API route registration | `main.go` | Deployed |
+| `loadRoles(r, tenantID)` — targeted `GetRolesForUserInTenant` (≤2 rows) when tenant known, full scan when absent | `rbac_handler.go` | Deployed |
+| `resolveUserRole()` with per-request in-memory store | `rbac_handler.go` | Deployed |
+| `RequirePermission(perm)` middleware — resolves tenant from `?tenantId=` or `{tenantSlug}`, bitmask check | `rbac_handler.go` | Deployed |
+| `requirePermHandler` per-route permission wrapper | `rbac_handler.go` | Deployed |
+| Admin API — `ListRoleAssignments`, `AssignRole`, `RevokeRole` (slug-based paths) | `rbac_handler.go` | Deployed |
+| All routes updated to `requirePermHandler(PermXxx, handler)` | `main.go` | Deployed |
 | Remove `isUserTenantAdmin()` from all handlers | all resource + settings handlers | Deployed |
 | `/auth/me` role extension | `bff_auth.go` | Deployed |
-| `useRole()` hook | `hooks/useRole.ts` | Deployed |
-| Sidebar role-aware rendering | `Sidebar.jsx` | Deployed |
-| In-page action buttons role-aware rendering | all list components | Deployed |
-| `ForbiddenPage` + `RequireRole` route wrapper | `App.jsx`, frontend | Deployed |
-| Role management UI | `pages/RoleManagementPage.jsx` | Deployed |
+| `useRole()` hook with `hasPermission(perm)` | `hooks/useRole.ts` | Deployed |
+| Sidebar permission-aware rendering | `Sidebar.jsx` | Deployed |
+| In-page action buttons permission-aware rendering | all list components | Deployed |
+| `ForbiddenPage` + `RequireRole` (perm-based) route wrapper | `App.jsx`, frontend | Deployed |
+| Role management inline in tenant page (no separate RoleManagementPage) | `TenantInfo.jsx`, frontend | Deployed |
 
-### Phase 2 — Permission model refactor (not deployed)
-
-Replaces the linear `Role int` hierarchy with an orthogonal permission bitmask.
-UCP uses three roles: `developer`, `tenant-admin`, `platform-admin`.
-`developer` has `PermProvision` but not `PermApprove` — a developer cannot
-approve their own provisioning request. The bitmask is kept for future-proofing:
-new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions`.
-
-| Component | File | Status |
-|---|---|---|
-| 3-role model: `RoleDeveloper`, `RoleTenantAdmin`, `RolePlatformAdmin` (remove `RoleViewer`, `RoleApprover`, `RoleDeployer`) | `auth/context.go` | Not deployed |
-| `Permission` bitmask type + `RolePermissions` map | `auth/context.go` | Not deployed |
-| `loadRoles(r, tenantID)` — branches on whether tenant is known: `GetRolesForUserInTenant` (≤2 rows) vs `GetAllRolesForUser` (full scan) | `rbac_handler.go` | Not deployed |
-| DB method `GetRolesForUserInTenant(userID, tenantRNS)` — `WHERE tenant_rns IN ($tenantRNS, '*')` | `db/roles.go` | Not deployed |
-| `RequirePermission(perm)` middleware — resolves tenant from `?tenantId=` or `{tenantSlug}` (1 DB call for slug), then targeted role fetch + bitmask check | `rbac_handler.go` | Not deployed |
-| Route registrations updated to use permissions | `main.go` | Not deployed |
-| `hasPermission(perm)` replacing `hasMinRole(min)` in `useRole()` | `hooks/useRole.ts` | Not deployed |
-| All frontend components updated to use `hasPermission` | all components | Not deployed |
-| DB migration: update `tenant_role_assignments.role` CHECK constraint to `('developer','tenant-admin','platform-admin')` | `db/` | Not deployed |
-
-### Phase 3 — Tenant onboarding + login sync (not deployed)
+### Phase 3 — Tenant onboarding + login sync
 
 | Component | File | Status |
 |---|---|---|
@@ -59,10 +42,11 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 | Tenant registration endpoint `POST /api/v1/tenants/register` | `tenant_handler.go` | Deployed |
 | `oc_roles` DB table — stores OC tenant role + service roles (JSONB) per user per tenant | `db/` | Deployed |
 | DB methods — `UpsertOCRoles`, `DeleteOCRoles`, `GetOCRolesForUser` | `db/roles.go` | Deployed |
-| Login-triggered OC sync in `CallbackHandler` — UPSERT `oc_roles`, auto-assign `tenant-admin` for OC Admins, revoke for removed members, preserve manually-granted UCP roles (JWT-based for logged-in user (parse groups from access token); Horizon still used for other tenant members) | `bff_auth.go` | Deployed |
+| Login-triggered OC sync in `CallbackHandler` — parses JWT `groups` for logged-in user's own data (zero Horizon calls); calls `GET /v0/tenants/{rns}/members` for other members; UPSERTs `oc_roles`, auto-assigns `tenant-admin` for OC Admins, revokes for removed members | `bff_auth.go` | Deployed |
+| `parseOCGroupsFromJWT` — derives tenant list + service roles from JWT `groups` claim | `bff_auth.go` | Deployed |
 | `GET /api/v1/me/tenants` — OC tenants with UCP registration status, UCP role, and admin contact info | `tenant_handler.go` | Deployed |
-| Tenant page — register flow + member picker from Horizon for role assignment | frontend | Not deployed |
-| Onboarding landing page — 4-state tenant rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) | frontend | Not deployed |
+| Tenant page — 4-state rendering (registered+role / registered+no-role / unregistered+admin / unregistered+member) + inline role management | `TenantInfo.jsx`, frontend | Deployed |
+| Member picker from Horizon for role assignment in tenant page | frontend | Not deployed |
 | ~~Background sync job~~ | — | Deferred — notes only (login sync is sufficient for PoC) |
 
 ---
@@ -71,31 +55,21 @@ new roles (e.g. `drift-operator`) can be added with one line in `RolePermissions
 
 ### In Scope
 
-**Phase 1 — Core RBAC (deployed)**
-- Role type, DB schema, role resolution with per-request cache
-- `RequireRole` middleware replacing all `isUserTenantAdmin()` per-handler checks
-- Admin API to manage role assignments manually
-- `/auth/me` extended with roles map and `isPlatformAdmin` flag
-- Role-aware frontend — sidebar, page buttons, route guards, role management UI
-
-**Phase 2 — Permission model refactor**
-- 3-role model: `developer`, `tenant-admin`, `platform-admin` (scrap `viewer`, `approver`, `deployer`)
-- Replace linear `Role int` hierarchy with orthogonal `Permission` bitmask for future-proofing
-- `developer` has `PermProvision` but not `PermApprove` — a developer cannot approve their own request
-- `RolePermissions` map defines each role as a set of permissions
-- All route registrations use `RequirePermission(perm)` instead of `RequireRole(minRole)`
-- `loadRoles` branches: targeted `GetRolesForUserInTenant` (≤2 rows) when tenant is known, full `GetAllRolesForUser` only when absent — avoids scanning all tenant memberships for users in many tenants
-- `RequirePermission` resolves tenant from `?tenantId=` (GET) or `{tenantSlug}` (mutations, 1 extra DB call) before the role fetch
-- Frontend `hasPermission(perm)` replaces `hasMinRole(min)` throughout
-- DB migration: update `CHECK` constraint to the 3 new role names
+**Phase 1 + 2 — Core RBAC + Permission model (deployed)**
+- 3-role model (`developer`, `tenant-admin`, `platform-admin`) with `Permission` bitmask
+- `RequirePermission` middleware: resolves tenant from `?tenantId=` or `{tenantSlug}`, targeted role fetch (≤2 rows), bitmask check
+- `developer` has `PermProvision` but not `PermApprove` — cannot approve own requests
+- Admin API for role assignments, slug-based paths
+- `/auth/me` extended with roles map and `isPlatformAdmin`
+- Permission-aware frontend — sidebar, page buttons, route guards, inline role management in tenant page
 
 **Phase 3 — Tenant onboarding + login-triggered sync**
 - **Tenant registration** — `ucp_registered_tenants` table; a tenant must be explicitly registered by an OC Tenant Admin before UCP operations are allowed
 - **`oc_roles` table** — populated on every login with each user's OC tenant role and service roles (JSONB). Not used for access control today; wired up for [Option 2](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles) (runtime OC service-role check) when needed
-- **Login-triggered OC sync** — on every OIDC callback, UCP calls Horizon `GET /v0/members/{email}/tenants`, UPSERTs `oc_roles` with current OC data, and for `tenant_role_assignments`: auto-assigns `tenant-admin` if OC Admin (upgrade only), preserves manually-granted roles for OC Members, revokes for removed members
+- **Login-triggered OC sync** — on every OIDC callback, UCP parses the JWT `groups` claim for the logged-in user's own tenant membership and service roles (zero Horizon calls for own data), then calls `GET /v0/tenants/{rns}/members` to sync all other members of each tenant. UPSERTs `oc_roles`, auto-assigns `tenant-admin` for OC Admins, preserves manually-granted UCP roles for OC Members, revokes for removed members
 - **`GET /api/v1/me/tenants`** — returns the user's OC tenants enriched with UCP registration status, UCP role, and tenant-admin contact info (name + email) for tenants where the user has no role or the tenant is unregistered
-- **Tenant page** — register flow + OC member picker from Horizon for role assignment (no manual email input)
-- **Onboarding landing page** — 4-state rendering per tenant: registered+role / registered+no-role (contact admin) / unregistered+OC-admin (register action) / unregistered+OC-member (contact admin)
+- **Tenant page** — 4-state rendering per tenant: registered+role / registered+no-role (contact admin) / unregistered+OC-admin (register action) / unregistered+OC-member (contact admin). Inline role management for tenant-admins. OC member picker from Horizon for role assignment is not yet deployed.
+
 - **Periodic sync** — deferred, notes only; login sync is sufficient for PoC
 
 ### Out of Scope
@@ -212,21 +186,13 @@ validation is a future improvement.
 
 ### 6. JWT `groups` format for OC Tenant Members
 
-The observed JWT `groups` claim for a Tenant Admin contains
-`rns:roc:iam::{tenant}:roles:admin`. The assumption is that Tenant Members
-have `rns:roc:iam::{tenant}:roles:member`. This needs verification with a
-non-admin account.
+**Partially resolved.** `parseOCGroupsFromJWT` is deployed and replaces the
+`fetchOCMemberTenants` Horizon call for the logged-in user's own data. The
+assumption — that Tenant Members have `rns:roc:iam::{tenant}:roles:member` —
+is implemented but not yet verified with a non-admin test account.
 
-If confirmed, `fetchOCMemberTenants` (the first Horizon call in the login sync)
-can be replaced with `parseOCGroupsFromJWT` — the logged-in user's own tenant
-membership, tenant role, and all service roles are read directly from the token.
-
-Note: `GET /v0/tenants/{rns}/members` (the second Horizon call) is still needed
-to sync OTHER members' data. The JWT only encodes the currently authenticated
-user — no other user's roles are available in it.
-
-See the Design doc (Keycloak JWT Structure — JWT-Based Sync) for the planned
-implementation once the member `groups` format is confirmed.
+`GET /v0/tenants/{rns}/members` (Horizon) remains in use for syncing other
+members of a tenant. The JWT only encodes the currently authenticated user.
 
 ---
 
@@ -254,8 +220,8 @@ implementation once the member `groups` format is confirmed.
 | `/api/v1/load-balancers` | POST | `developer` | Create a new load balancer attachment |
 | `/api/v1/load-balancers/{name}` | GET | `developer` | Get load balancer attachment details by name |
 | `/api/v1/load-balancers/{name}` | DELETE | `developer` | Delete a load balancer attachment |
-| `/api/v1/workflows/{id}/approve` | POST | `tenant-admin` | Approve a pending Temporal workflow |
-| `/api/v1/workflows/{id}/reject` | POST | `tenant-admin` | Reject a pending Temporal workflow |
+| `/api/v1/tenants/{tenantSlug}/workflows/{workflowId}/approve` | POST | `tenant-admin` | Approve a pending Temporal workflow |
+| `/api/v1/tenants/{tenantSlug}/workflows/{workflowId}/reject` | POST | `tenant-admin` | Reject a pending Temporal workflow |
 | `/api/v1/drift` | GET | `tenant-admin` | List drift detections for the tenant |
 | `/api/v1/quota` | GET | `tenant-admin` | View GCP quota usage for the tenant |
 | `/api/v1/gcp/discover` | GET | `tenant-admin` | Discover unmanaged GCP resources for the tenant |
@@ -281,13 +247,13 @@ check fails.
 
 | Item | Route | Minimum role | If insufficient role |
 |---|---|---|---|
-| Database → List | `/` | `developer` | — (all tenant-authenticated users) |
+| Database → List | `/` | `developer` | Hidden + 403 |
 | Database → Create | `/create` | `developer` | Hidden in sidebar + 403 on direct access |
-| Compute → List | `/compute` | `developer` | — |
+| Compute → List | `/compute` | `developer` | Hidden + 403 |
 | Compute → Create | `/compute/create` | `developer` | Hidden + 403 |
-| Storage → List | `/storage` | `developer` | — |
+| Storage → List | `/storage` | `developer` | Hidden + 403 |
 | Storage → Create | `/storage/create` | `developer` | Hidden + 403 |
-| Kubernetes → List | `/kubernetes` | `developer` | — |
+| Kubernetes → List | `/kubernetes` | `developer` | Hidden + 403 |
 | Kubernetes → Create | `/kubernetes/create` | `developer` | Hidden + 403 |
 | Drift → List | `/drift` | `tenant-admin` | Hidden + 403 |
 | Quotas → Usage | `/quota` | `tenant-admin` | Hidden + 403 |
@@ -295,8 +261,7 @@ check fails.
 | Admin → Workflows | `/admin/workflows` | `platform-admin` | Hidden + 403 |
 | Admin → Kube Resources | `/admin/kube-resources` | `platform-admin` | Hidden + 403 |
 | Settings → Credentials | `/settings/credentials` | `tenant-admin` | Hidden + 403 |
-| Settings → Tenants | `/admin/tenants` | `platform-admin` | Hidden + 403 |
-| Settings → Role Management | `/settings/roles` | `tenant-admin` | Hidden + 403 |
+| Tenants | `/admin/tenants` | — | Accessible to all authenticated users |
 
 ### In-page actions
 
@@ -307,7 +272,7 @@ check fails.
 | Approve button | Workflows page | `tenant-admin` |
 | Reject button | Workflows page | `tenant-admin` |
 | Upload credentials | Settings → Credentials | `tenant-admin` |
-| Assign / revoke role | Settings → Role Management | `tenant-admin` |
+| Assign / revoke role | Tenant page (inline) | `tenant-admin` |
 
 ---
 
