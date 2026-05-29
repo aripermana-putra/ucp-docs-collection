@@ -188,6 +188,7 @@ erDiagram
         TEXT email
         TEXT display_name
         TEXT oc_role
+        TEXT member_type
         TIMESTAMPTZ synced_at
     }
 
@@ -646,6 +647,18 @@ CREATE TABLE ucp_registered_tenants (
     registered_by UUID REFERENCES users(id),
     registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ALL Horizon members, no FK to users. Source for member picker.
+-- OC role derived by cross-referencing GET /v0/tenants/{rns} admins list.
+CREATE TABLE oc_tenant_members (
+    tenant_rns   TEXT NOT NULL,
+    email        TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    oc_role      TEXT NOT NULL,           -- 'Tenant Admin' or 'Tenant Member'
+    member_type  TEXT NOT NULL DEFAULT 'user', -- 'user', 'service_account', 'team'
+    synced_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_rns, email)
+);
 ```
 
 ### Registration flow
@@ -686,35 +699,42 @@ not derived from OC membership level.
 ## Login-Triggered OC Sync
 
 On every successful OIDC login (in `CallbackHandler`), UCP synchronises the
-caller's role assignments against their current OC standing. This replaces a
-periodic background job for the PoC.
+caller's role assignments and all tenant member data. The sync runs
+**synchronously** — all data is written before the login redirect returns.
 
 ```
-1. Parse JWT access token groups claim → parseOCGroupsFromJWT(claims.Groups)
-   Derives all tenants, tenant-level roles, and service roles for the
-   logged-in user. No Horizon API call needed for own data.
+seedOwnRolesFromJWT (fast, synchronous — runs first):
+  1. Parse JWT groups → own tenants + roles (no Horizon call)
+  2. UPSERT oc_roles for the logged-in user
+  3. If OC Admin AND tenant registered → assign tenant-admin
 
-2. For each tenant from JWT groups:
-   a. UPSERT oc_roles with oc_tenant_role and oc_service_roles from JWT.
-   b. Call GET /v0/tenants/{rns}/members (Horizon) to get ALL other members.
-   c. For each member (including logged-in user):
-      - Apply UCP role sync:
-        OC role = Tenant Admin AND UCP role < tenant-admin → assign tenant-admin
-        OC role = Tenant Admin AND UCP role ≥ tenant-admin → no change
-        OC role = Tenant Member → preserve any manually-granted UCP role
-   d. Revoke UCP roles for members no longer in OC member list.
+syncOCRolesOnLogin (full sync, synchronous):
+  1. Parse JWT groups → own tenant list
 
-3. For each tenant where logged-in user has a UCP role but is no longer
-   in JWT groups → revoke their UCP role; delete from oc_roles
-4. platform-admin rows (tenant_rns = '*') are never touched by the sync
+  2. For each tenant:
+     a. Call GET /v0/tenants/{rns} → get admins[] list
+     b. Call GET /v0/tenants/{rns}/members → get all members
+     c. Derive OC role: email in admins[] → "Tenant Admin", else "Tenant Member"
+     d. For each member:
+        - UPSERT oc_tenant_members (email, display_name, oc_role, member_type)
+          — always, regardless of whether they have a UCP account
+        - If member has a UCP user record:
+          · UPSERT oc_roles (for logged-in user: include service roles from JWT)
+          · If OC Admin AND tenant registered → assign tenant-admin (upgrade only)
+          · OC Member → preserve any manually-granted UCP role
+     e. Revoke UCP roles for members no longer in OC member list
+
+  3. For each tenant where logged-in user has a UCP role but is no longer
+     in JWT groups → revoke their UCP role; delete from oc_roles and oc_tenant_members
+  4. platform-admin rows (tenant_rns = '*') are never touched
 ```
 
-**Sync rules summary:**
-- OC Admin → auto-assign `tenant-admin` (upgrade only, never downgrade)
-- OC Member → preserve any existing manually-assigned UCP role
-- Removed from OC tenant → revoke UCP role; remove OC roles row
-- `platform-admin` → managed manually only, OC sync does not affect it
-- **OC roles always written to `oc_roles`** regardless of UCP role outcome
+**Sync rules:**
+- OC Admin (tenant registered) → auto-assign `tenant-admin` (upgrade only, never downgrade)
+- OC Member → preserve any manually-granted UCP role
+- Removed from OC tenant → revoke UCP role; remove from oc_roles + oc_tenant_members
+- `platform-admin` → managed manually, never touched by sync
+- All members written to `oc_tenant_members` even if they have no UCP account
 
 **PoC gap:** if a user's OC role changes between logins, their UCP role
 reflects the stale state until their next login. A future periodic sync

@@ -164,15 +164,17 @@ in the PoC is twofold:
    runtime OC service-role validation requires only a middleware change, no new
    Horizon calls, no schema changes.
 
-**Note on data source:** the Keycloak JWT `groups` claim already contains the
-logged-in user's OC service roles in the format `rns:roc:{service}::{tenant}:roles:{role}`.
-The PoC populates `oc_roles` via Horizon API calls. Once the JWT `groups` format
-for Tenant Members is confirmed, the `fetchOCMemberTenants` Horizon call can be
-replaced with direct JWT parsing for the logged-in user's own data.
+**Note on data source:** the Keycloak JWT `groups` claim encodes the logged-in
+user's own OC service roles. `parseOCGroupsFromJWT` already parses these
+directly from the token — no Horizon call needed for the logged-in user's own data.
 
-The `GET /v0/tenants/{rns}/members` Horizon call still remains — it is needed
-to sync all OTHER members of a tenant, since the JWT only contains the
-currently authenticated user's data.
+`GET /v0/tenants/{rns}/members` (Horizon) is still called to sync all OTHER
+members of a tenant. The JWT only contains the currently authenticated user.
+
+**Related table — `oc_tenant_members`:** the login sync also writes ALL Horizon
+members (regardless of UCP login status) to a separate `oc_tenant_members` table.
+This table has no FK to `users` and is the source for the member picker UI.
+It stores `email`, `display_name`, `oc_role`, and `member_type`.
 
 ---
 
@@ -181,13 +183,14 @@ currently authenticated user's data.
 When a user logs in via OIDC, UCP synchronises their role assignments against
 their current OC standing:
 
-- **OC Tenant Admin** → automatically assigned `tenant-admin` in UCP (upgrade
-  only — never downgraded if already a higher role)
-- **OC Tenant Member** → no UCP role assigned automatically; a UCP
-  `tenant-admin` must explicitly grant `developer` or `tenant-admin`
-- **Removed from OC tenant** → UCP role for that tenant is revoked on next login
-- Manually-granted UCP roles (e.g. an OC Member promoted to `developer`) are
-  always preserved by the sync
+- **OC Tenant Admin (registered tenant)** → automatically assigned `tenant-admin`
+  in UCP (upgrade only — never downgraded if already higher)
+- **OC Tenant Admin (unregistered tenant)** → `oc_tenant_members` is written
+  but no UCP role until the tenant is registered
+- **OC Tenant Member** → no UCP role assigned automatically; a `tenant-admin`
+  must explicitly grant `developer` or `tenant-admin`
+- **Removed from OC tenant** → UCP role revoked on next login
+- Manually-granted UCP roles are always preserved by the sync
 
 A user with no UCP role can still log in and see their tenants. They cannot
 take any action until a tenant-admin grants them a role.
