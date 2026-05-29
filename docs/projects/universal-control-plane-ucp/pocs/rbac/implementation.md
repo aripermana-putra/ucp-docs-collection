@@ -41,7 +41,7 @@ parent_page_id: "../rbac.md"
 | DB methods — `RegisterTenant`, `IsTenantRegistered`, `GetRegisteredTenants` | `db/registered_tenants.go` | Deployed |
 | Tenant registration endpoint `POST /api/v1/tenants/register` — open to any authenticated OC Tenant Admin (verified via `oc_tenant_members`); auto-assigns `tenant-admin` to ALL OC Tenant Admins of the tenant | `tenant_handler.go` | Deployed |
 | `oc_roles` DB table — stores OC tenant role + service roles (JSONB) per user per tenant (requires users FK) | `db/` | Deployed |
-| `oc_tenant_members` DB table — stores ALL Horizon members by email/display_name/oc_role, no FK to users; source for member picker | `db/` | Deployed |
+| `oc_tenant_members` DB table — stores ALL Horizon members by email/display_name/oc_role/**member_type**, no FK to users; source for member picker | `db/` | Deployed |
 | DB methods — `UpsertOCRoles`, `DeleteOCRoles`, `GetOCRolesForUser`, `UpsertTenantMember`, `DeleteTenantMember`, `GetTenantAdmins`, `GetTenantMembers` | `db/roles.go` | Deployed |
 | Login-triggered OC sync in `CallbackHandler` — **synchronous** (no goroutine). Parses JWT for own data; calls `GET /v0/tenants/{rns}` (admins list) + `GET /v0/tenants/{rns}/members` to derive roles; writes ALL members to `oc_tenant_members`; writes UCP users to `oc_roles`; assigns `tenant-admin` for registered tenants | `bff_auth.go` | Deployed |
 | `parseOCGroupsFromJWT` — derives tenant list + service roles from JWT `groups` claim | `bff_auth.go` | Deployed |
@@ -199,7 +199,27 @@ members of a tenant. The JWT only encodes the currently authenticated user.
 
 ---
 
-### 7. Can a tenant-admin demote another OC Tenant Admin?
+### 7. How should non-user member types be handled?
+
+The OC member list includes a `type` field on each member (`"user"`,
+`"service_account"`, `"team"`, etc.). UCP stores this in `oc_tenant_members.member_type`
+and surfaces it in `GET /admin/tenants/{slug}/members` as `memberType`.
+
+Open questions:
+- Should service accounts and teams be **excluded from the member picker**? A
+  `service_account` cannot log in via OIDC, so UCP role assignment is meaningless
+  for them. A `team` represents a group — role semantics are unclear.
+- Should UCP role assignment be **blocked** for non-user members (backend
+  validation in `AssignRole`)?
+- What are the exact `type` values returned by Horizon? The admins array from
+  `GET /v0/tenants/{rns}` shows `"type": "user"` — other values are unverified.
+
+The PoC stores and surfaces `memberType` but does not yet filter or restrict
+based on it. The frontend currently shows all member types in the role management UI.
+
+---
+
+### 8. Can a tenant-admin demote another OC Tenant Admin?
 
 A UCP `tenant-admin` can revoke another user's UCP role via `DELETE /admin/tenants/{slug}/roles/{userID}`. However, if the target user is an OC Tenant Admin and the tenant is registered, the login sync will re-assign them `tenant-admin` on their next login.
 
