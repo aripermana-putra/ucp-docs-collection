@@ -1,6 +1,7 @@
 ---
 title: "Cloud Provider Authorization — Service Account Strategy"
 space: UCP
+parent_page_id: "../research.md"
 ---
 
 # Cloud Provider Authorization — Service Account Strategy
