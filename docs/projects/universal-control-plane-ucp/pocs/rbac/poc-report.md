@@ -186,15 +186,31 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    sync job is required, needs a decision.
 
 
-7. **OC service-level role enforcement** — per-service OC roles are
-   already collected from the JWT on every login. Enabling runtime OC service-role
-   checks at provisioning time is a middleware wire-up only — no new data
-   collection or schema changes. Decision deferred to PM.
+7. **Cloud provider credential and authorization strategy** — UCP cannot federate
+   into each cloud provider's native authz system (GCP IAM, AWS IAM, Azure RBAC)
+   using Keycloak JWTs without provider-specific configuration that does not
+   generalize across providers. Three approaches are viable:
 
-8. **Public cloud service roles** — OC defines per-service roles (DBaaS
-   admin/operator/viewer) but GCP has no equivalent concept. Whether UCP should
-   introduce per-service roles for public cloud resources is an open design
-   question for the PM.
+   - **Single admin SA per provider per tenant** — one credential with broad
+     access; UCP enforces all access control internally. Simple, portable across
+     providers, but over-privileged at the cloud level.
+   - **Multiple SAs mapped to UCP roles or resource types** — more granular cloud-level
+     access but higher operational burden on tenants, tight coupling to each
+     provider's resource model, and poor portability across GCP/AWS/Azure.
+   - **UCP as the explicit security boundary** — single SA per provider per tenant,
+     UCP is the authoritative authz layer. Security investment goes into hardening
+     UCP (encrypted credential storage, route-level permission enforcement,
+     tenant-scoped queries, audit logging) rather than distributing authz across
+     multiple credentials.
+
+   The third approach aligns with UCP's design philosophy and is what the PoC
+   implements, but the decision has not been formally reviewed. The primary
+   residual risk is SA key exfiltration from UCP's database — mitigations such
+   as secrets management (Vault, GCP Secret Manager) and credential rotation are
+   deferred post-PoC.
+
+   See [Cloud Provider Authorization Model](../../research/cloud-provider-authz-model.md)
+   for full analysis.
 
 ---
 
@@ -215,8 +231,8 @@ sync keeps request latency low with Horizon dependency confined to login time.
    (Open Question 3) — impacts schema migration scope
 3. Decide on pre-login role assignment and background sync approach for MVP
    (Open Questions 5, 6)
-4. Align with PM on Option 2 and public cloud service roles
-   (Open Questions 7, 8)
+4. Formally review and decide on cloud provider credential strategy before MVP
+   (Open Question 7)
 
 ---
 
