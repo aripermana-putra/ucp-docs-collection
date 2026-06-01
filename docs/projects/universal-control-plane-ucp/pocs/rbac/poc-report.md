@@ -70,14 +70,54 @@ no schema changes.
 
 ### Login sync
 
-- The Keycloak JWT `groups` claim encodes all of the logged-in user's OC tenant
-  memberships and per-service roles (format: `rns:roc:{service}::{tenant}:roles:{role}`).
-  The logged-in user's own tenant list and OC role are derived entirely from the
-  JWT — no Horizon call needed for their own data.
-- OC role for other tenant members cannot be read from `GET /v0/tenants/{rns}/members`
-  — the `role` field is empty in the actual Horizon response. The correct approach
-  is to cross-reference the `admins[]` array from `GET /v0/tenants/{rns}`:
-  email present in `admins[]` → "Tenant Admin", otherwise → "Tenant Member".
+The Keycloak JWT `groups` claim encodes all of the logged-in user's OC tenant
+memberships and per-service roles. The logged-in user's own tenant list and OC
+role are derived entirely from the JWT — no Horizon call needed for their own data.
+
+**Actual JWT `groups` claim (QA, Tenant Admin account):**
+
+```json
+{
+  "iss": "https://qa2-accounts-onecloud.rakuten-it.com/auth/realms/roc",
+  "sub": "<keycloak-user-id>",
+  "email": "user@rakuten.com",
+  "preferred_username": "user.name",
+  "groups": [
+    "rns:roc:iam::clsd-ucp:roles:admin",
+    "rns:roc:dbaas::clsd-ucp:roles:admin",
+    "rns:roc:caas::clsd-ucp:roles:admin",
+    "rns:roc:staas::clsd-ucp:roles:admin",
+    "rns:roc:lbaas::clsd-ucp:roles:lbaas-operator",
+    "rns:roc:lbaas::clsd-ucp:roles:lbaas-viewer",
+    "rns:roc:bmaas::clsd-ucp:roles:admin",
+    "rns:roc:cicd-aas::clsd-ucp:roles:admin",
+    "rns:roc:registry-aas::clsd-ucp:roles:admin",
+    "rns:roc:computeapi::clsd-ucp:roles:admin"
+  ]
+}
+```
+
+**How UCP reads it:**
+
+Each entry follows the format `rns:roc:{service}::{tenant-slug}:roles:{role}`.
+On every login, UCP parses the `groups` array and derives:
+
+- **Tenant membership** — which tenants the user belongs to (from the `iam` service entry)
+- **OC tenant role** — `roles:admin` → "Tenant Admin", `roles:member` → "Tenant Member"
+- **OC service roles** — all non-`iam` entries per tenant, stored as a JSONB map
+  (e.g. `{"dbaas": "admin", "caas": "admin", "lbaas": "lbaas-viewer"}`)
+
+The parsed data is written to the local DB (`oc_roles`) and drives all subsequent
+UCP behaviour for that session — no further Horizon calls at request time.
+
+Note: a user can have multiple entries for the same service (e.g. `lbaas-operator`
+and `lbaas-viewer` both present above). UCP takes the last one parsed; resolving
+the correct role when multiple exist is an edge case to address before MVP.
+
+OC role for **other** tenant members cannot be read from `GET /v0/tenants/{rns}/members`
+— the `role` field is empty in the actual Horizon response. The correct approach
+is to cross-reference the `admins[]` array from `GET /v0/tenants/{rns}`:
+email present in `admins[]` → "Tenant Admin", otherwise → "Tenant Member".
 
 ### Tenant onboarding
 
@@ -136,18 +176,37 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    first login. Whether this gap is acceptable for MVP or whether pre-provisioning
    is required needs a decision (related to Open Question 3).
 
-6. **Periodic background sync** — the current implementation syncs on login only.
+6. **JWT `groups` claim size at scale** — each `groups` entry is ~40–50 bytes.
+   For a user in a small number of tenants (as in the PoC) this is negligible.
+   For a user in many tenants with many service subscriptions, the claim grows
+   proportionally:
+
+   | Tenants | Service roles each | JWT size (approx) |
+   |---|---|---|
+   | 1 | 10 | ~2 KB |
+   | 10 | 10 | ~10 KB |
+   | 50 | 10 | ~40 KB |
+   | 100 | 10 | ~80 KB |
+
+   HTTP servers typically enforce a per-header limit of 8–16 KB. A user in many
+   tenants will exceed this, causing requests to be rejected before reaching UCP.
+   Options for MVP: Keycloak reference tokens (opaque token + server-side
+   introspection), restrict `groups` mapper to `iam` entries only (drop service
+   roles from JWT, rely on `oc_roles` DB), or fallback to Horizon API when
+   `groups` is absent.
+
+7. **Periodic background sync** — the current implementation syncs on login only.
    Role changes in OC between logins are not reflected until the user next logs in.
    Whether this staleness window is acceptable for MVP, or whether a background
    sync job is required, needs a decision.
 
 
-7. **OC service-level role enforcement** — per-service OC roles are
+8. **OC service-level role enforcement** — per-service OC roles are
    already collected from the JWT on every login. Enabling runtime OC service-role
    checks at provisioning time is a middleware wire-up only — no new data
    collection or schema changes. Decision deferred to PM.
 
-8. **Public cloud service roles** — OC defines per-service roles (DBaaS
+9. **Public cloud service roles** — OC defines per-service roles (DBaaS
    admin/operator/viewer) but GCP has no equivalent concept. Whether UCP should
    introduce per-service roles for public cloud resources is an open design
    question for the PM.
@@ -176,9 +235,10 @@ sync keeps request latency low with Horizon dependency confined to login time.
 2. Decide on single vs separate table for OC member identity before MVP
    (Open Question 3) — impacts schema migration scope
 3. Decide on pre-login role assignment and background sync approach for MVP
-   (Open Questions 5, 6)
-4. Align with PM on Option 2 and public cloud service roles
-   (Open Questions 7, 8)
+   (Open Questions 5, 7)
+4. Resolve JWT `groups` size limit strategy before MVP (Open Question 6)
+5. Align with PM on Option 2 and public cloud service roles
+   (Open Questions 8, 9)
 
 ---
 
