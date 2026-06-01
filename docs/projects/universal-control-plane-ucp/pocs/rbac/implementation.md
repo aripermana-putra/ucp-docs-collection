@@ -189,13 +189,19 @@ validation is a future improvement.
 
 ### 6. JWT `groups` format for OC Tenant Members
 
-**Partially resolved.** `parseOCGroupsFromJWT` is deployed and replaces the
-`fetchOCMemberTenants` Horizon call for the logged-in user's own data. The
-assumption — that Tenant Members have `rns:roc:iam::{tenant}:roles:member` —
-is implemented but not yet verified with a non-admin test account.
+`parseOCGroupsFromJWT` is deployed and replaces the `fetchOCMemberTenants`
+Horizon call (`GET /v0/members/{email}/tenants`) for the logged-in user's own
+data. The assumption — that Tenant Members have
+`rns:roc:iam::{tenant}:roles:member` — is implemented but not yet verified
+with a non-admin test account.
 
-`GET /v0/tenants/{rns}/members` (Horizon) remains in use for syncing other
-members of a tenant. The JWT only encodes the currently authenticated user.
+`GET /v0/tenants/{rns}/members` (Horizon) remains in use for syncing all
+other members of a tenant. The JWT only encodes the currently authenticated
+user. If the member JWT format is confirmed, the `admins[]` cross-reference
+step in `syncOCRolesOnLogin` can be simplified — OC role becomes derivable
+from each user's own JWT on login rather than requiring an `admins[]` lookup.
+The `/members` call itself is still needed to discover all members for the
+`oc_tenant_members` table.
 
 ---
 

@@ -847,14 +847,16 @@ have a corresponding `rns:roc:iam::{tenant}:roles:{admin|member}` entry.
 
 ---
 
-### JWT-Based Sync (planned optimisation for logged-in user's own data)
+### JWT-Based Sync for logged-in user's own data
 
-The `groups` claim can replace **one** of the two Horizon calls in the login
+The `groups` claim replaces **one** of the two Horizon calls in the login
 sync: the call that fetches the logged-in user's own tenant memberships
-(`GET /v0/members/{email}/tenants`). The second call — fetching all OTHER
-members of a tenant (`GET /v0/tenants/{rns}/members`) — still requires Horizon
-because the JWT only contains the currently authenticated user's data. No other
-user's roles are encoded in someone else's token.
+(`GET /v0/members/{email}/tenants`). This is implemented in `seedOwnRolesFromJWT`
+which parses the JWT directly — no Horizon call for the logged-in user's own data.
+The second call — fetching all OTHER members of a tenant
+(`GET /v0/tenants/{rns}/members`) — still requires Horizon because the JWT only
+contains the currently authenticated user's data. No other user's roles are
+encoded in someone else's token.
 
 **What JWT replaces:**
 
@@ -918,9 +920,11 @@ func parseOCGroupsFromJWT(groups []string) map[string]OCTenantFromJWT {
 }
 ```
 
-The current PoC uses Horizon for the first call too (for simplicity and because
-the JWT member format is unconfirmed — see open questions). Once confirmed,
-`fetchOCMemberTenants` can be removed and replaced with `parseOCGroupsFromJWT`.
+`fetchOCMemberTenants` (`GET /v0/members/{email}/tenants`) is not called; the
+logged-in user's own tenant list and OC tenant role come entirely from the JWT
+`groups` claim. The open question is whether Tenant Members also have a
+`rns:roc:iam::{tenant}:roles:member` entry — if confirmed, the admins[]
+cross-reference step in `syncOCRolesOnLogin` can be simplified (see open questions).
 
 ---
 

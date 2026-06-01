@@ -58,10 +58,6 @@ and enforcing locally stored roles on every subsequent request.
 - A **Permission bitmask** (`PermRead | PermProvision | PermApprove | PermManage | PermPlatform`)
   correctly separates `developer` and `tenant-admin` — a `developer` cannot approve
   their own provisioning request since `PermApprove` is absent from their bitmask.
-- The middleware resolves the tenant context from either `?tenantId=` (GET) or
-  `{tenantSlug}` (mutations) before the DB role fetch. This enables a targeted
-  `WHERE tenant_rns IN ($rns, '*')` query — at most 2 rows regardless of how many
-  tenants a user belongs to.
 
 ### Login sync
 
@@ -75,19 +71,6 @@ and enforcing locally stored roles on every subsequent request.
 - Making the sync **synchronous** (not a goroutine) was necessary: the tenant page
   calls `GET /api/v1/me/tenants` immediately on mount, and a race condition caused
   an empty member list when the page loaded before the async sync completed.
-
-### Tenant onboarding
-
-- `oc_tenant_members` (no FK to `users`) is the correct design for storing all OC
-  members regardless of UCP login status. Separating this from `oc_roles` (which
-  requires a `users` FK) allows the member picker to show all OC members including
-  those who have never logged in.
-- `GET /api/v1/me/tenants` reading from local DB (zero Horizon calls) makes the
-  tenant page load fast and predictable. Admin contact info for States B/D comes
-  from `oc_tenant_members` rather than a live Horizon call.
-- Resource menus on the sidebar correctly hide when no tenant is registered — the
-  login sync only assigns `tenant-admin` for **registered** tenants, so a new user
-  sees only the Tenants menu until they complete onboarding.
 
 ### Notable behaviours / surprises
 
@@ -111,8 +94,11 @@ and enforcing locally stored roles on every subsequent request.
 
 1. **JWT `groups` format for Tenant Members** — does `rns:roc:iam::{tenant}:roles:member`
    appear for OC Tenant Members, or do they simply have no `iam` group entry?
-   Needs a non-admin test account. If confirmed, the Horizon `/members` call can
-   be eliminated entirely.
+   Needs a non-admin test account. If confirmed, the `admins[]` cross-reference
+   step in `syncOCRolesOnLogin` can be simplified — OC role derivation for all
+   users (including other members) becomes deterministic from their own JWT on
+   login rather than requiring an `admins[]` lookup. `GET /v0/tenants/{rns}/members`
+   is still needed to discover all members for the `oc_tenant_members` table.
 
 2. **Can a tenant-admin demote another OC Tenant Admin?** — revoking a UCP role
    from an OC Tenant Admin is transient; the sync re-grants it on next login.
@@ -165,7 +151,8 @@ request latency low and Horizon dependency confined to login time.
 **Next steps:**
 
 1. Verify JWT `groups` format for Tenant Members with a non-admin OC account
-   (Open Question 1) — if confirmed, remove the Horizon `/members` call
+   (Open Question 1) — if confirmed, simplify the `admins[]` cross-reference in
+   `syncOCRolesOnLogin`
 2. Decide on single vs separate table for OC member identity (Open Question 3)
    before production — impacts schema migration scope
 3. Align with PM on whether to enable Option 2 (OC service-role check at
