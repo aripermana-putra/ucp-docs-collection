@@ -206,12 +206,6 @@ The RBAC model, tenant onboarding, and member sync are functionally complete.
 The permission bitmask is extensible without schema changes. The local-first
 sync keeps request latency low with Horizon dependency confined to login time.
 
-**Critical risks:**
-
-| Risk | Mitigation |
-|---|---|
-| Horizon `admins[]` cross-reference may break if OC changes response shape | Detect empty member list after sync; surface error to admin |
-| Sync failure leaves members without UCP roles | Sync errors are logged; the logged-in user is always seeded from JWT regardless of sync outcome |
 
 **Next steps:**
 
