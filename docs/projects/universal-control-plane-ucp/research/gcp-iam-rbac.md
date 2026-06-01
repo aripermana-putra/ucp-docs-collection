@@ -1,6 +1,7 @@
 ---
 title: "GCP IAM — RBAC Research"
 space: UCP
+parent_page_id: "../research.md"
 ---
 
 # GCP IAM — RBAC Research
