@@ -1,9 +1,18 @@
 ---
-jira_ticket: MCUCP-191
-title: Role-Based Access Control (RBAC) + Tenant Onboarding
-author: aripermana.putra
-date: 2026-06-01
-status: COMPLETED
+title: "POC Report — RBAC + Tenant Onboarding"
+space: UCP
+parent_page_id: "../rbac.md"
+---
+
+# Role-Based Access Control (RBAC) + Tenant Onboarding
+
+| | |
+|---|---|
+| **Jira** | [MCUCP-191](https://jira.rakuten-it.com/jira/browse/MCUCP-191) |
+| **Author** | aripermana.putra |
+| **Date** | 2026-06-01 |
+| **Status** | COMPLETED |
+
 ---
 
 ## 1. Summary
@@ -99,7 +108,6 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
 
 ## 4. Open Questions
 
-**Needs more investigation:**
 
 1. **JWT `groups` format for Tenant Members** — does `rns:roc:iam::{tenant}:roles:member`
    appear for OC Tenant Members, or do they simply have no `iam` group entry?
@@ -133,9 +141,8 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    Whether this staleness window is acceptable for MVP, or whether a background
    sync job is required, needs a decision.
 
-**Remains open (PM decision):**
 
-7. **OC service-level role enforcement (Option 2)** — per-service OC roles are
+7. **OC service-level role enforcement** — per-service OC roles are
    already collected from the JWT on every login. Enabling runtime OC service-role
    checks at provisioning time is a middleware wire-up only — no new data
    collection or schema changes. Decision deferred to PM.
