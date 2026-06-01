@@ -24,7 +24,7 @@ The challenge is the gap between **UCP-level authorization** (what a user can do
 | GCP | Service Account + key file or Workload Identity |
 | AWS | IAM User access key, or IAM Role via STS |
 | Azure | Service Principal + client secret, or Managed Identity |
-| OC (Omnia) | ROC service account token |
+| OC | ROC service account token |
 
 UCP cannot federate into each provider's native authz system using Keycloak JWTs — GCP Workload Identity Federation could technically do this, but it requires per-project GCP configuration and does not generalize across AWS and Azure. This is not UCP's job.
 
@@ -44,7 +44,7 @@ UCP uses this single credential for all provisioning, management, and monitoring
 |---|---|
 | Credentials to manage per tenant per provider | 1 |
 | Backend components to build | Credential upload API, encrypted storage (1 table), provider config reference in provisioning handlers, route-level permission middleware, audit logging |
-| Frontend components to build | Credential upload page per provider |
+| CLI components to build | `ucp credentials set <provider>` command to upload SA key |
 | Blast radius on credential exfiltration | Entire SA scope for that tenant |
 | Blast radius on UCP auth bypass | Same as exfiltrated SA |
 | Cloud-native audit attribution | All operations attributed to one SA — no per-UCP-user traceability at provider level |
@@ -76,7 +76,7 @@ UCP introduces per-resource-type role assignments on top of its tenant-level 3-r
 | Metric | Value |
 |---|---|
 | Additional backend components | Extended role assignment table `(user, tenant, resource_type, role)`; role management API per resource type; updated permission middleware to resolve resource type from request context |
-| Additional frontend components | Role management UI with resource type picker |
+| Additional CLI components | `ucp role assign --resource-type database <user>` and equivalent commands per resource type |
 | Authz model | UCP-owned — no dependency on OC service roles |
 | OC alignment | None — UCP defines its own service-level roles independent of OC |
 | Cross-provider consistency | Yes — UCP resource types abstract over providers |
@@ -89,12 +89,12 @@ UCP introduces per-resource-type role assignments on top of its tenant-level 3-r
 
 ### Sub-variant 1B — OC service roles applied cross-provider
 
-UCP reads the user's OC service roles from the Keycloak JWT `groups` claim and maps them to UCP resource types. An OC `dbaas:admin` grants database provisioning rights in UCP regardless of provider — Omnia DBaaS, GCP Cloud SQL, and AWS RDS are all treated as `database` resources.
+UCP reads the user's OC service roles from the Keycloak JWT `groups` claim and maps them to UCP resource types. An OC `dbaas:admin` grants database provisioning rights in UCP regardless of provider — ROC DBaaS, GCP Cloud SQL, and AWS RDS are all treated as `database` resources.
 
 | Metric | Value |
 |---|---|
 | Additional backend components | JWT groups parsing at login (oc_roles table); OC service → UCP resource type mapping (config); permission middleware reads oc_roles and applies mapping |
-| Additional frontend components | None — no new role management UI required |
+| Additional CLI components | None — role assignment is automatic from OC; no new CLI commands needed |
 | Authz model | Derived from OC — follows the user's existing OC standing |
 | OC alignment | High — UCP reflects OC service roles without duplicating management |
 | Cross-provider consistency | Yes — OC service role maps to a UCP resource type, not a specific provider |
@@ -133,7 +133,7 @@ The tenant creates multiple service accounts with different scopes. UCP maps eac
 |---|---|---|
 | Credentials to manage per tenant per provider | N — one per resource type | 2–3 — one per UCP role |
 | Additional backend components | Multi-SA storage; SA-to-resource-type routing table; per-handler SA selection logic per provider | Multi-SA storage; SA-to-role routing table; role-based SA selection in middleware |
-| Additional frontend components | SA management UI with resource type mapping | SA management UI with role mapping |
+| Additional CLI components | `ucp credentials set --resource-type database <key>` per type | `ucp credentials set --role developer <key>` per role |
 | Blast radius on credential exfiltration | Limited to that resource type's scope | Limited to that role's scope |
 | Portability across cloud providers | Low — each provider has different resource type taxonomies | Medium — role concept is more portable |
 
@@ -169,20 +169,18 @@ The tenant creates multiple service accounts with different scopes. UCP maps eac
 
 ## Comparison Summary
 
-All options evaluated from scratch for MVP, no prior implementation assumed.
 
 | Dimension | Option 1 | Option 1A | Option 1B | Option 2A | Option 2B |
 |---|---|---|---|---|---|
 | Credentials per tenant per provider | 1 | 1 | 1 | N | 2–3 |
 | Backend build effort | Low | Medium | Low–Medium | High | Medium |
-| Frontend build effort | Low | Medium | Low | High | Medium |
+| CLI build effort | Low | Low–Medium | Low | Medium | Low–Medium |
 | Operational burden on tenant-admin | Low | Low | Low | High | Medium |
 | Authz granularity | Tenant-role only | Per resource type | OC service role | Per resource type | Per UCP role |
 | OC role model alignment | Partial | None | High | None | None |
 | Cross-provider consistency | ✅ | ✅ | ✅ | ❌ | Partial |
 | Least privilege at cloud level | ❌ | ❌ | ❌ | ✅ | Partial |
 | Blast radius on credential exfiltration | Entire SA | Entire SA | Entire SA | Per resource type | Per role scope |
-| New role management UI needed | No | Yes | No | Yes | Yes |
 | Scales with new resource types | ✅ | Needs schema update | ✅ | ❌ (new SA per type) | ✅ |
 | Scales with new cloud providers | ✅ | ✅ | ✅ | ❌ | Partial |
 
