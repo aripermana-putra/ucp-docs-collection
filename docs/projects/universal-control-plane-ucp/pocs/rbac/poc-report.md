@@ -172,8 +172,8 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    Trade-off: simpler role assignment model vs storing users who may never log in.
 
 4. **Non-user member types** — the OC member list includes `service-account` and
-   `team` types (confirmed in testing). Should these be excluded from the role
-   assignment UI? Should role assignment be blocked for non-user types?
+   `team` types (confirmed in testing). Should these be excluded from role
+   assignment? Should the API block role assignment for non-user types?
 
 5. **Pre-login role assignment** — OC Tenant Admins who have not yet logged in
    to UCP cannot be pre-assigned a UCP role. They receive it automatically on
@@ -201,8 +201,8 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    - **OC service roles applied cross-provider** — a user's OC service role
      (e.g. `dbaas:admin`) grants corresponding rights in UCP for that resource
      type across all providers (Omnia DBaaS, GCP Cloud SQL, AWS RDS all treated
-     as `database`). Data already collected from JWT; no new role management UI
-     needed
+     as `database`). Data already collected from JWT; no new CLI commands needed
+     for role management
 
    The OC service roles approach is the lowest-friction path to finer-grained
    control and keeps OC as the source of truth. The data is already in
