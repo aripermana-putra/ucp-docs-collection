@@ -192,12 +192,12 @@ Option 1 and its sub-variants make UCP the security boundary. The threat model f
 
 | Threat | Attack scenario | Severity | Mitigation |
 |---|---|---|---|
-| **Spoofing** | Attacker impersonates a valid UCP session and acts as a legitimate user | High | Strong authn via Keycloak, HTTPS-only, session expiry, CSRF protection |
+| **Spoofing** | Attacker impersonates a valid UCP session and acts as a legitimate user | High | Strong authn via Keycloak, HTTPS-only, short-lived tokens, session expiry |
 | **Elevation of Privilege** | User calls a higher-privilege endpoint by bypassing permission middleware | Critical | Permission middleware applied at route level — all routes must declare required permission explicitly |
 | **Elevation of Privilege** | SQL injection or auth bypass extracts another tenant's SA credential | Critical | Parameterized queries, tenant-scoped DB queries, encrypted credential storage |
 | **Information Disclosure** | SA key extracted from UCP database or server logs | Critical | Credentials encrypted at rest; never appear in logs or API responses; DB access restricted to api-server only |
 | **Repudiation** | User denies having provisioned a resource | Medium | Audit log records every action with user ID, session ID, IP address, timestamp |
-| **Tampering** | Attacker modifies a provisioned resource directly via cloud console | Low for UCP | Outside UCP's control — drift detection (MCUCP-158) surfaces this |
+| **Tampering** | Attacker modifies a provisioned resource directly via cloud console | Low for UCP | Outside UCP's control — drift detection surfaces this |
 
 ---
 
