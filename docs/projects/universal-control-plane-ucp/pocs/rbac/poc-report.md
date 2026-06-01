@@ -114,6 +114,10 @@ Note: a user can have multiple entries for the same service (e.g. `lbaas-operato
 and `lbaas-viewer` both present above). UCP takes the last one parsed; resolving
 the correct role when multiple exist is an edge case to address before MVP.
 
+The `groups` claim grows linearly with the number of tenant memberships and
+service subscriptions — users with many tenants will have proportionally larger
+tokens. This is a production sizing concern to account for in MVP capacity planning.
+
 OC role for **other** tenant members cannot be read from `GET /v0/tenants/{rns}/members`
 — the `role` field is empty in the actual Horizon response. The correct approach
 is to cross-reference the `admins[]` array from `GET /v0/tenants/{rns}`:
@@ -176,42 +180,18 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    first login. Whether this gap is acceptable for MVP or whether pre-provisioning
    is required needs a decision (related to Open Question 3).
 
-6. **JWT `groups` claim size at scale** — the JWT payload is base64-encoded JSON
-   transmitted on every request. Each `groups` entry is ~40–50 bytes, so the
-   token grows linearly with the number of tenant memberships and service roles.
-   For a user in a small number of tenants (as in the PoC) this is negligible.
-   For a user in many tenants with many service subscriptions:
-
-   | Tenants | Service roles each | JWT size (approx) |
-   |---|---|---|
-   | 1 | 10 | ~2 KB |
-   | 10 | 10 | ~10 KB |
-   | 50 | 10 | ~40 KB |
-   | 100 | 10 | ~80 KB |
-
-   HTTP servers typically enforce a per-header limit of 8–16 KB. What exactly
-   happens when a user's token exceeds this limit is unverified — it likely
-   results in a `431 Request Header Fields Too Large` before the request reaches
-   UCP, meaning the user cannot log in at all. This needs to be tested with an
-   actual high-membership account before MVP.
-
-   Options if this becomes a real constraint: Keycloak reference tokens (opaque
-   token + server-side introspection), restrict `groups` mapper to `iam` entries
-   only (drop service roles from JWT, rely on `oc_roles` DB), or fallback to
-   Horizon API when `groups` is absent or truncated.
-
-7. **Periodic background sync** — the current implementation syncs on login only.
+6. **Periodic background sync** — the current implementation syncs on login only.
    Role changes in OC between logins are not reflected until the user next logs in.
    Whether this staleness window is acceptable for MVP, or whether a background
    sync job is required, needs a decision.
 
 
-8. **OC service-level role enforcement** — per-service OC roles are
+7. **OC service-level role enforcement** — per-service OC roles are
    already collected from the JWT on every login. Enabling runtime OC service-role
    checks at provisioning time is a middleware wire-up only — no new data
    collection or schema changes. Decision deferred to PM.
 
-9. **Public cloud service roles** — OC defines per-service roles (DBaaS
+8. **Public cloud service roles** — OC defines per-service roles (DBaaS
    admin/operator/viewer) but GCP has no equivalent concept. Whether UCP should
    introduce per-service roles for public cloud resources is an open design
    question for the PM.
@@ -240,10 +220,9 @@ sync keeps request latency low with Horizon dependency confined to login time.
 2. Decide on single vs separate table for OC member identity before MVP
    (Open Question 3) — impacts schema migration scope
 3. Decide on pre-login role assignment and background sync approach for MVP
-   (Open Questions 5, 7)
-4. Resolve JWT `groups` size limit strategy before MVP (Open Question 6)
-5. Align with PM on Option 2 and public cloud service roles
-   (Open Questions 8, 9)
+   (Open Questions 5, 6)
+4. Align with PM on Option 2 and public cloud service roles
+   (Open Questions 7, 8)
 
 ---
 
