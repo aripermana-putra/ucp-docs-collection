@@ -16,8 +16,7 @@ roles are synchronised from Horizon on every login — storing all members local
 so that role management requires zero live Horizon calls at request time.
 
 **Verdict: Go.** The permission model, onboarding flow, and member sync all
-work end-to-end. Several open questions remain (see Section 4) that should be
-resolved before MVP.
+work end-to-end. Several open questions remain (see Section 4).
 
 ---
 
@@ -41,7 +40,6 @@ and enforcing locally stored roles on every subsequent request.
 | SC-7 | OC Tenant Admin can register their tenant without a pre-existing UCP role | Pass |
 | SC-8 | All OC Tenant Admins with UCP accounts receive `tenant-admin` on registration | Pass |
 | SC-9 | All OC tenant members appear in the member picker after login sync | Pass |
-| SC-10 | `platform-admin` can access `/workflows` and cross-tenant resources | Pass |
 
 **Scope boundaries (out of scope):**
 - Keycloak configuration changes
@@ -71,9 +69,6 @@ no schema changes.
   — the `role` field is empty in the actual Horizon response. The correct approach
   is to cross-reference the `admins[]` array from `GET /v0/tenants/{rns}`:
   email present in `admins[]` → "Tenant Admin", otherwise → "Tenant Member".
-- OC Tenant Admins who have not yet logged in to UCP cannot be pre-assigned a
-  UCP role before their first login. They receive the role automatically on first
-  login when the sync runs.
 
 ### Tenant onboarding
 
@@ -128,14 +123,24 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    `team` types (confirmed in testing). Should these be excluded from the role
    assignment UI? Should role assignment be blocked for non-user types?
 
+5. **Pre-login role assignment** — OC Tenant Admins who have not yet logged in
+   to UCP cannot be pre-assigned a UCP role. They receive it automatically on
+   first login. Whether this gap is acceptable for MVP or whether pre-provisioning
+   is required needs a decision (related to Open Question 3).
+
+6. **Periodic background sync** — the current implementation syncs on login only.
+   Role changes in OC between logins are not reflected until the user next logs in.
+   Whether this staleness window is acceptable for MVP, or whether a background
+   sync job is required, needs a decision.
+
 **Remains open (PM decision):**
 
-5. **OC service-level role enforcement (Option 2)** — per-service OC roles are
+7. **OC service-level role enforcement (Option 2)** — per-service OC roles are
    already collected from the JWT on every login. Enabling runtime OC service-role
    checks at provisioning time is a middleware wire-up only — no new data
    collection or schema changes. Decision deferred to PM.
 
-6. **Public cloud service roles** — OC defines per-service roles (DBaaS
+8. **Public cloud service roles** — OC defines per-service roles (DBaaS
    admin/operator/viewer) but GCP has no equivalent concept. Whether UCP should
    introduce per-service roles for public cloud resources is an open design
    question for the PM.
@@ -156,7 +161,6 @@ sync keeps request latency low with Horizon dependency confined to login time.
 |---|---|
 | Horizon `admins[]` cross-reference may break if OC changes response shape | Detect empty member list after sync; surface error to admin |
 | Sync failure leaves members without UCP roles | Sync errors are logged; the logged-in user is always seeded from JWT regardless of sync outcome |
-| Pre-login OC Tenant Admins don't get `tenant-admin` at registration | They receive it on first login — acceptable gap for PoC, should be resolved before MVP |
 
 **Next steps:**
 
@@ -164,11 +168,10 @@ sync keeps request latency low with Horizon dependency confined to login time.
    (Open Question 1)
 2. Decide on single vs separate table for OC member identity before MVP
    (Open Question 3) — impacts schema migration scope
-3. Align with PM on Option 2 (OC service-role check at provisioning) and
-   non-user member type handling (Open Questions 5, 6)
-4. Periodic sync as background job — deferred; login-triggered sync is sufficient
-   for PoC but a background job is needed for production to handle role changes
-   between logins
+3. Decide on pre-login role assignment and background sync approach for MVP
+   (Open Questions 5, 6)
+4. Align with PM on Option 2 and public cloud service roles
+   (Open Questions 7, 8)
 
 ---
 
