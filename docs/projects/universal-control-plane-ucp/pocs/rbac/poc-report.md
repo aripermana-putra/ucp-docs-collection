@@ -187,29 +187,30 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
 
 
 7. **Cloud provider credential and authorization strategy** — UCP cannot federate
-   into each cloud provider's native authz system (GCP IAM, AWS IAM, Azure RBAC)
-   using Keycloak JWTs without provider-specific configuration that does not
-   generalize across providers. Three approaches are viable:
+   into each cloud provider's native authz system using Keycloak JWTs without
+   provider-specific configuration that does not generalize across providers.
+   The PoC uses one SA per provider per tenant with UCP as the security boundary,
+   which is the right foundation. The open question is how granular UCP's own
+   authz layer should be on top of that:
 
-   - **Single SA per provider per tenant, UCP as the security boundary** — one
-     credential with sufficient scope for all UCP operations; UCP enforces all
-     access control internally. Simple, portable across providers, but
-     over-privileged at the cloud level. Security investment goes into hardening
-     UCP (encrypted credential storage, route-level permission enforcement,
-     tenant-scoped queries, audit logging) rather than distributing authz across
-     multiple credentials.
-   - **Multiple SAs mapped to UCP roles or resource types** — more granular
-     cloud-level access but higher operational burden on tenants, tight coupling
-     to each provider's resource model, and poor portability across GCP/AWS/Azure.
+   - **Tenant-level roles only (current PoC)** — `developer`, `tenant-admin`,
+     `platform-admin` apply to all resource types equally
+   - **UCP-native service-level roles** — UCP introduces per-resource-type role
+     assignments (e.g. `developer` for databases, `viewer` for VMs), independent
+     of OC service roles
+   - **OC service roles applied cross-provider** — a user's OC service role
+     (e.g. `dbaas:admin`) grants corresponding rights in UCP for that resource
+     type across all providers (Omnia DBaaS, GCP Cloud SQL, AWS RDS all treated
+     as `database`). Data already collected from JWT; no new role management UI
+     needed
 
-   The first approach aligns with UCP's design philosophy and is what the PoC
-   implements, but the decision has not been formally reviewed. The primary
-   residual risk is SA key exfiltration from UCP's database — mitigations such
-   as secrets management (Vault, GCP Secret Manager) and credential rotation are
-   deferred post-PoC.
+   The OC service roles approach is the lowest-friction path to finer-grained
+   control and keeps OC as the source of truth. The data is already in
+   `oc_roles.oc_service_roles`; enabling it is a middleware change only.
+   Decision deferred to PM.
 
    See [Cloud Provider Authorization Model](../../research/cloud-provider-authz-model.md)
-   for full analysis.
+   for full analysis including STRIDE threat model and comparison table.
 
 ---
 

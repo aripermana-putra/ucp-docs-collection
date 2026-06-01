@@ -69,6 +69,56 @@ UCP uses this single credential for all provisioning, management, and monitoring
 - No cloud-provider-level audit attribution per UCP user
 - Anyone with direct cloud access (outside UCP) can modify UCP-managed resources without UCP enforcement
 
+### Sub-variants — granular UCP authz on top of a single SA
+
+The single-SA model does not prevent UCP from enforcing finer-grained access control at the UCP layer. Two directions are possible:
+
+**Sub-variant 1A — UCP-native service-level roles**
+
+UCP introduces per-resource-type role assignments on top of its existing 3-role model. A tenant-admin could assign a user `developer` for databases but `viewer` for VMs, independently of their OC service roles.
+
+| Aspect | Detail |
+|---|---|
+| Credential model | Unchanged — still one SA |
+| Authz model | UCP-owned — no dependency on OC service roles |
+| Schema impact | New role assignment dimension: `(user, tenant, resource_type, role)` |
+| Implementation effort | Medium — extend `tenant_role_assignments`, update `RequirePermission` middleware |
+| OC alignment | None — UCP defines its own service-level roles independent of OC |
+| Cross-provider | Natural — UCP's resource types already abstract over providers |
+
+Benefit: consistent fine-grained control across all cloud providers using UCP's own model.
+Risk: diverges from OC's role model, creating two parallel authorization systems a user must understand.
+
+**Sub-variant 1B — OC service roles applied cross-provider**
+
+UCP reads the user's OC service roles (already collected from JWT into `oc_roles.oc_service_roles`) and maps them to UCP resource types. An OC `dbaas:admin` grants database provisioning rights in UCP regardless of provider — Omnia DBaaS, GCP Cloud SQL, AWS RDS are all treated as `database` resources.
+
+Concrete mapping:
+
+| OC service role | UCP resource type | Permission granted |
+|---|---|---|
+| `dbaas:admin` or `dbaas:operator` | `database` | `PermProvision` |
+| `dbaas:viewer` | `database` | `PermRead` |
+| `caas:admin` or `caas:edit` | `kubernetes` | `PermProvision` |
+| `caas:view` | `kubernetes` | `PermRead` |
+| `computeapi:admin` | `compute` | `PermProvision` |
+| `staas:admin` | `storage` | `PermProvision` |
+| `lbaas:lbaas-operator` | `loadbalancer` | `PermProvision` |
+
+| Aspect | Detail |
+|---|---|
+| Credential model | Unchanged — still one SA |
+| Authz model | Derived from OC — no new role management UI needed |
+| Schema impact | None — `oc_service_roles` JSONB already populated from JWT |
+| Implementation effort | Low — middleware reads `oc_roles`, applies mapping at provisioning time |
+| OC alignment | High — UCP reflects the user's OC standing without duplicating it |
+| Cross-provider | Yes — the OC service role maps to a UCP resource type, not a specific provider |
+
+Benefit: zero additional role management in UCP; OC admins stay in control; cross-provider consistency comes for free from the OC role model.
+Risk: UCP's resource scope is constrained by OC's service taxonomy. GCP-only resources with no OC equivalent (e.g. GKE, GCE) require a fallback rule — likely tenant-level UCP role only.
+
+Both sub-variants are compatible: 1A and 1B could be layered (OC service roles as the floor, UCP role assignments as overrides). The choice depends on how tightly UCP should track OC's authz model.
+
 ---
 
 ## Option 2 — Multiple Service Accounts, Role-Mapped
@@ -123,18 +173,19 @@ The tenant creates multiple service accounts with different scopes. UCP maps eac
 
 ## Comparison Summary
 
-| Dimension | Option 1 (Single SA, UCP boundary) | Option 2A (Per resource type) | Option 2B (Per UCP role) |
-|---|---|---|---|
-| Credentials per tenant per provider | 1 | N | 2–3 |
-| Operational burden on tenant-admin | Low | High | Medium |
-| Implementation complexity | Low | High | Medium |
-| Cloud-provider portability | High | Low | Medium |
-| Least privilege at cloud level | ❌ | ✅ | Partial |
-| Blast radius on credential leak | Entire SA scope | Per resource type | Per role scope |
-| UCP audit trail | ✅ | ✅ | ✅ |
-| Cloud-native audit attribution per user | ❌ | ✅ | Partial |
-| Aligns with UCP design philosophy | ✅ | ❌ | Partial |
-| Works uniformly across GCP/AWS/Azure | ✅ | ❌ | Partial |
+| Dimension | Option 1 (Single SA) | Option 1A (UCP service roles) | Option 1B (OC service roles) | Option 2A (SA per resource) | Option 2B (SA per role) |
+|---|---|---|---|---|---|
+| Credentials per tenant per provider | 1 | 1 | 1 | N | 2–3 |
+| Operational burden on tenant-admin | Low | Low | Low | High | Medium |
+| Implementation complexity | Low | Medium | Low | High | Medium |
+| Granularity of UCP authz | Tenant-role only | Per resource type | OC service role | Per resource type | Per UCP role |
+| OC role model alignment | Partial | None | High | None | None |
+| Cross-provider consistency | ✅ | ✅ | ✅ | ❌ | Partial |
+| Least privilege at cloud level | ❌ | ❌ | ❌ | ✅ | Partial |
+| Blast radius on credential leak | Entire SA scope | Entire SA scope | Entire SA scope | Per resource type | Per role scope |
+| UCP audit trail | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Aligns with UCP design philosophy | ✅ | ✅ | ✅ | ❌ | Partial |
+| New role management UI needed | No | Yes | No | Yes | Yes |
 
 ---
 
@@ -155,24 +206,23 @@ Since Option 1 makes UCP the security boundary, the threat model focuses on UCP 
 
 ## Analysis and Rationale
 
-**Option 2A** is the most secure at the cloud provider level but the least practical for UCP's scope. It creates tight coupling between UCP's resource model and each provider's IAM model, puts significant operational burden on tenants, and contradicts UCP's purpose as a unified control plane.
+**Option 2A and 2B** distribute authz across multiple credentials at the cloud provider level. This does not pay off for a multi-cloud control plane: it creates provider-specific coupling, increases operational burden, and does not fully achieve least privilege (the SA boundary is always coarser than UCP's role model). They contradict UCP's purpose.
 
-**Option 2B** adds complexity without achieving true least privilege — the SA boundary is still coarser than UCP's role model, and the model still doesn't generalize cleanly across providers.
+**Option 1 (base)** is the right foundation. One SA per provider per tenant, UCP as the security boundary. The credential model stays simple and portable; security investment goes into hardening UCP.
 
-**Option 1** is the right choice for UCP's design philosophy. The SA is not over-privileged by accident — it is deliberately scoped to everything UCP needs, because UCP is the authz layer. This means UCP's security posture matters more than any individual provider's access control. The security investment belongs in hardening UCP itself:
+**Option 1A and 1B** are enhancements to the UCP authz layer on top of the same single-SA credential model:
 
-1. Encrypted credential storage
-2. Comprehensive permission enforcement on all routes
-3. Tenant-scoped DB queries preventing cross-tenant credential access
-4. Audit logging for every state-changing operation
-5. Credentials never appearing in logs or API responses
+- **1B (OC service roles)** is the lowest-friction path to finer-grained control — the data is already collected from the JWT, no new role management UI is needed, and the mapping aligns with the existing OC role model tenants already understand. The only constraint is that GCP-only resources with no OC service equivalent need a fallback rule.
+- **1A (UCP-native service roles)** gives UCP full control over its own authz model, independent of OC. More flexible long-term, but requires building a new role management layer that tenants must learn separately from OC.
 
-The threat that remains genuinely open is **SA key exfiltration from the database** — this is the one scenario where UCP's authz provides no protection. Mitigations beyond encrypted storage (secrets management via Vault or GCP Secret Manager, credential rotation policies) are deferred post-PoC.
+The base Option 1 (tenant-level roles only) is what the PoC implements and is sufficient for MVP scope. 1B is the natural next step if finer-grained control is needed — it costs little to implement and keeps OC as the source of truth for roles. 1A is a longer-term option if UCP needs to diverge from OC's service taxonomy.
+
+The threat that remains genuinely open regardless of sub-variant is **SA key exfiltration from the database** — the one scenario where UCP's authz provides no protection. Mitigations beyond encrypted storage (secrets management via Vault or GCP Secret Manager, credential rotation) are deferred post-PoC.
 
 ---
 
 ## Recommendation
 
-**Option 1.** One service account per provider per tenant, uploaded by the tenant-admin, used exclusively by UCP for all operations. UCP is the authoritative security boundary — cloud provider credentials are an implementation detail, not an access control mechanism.
+**Option 1 for PoC and MVP.** One service account per provider per tenant, UCP as the authoritative security boundary.
 
-The multi-SA models add complexity that does not pay off for a multi-cloud control plane: they create provider-specific coupling, increase operational burden, and do not fully achieve least privilege anyway.
+If finer-grained authz is needed, **Option 1B** (leverage existing OC service roles) is the preferred path — lowest implementation cost, highest OC alignment, and cross-provider by design. The PM decision on whether to enforce OC service roles at provisioning time (referenced as Option 2 in the RBAC POC report) is the gate for this.
