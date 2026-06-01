@@ -87,6 +87,12 @@ service within that tenant. This is the single call that answers both the
 "which tenants does this user belong to" and "what is their per-service role"
 questions in one round trip.
 
+> **Note:** In the current implementation this endpoint is **not called**. The
+> logged-in user's own tenant list and OC tenant role are derived entirely from
+> the Keycloak JWT `groups` claim via `parseOCGroupsFromJWT` — zero Horizon
+> calls for the logged-in user's own data. This endpoint remains documented for
+> reference and for Option 2 feasibility analysis.
+
 ### Service-level role for a specific member/tenant/service
 
 ```
@@ -111,8 +117,11 @@ GET /v0/tenants/{tenantRNS}/members
 Authorization: Bearer {token}
 ```
 
-Returns each member's profile (email, name, type) and their tenant-level role
-(`Tenant Admin` or `Tenant Member`).
+Returns each member's profile (email, name, type). The `role` field in the
+response is empty in practice — tenant-level role (`Tenant Admin` or
+`Tenant Member`) must be derived by cross-referencing the `admins[]` array
+from `GET /v0/tenants/{tenantRNS}`: email present in `admins[]` → "Tenant Admin",
+otherwise → "Tenant Member".
 
 ### Tenant details including admins
 
@@ -134,7 +143,9 @@ Authorization: Bearer {token}
 }
 ```
 
-This is the endpoint UCP's `isUserTenantAdmin()` already calls today.
+The `admins[]` array is the authoritative source for determining which members
+hold the Tenant Admin role, since `GET /v0/tenants/{rns}/members` does not
+return a reliable role field.
 
 ### Tenant subscriptions
 
@@ -254,16 +265,17 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ## Verification Results
 
-*To be filled in after tests are run against QA.*
-
 | Test | Expected | Actual | Status |
 |---|---|---|---|
-| Test 1 — Member tenants + subscriptions | Tenants array with `default_role` per service | | Pending |
-| Test 2 — Tenant member list | Members list with roles | | Pending |
-| Test 3 — JWT groups claim | RNS role strings in `groups` array | | Pending |
-| Test 4 — Service-level role lookup | Role for specific tenant+service | | Pending |
+| Test 1 — Member tenants + subscriptions | Tenants array with `default_role` per service | Not tested — superseded by JWT approach | Skipped |
+| Test 2 — Tenant member list | Members list with roles | `role` field is empty; role derived from `admins[]` cross-reference | Verified (QA) |
+| Test 3 — JWT groups claim | RNS role strings in `groups` array | Confirmed format: `rns:roc:{service}::{tenant}:roles:{role}`; Tenant Admin format verified | Verified (QA) |
+| Test 4 — Service-level role lookup | Role for specific tenant+service | Not tested | Pending |
 
-**Key questions to confirm:**
-- Does `subscriptions[].default_role` use the exact role strings from the PM's table (`admin`, `operator`, `viewer`, etc.)?
-- Does the user token have sufficient permission to call these endpoints, or is a service account required for any of them?
-- Does the JWT `groups` claim include per-tenant service roles for all subscribed services, or only the top-level tenant admin role?
+**Key questions confirmed:**
+- JWT `groups` claim includes per-tenant service roles for all subscribed services (e.g. `rns:roc:dbaas::clsd-ucp:roles:admin`). Tenant-level role is the `iam` service entry.
+- `GET /v0/tenants/{rns}/members` `role` field is empty in practice — `admins[]` cross-reference is the correct approach for OC role derivation.
+- User token is sufficient to call `GET /v0/tenants/{rns}` and `GET /v0/tenants/{rns}/members`.
+
+**Key question still open:**
+- Does `rns:roc:iam::{tenant}:roles:member` appear in the JWT for OC Tenant Members, or do they have no `iam` entry? Needs a non-admin test account.
