@@ -11,7 +11,7 @@ parent_page_id: "../rbac.md"
 | **Jira** | [MCUCP-191](https://jira.rakuten-it.com/jira/browse/MCUCP-191) |
 | **Author** | aripermana.putra |
 | **Date** | 2026-06-01 |
-| **Status** | COMPLETED |
+| **Status** | PROPOSED |
 
 ---
 
@@ -24,7 +24,7 @@ deployed across all API endpoints and the frontend. Tenant membership and OC
 roles are synchronised from Horizon on every login — storing all members locally
 so that role management requires zero live Horizon calls at request time.
 
-**Verdict: Go.** The permission model, onboarding flow, and member sync all
+**Verdict: Pending.** The permission model, onboarding flow, and member sync all
 work end-to-end. Several open questions remain (see Section 4).
 
 ---
@@ -176,10 +176,11 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    first login. Whether this gap is acceptable for MVP or whether pre-provisioning
    is required needs a decision (related to Open Question 3).
 
-6. **JWT `groups` claim size at scale** — each `groups` entry is ~40–50 bytes.
+6. **JWT `groups` claim size at scale** — the JWT payload is base64-encoded JSON
+   transmitted on every request. Each `groups` entry is ~40–50 bytes, so the
+   token grows linearly with the number of tenant memberships and service roles.
    For a user in a small number of tenants (as in the PoC) this is negligible.
-   For a user in many tenants with many service subscriptions, the claim grows
-   proportionally:
+   For a user in many tenants with many service subscriptions:
 
    | Tenants | Service roles each | JWT size (approx) |
    |---|---|---|
@@ -188,12 +189,16 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    | 50 | 10 | ~40 KB |
    | 100 | 10 | ~80 KB |
 
-   HTTP servers typically enforce a per-header limit of 8–16 KB. A user in many
-   tenants will exceed this, causing requests to be rejected before reaching UCP.
-   Options for MVP: Keycloak reference tokens (opaque token + server-side
-   introspection), restrict `groups` mapper to `iam` entries only (drop service
-   roles from JWT, rely on `oc_roles` DB), or fallback to Horizon API when
-   `groups` is absent.
+   HTTP servers typically enforce a per-header limit of 8–16 KB. What exactly
+   happens when a user's token exceeds this limit is unverified — it likely
+   results in a `431 Request Header Fields Too Large` before the request reaches
+   UCP, meaning the user cannot log in at all. This needs to be tested with an
+   actual high-membership account before MVP.
+
+   Options if this becomes a real constraint: Keycloak reference tokens (opaque
+   token + server-side introspection), restrict `groups` mapper to `iam` entries
+   only (drop service roles from JWT, rely on `oc_roles` DB), or fallback to
+   Horizon API when `groups` is absent or truncated.
 
 7. **Periodic background sync** — the current implementation syncs on login only.
    Role changes in OC between logins are not reflected until the user next logs in.
@@ -215,7 +220,7 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
 
 ## 5. Recommendations
 
-**Decision: Go**
+**Decision: Pending**
 
 The RBAC model, tenant onboarding, and member sync are functionally complete.
 The permission bitmask is extensible without schema changes. The local-first
