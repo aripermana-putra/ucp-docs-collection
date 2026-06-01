@@ -209,8 +209,8 @@ Option 1 and its sub-variants make UCP the security boundary. The threat model f
 
 **Option 1A and 1B** add authz granularity at the UCP layer without changing the credential model:
 
-- **1B** is the lower-effort path — no new role management UI, no schema changes beyond storing service roles from JWT, and it keeps OC as the source of truth which tenants already manage. The constraint is OC's service taxonomy, but a fallback to tenant-level role for GCP-only resource types is straightforward.
-- **1A** decouples UCP entirely from OC's service model, giving full control but requiring a new role management dimension that tenants must learn and maintain in UCP separately.
+- **1B** is the lower-effort path — no new CLI commands for role management, no schema changes beyond storing service roles from JWT, and it keeps OC as the source of truth which tenants already manage. The constraint is OC's service taxonomy, but a fallback to tenant-level role for GCP-only resource types is straightforward.
+- **1A** decouples UCP entirely from OC's service model, giving full control but requiring new CLI commands and a new role management dimension that tenants must learn and maintain separately from OC.
 
 The genuinely open risk across all single-SA options is **SA key exfiltration from the database** — the one scenario where UCP's authz provides no protection because the attacker bypasses UCP entirely. This requires post-MVP investment in secrets management (Vault, GCP Secret Manager) and credential rotation, independent of which option is chosen.
 
@@ -220,6 +220,6 @@ The genuinely open risk across all single-SA options is **SA key exfiltration fr
 
 **Option 1 for MVP.** One service account per provider per tenant, UCP as the authoritative security boundary.
 
-If finer-grained authz is required at MVP, **Option 1B** is the preferred path — it reuses OC's existing role model with minimal build effort, requires no new UI, and is cross-provider by design. The decision on whether to enforce OC service roles is a PM call.
+If finer-grained authz is required at MVP, **Option 1B** is the preferred path — it reuses OC's existing role model with minimal build effort, requires no new CLI commands for role management, and is cross-provider by design. The decision on whether to enforce OC service roles is a PM call.
 
 **Option 1A** is a longer-term option if UCP needs to diverge from OC's service taxonomy or manage resource types with no OC equivalent.
