@@ -177,7 +177,27 @@ GET /v0/tenants/{tenantRNS}/subscriptions
 Authorization: Bearer {token}
 ```
 
-Returns all services the tenant is subscribed to and their `default_role`.
+Returns all services the tenant is subscribed to. `default_role` is absent for
+most services — confirmed by testing (see Verification Results).
+
+**Actual response (QA, clsd-ucp tenant):**
+
+```json
+{
+  "total_items": 9,
+  "items": [
+    { "name": "computeapi",  "rns": "rns:roc:computeapi",  "title": "Virtual Machine",         "added_at": "2026-02-26T09:01:51Z" },
+    { "name": "caas",        "rns": "rns:roc:caas",        "title": "Container",               "added_at": "2026-02-19T06:33:23Z" },
+    { "name": "lbaas",       "rns": "rns:roc:lbaas",       "title": "Load Balancer",           "added_at": "2026-05-11T07:29:28Z" },
+    { "name": "staas",       "rns": "rns:roc:staas",       "title": "Storage",                 "added_at": "2026-02-26T08:36:35Z" },
+    { "name": "cicd-aas",    "rns": "rns:roc:cicd-aas",    "title": "CICD-as-a-Service",       "added_at": "2026-02-26T08:30:55Z" },
+    { "name": "billing",     "rns": "rns:roc:billing",     "title": "ROC Billing", "default_role": "admin", "added_at": "2026-01-20T08:18:50Z" },
+    { "name": "dbaas",       "rns": "rns:roc:dbaas",       "title": "Database",                "added_at": "2026-01-21T01:39:16Z" },
+    { "name": "registry-aas","rns": "rns:roc:registry-aas","title": "Registry as a Service",   "added_at": "2026-02-19T06:33:23Z" },
+    { "name": "bmaas",       "rns": "rns:roc:bmaas",       "title": "Baremetal",               "added_at": "2026-02-26T08:26:06Z" }
+  ]
+}
+```
 
 ---
 
@@ -484,6 +504,43 @@ per-member service role check for Option 2, since `subscriptions[].default_role`
 
 ---
 
+### Test 5 — Tenant subscriptions
+
+Horizon endpoint: `GET /v0/tenants/{tenantRNS}/subscriptions`
+
+```bash
+curl -s -H "Cookie: session=<session>" \
+  -H "X-Environment: QA" \
+  "http://localhost:8080/api/v1/horizon/tenants/rns%3Aroc%3Aiam%3A%3Aclsd-ucp/subscriptions" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "total_items": 9,
+  "items": [
+    { "name": "computeapi",  "rns": "rns:roc:computeapi",  "title": "Virtual Machine",         "added_at": "2026-02-26T09:01:51Z" },
+    { "name": "caas",        "rns": "rns:roc:caas",        "title": "Container",               "added_at": "2026-02-19T06:33:23Z" },
+    { "name": "lbaas",       "rns": "rns:roc:lbaas",       "title": "Load Balancer",           "added_at": "2026-05-11T07:29:28Z" },
+    { "name": "staas",       "rns": "rns:roc:staas",       "title": "Storage",                 "added_at": "2026-02-26T08:36:35Z" },
+    { "name": "cicd-aas",    "rns": "rns:roc:cicd-aas",    "title": "CICD-as-a-Service",       "added_at": "2026-02-26T08:30:55Z" },
+    { "name": "billing",     "rns": "rns:roc:billing",     "title": "ROC Billing", "default_role": "admin", "added_at": "2026-01-20T08:18:50Z" },
+    { "name": "dbaas",       "rns": "rns:roc:dbaas",       "title": "Database",                "added_at": "2026-01-21T01:39:16Z" },
+    { "name": "registry-aas","rns": "rns:roc:registry-aas","title": "Registry as a Service",   "added_at": "2026-02-19T06:33:23Z" },
+    { "name": "bmaas",       "rns": "rns:roc:bmaas",       "title": "Baremetal",               "added_at": "2026-02-26T08:26:06Z" }
+  ]
+}
+```
+
+**Finding:** Response shape is identical to the `subscriptions[]` array in Test 1.
+`default_role` is absent for all services except `billing`, consistent with
+Test 1. This endpoint tells you what services the tenant is subscribed to but
+does not carry per-member role information — it is not useful for Option 2
+role checks.
+
+---
+
 ## Verification Results
 
 | Test | Horizon endpoint | Status | Key finding |
@@ -492,6 +549,7 @@ per-member service role check for Option 2, since `subscriptions[].default_role`
 | Test 2 — Tenant member list | `GET /v0/tenants/{rns}/members` | Verified (QA) | No `role` field; includes `service-account` type members |
 | Test 3 — JWT groups claim | n/a — JWT parse only | Verified (QA) | Format confirmed; multiple roles per service possible |
 | Test 4 — Service-level role lookup | `GET /v0/members/{rns}/tenants/{rns}/services/{rns}/access/roles?verify` | Verified (QA) | Works with user token; returns role name + RNS |
+| Test 5 — Tenant subscriptions | `GET /v0/tenants/{rns}/subscriptions` | Verified (QA) | Same shape as Test 1 `subscriptions[]`; `default_role` absent except `billing` |
 
 **Confirmed:**
 - JWT `groups` claim encodes all service roles per tenant — the correct source for per-member service role data at login time.
