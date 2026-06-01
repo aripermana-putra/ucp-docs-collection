@@ -191,19 +191,18 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    using Keycloak JWTs without provider-specific configuration that does not
    generalize across providers. Three approaches are viable:
 
-   - **Single admin SA per provider per tenant** — one credential with broad
-     access; UCP enforces all access control internally. Simple, portable across
-     providers, but over-privileged at the cloud level.
-   - **Multiple SAs mapped to UCP roles or resource types** — more granular cloud-level
-     access but higher operational burden on tenants, tight coupling to each
-     provider's resource model, and poor portability across GCP/AWS/Azure.
-   - **UCP as the explicit security boundary** — single SA per provider per tenant,
-     UCP is the authoritative authz layer. Security investment goes into hardening
+   - **Single SA per provider per tenant, UCP as the security boundary** — one
+     credential with sufficient scope for all UCP operations; UCP enforces all
+     access control internally. Simple, portable across providers, but
+     over-privileged at the cloud level. Security investment goes into hardening
      UCP (encrypted credential storage, route-level permission enforcement,
      tenant-scoped queries, audit logging) rather than distributing authz across
      multiple credentials.
+   - **Multiple SAs mapped to UCP roles or resource types** — more granular
+     cloud-level access but higher operational burden on tenants, tight coupling
+     to each provider's resource model, and poor portability across GCP/AWS/Azure.
 
-   The third approach aligns with UCP's design philosophy and is what the PoC
+   The first approach aligns with UCP's design philosophy and is what the PoC
    implements, but the decision has not been formally reviewed. The primary
    residual risk is SA key exfiltration from UCP's database — mitigations such
    as secrets management (Vault, GCP Secret Manager) and credential rotation are
