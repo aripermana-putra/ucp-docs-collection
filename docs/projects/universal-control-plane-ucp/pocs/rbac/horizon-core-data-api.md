@@ -237,21 +237,36 @@ calls.
 The PM's open question was: *"Can UCP call Core Data API using the user's own
 JWT, or does UCP need a dedicated platform-level service account?"*
 
-**Answer: the user's own JWT works.** `GET /v0/members/{email}/tenants?subscriptions=true`
-called with `Principal.AccessToken` returns only what that user is allowed to
-see. No platform-level service account is needed.
+**Answer: the user's own JWT works.** All tested endpoints (`GET /v0/members`,
+`GET /v0/tenants`) return data scoped to what that user is allowed to see when
+called with `Principal.AccessToken`. No platform-level service account is needed.
 
-This means Option 2 (UCP RBAC + OC service role check) is technically feasible.
-`subscriptions[].default_role` is not reliably populated (Test 1), so the
-correct check at provisioning time uses the dedicated service role endpoint:
+### Which endpoint to use for Option 2
 
-1. Call `GET /v0/members/{memberRNS}/tenants/{tenantRNS}/services/{serviceRNS}/access/roles?verify`
-   with the user's token
-2. Check `items[0].name` for the required role (e.g. `"admin"`, `"operator"`)
-3. Reject if insufficient role
+Testing ruled out `subscriptions[].default_role` (Tests 1 and 5) — it is absent
+for most services. The only reliable real-time service role check is:
 
-Alternatively, read from `oc_roles.oc_service_roles` (already populated from
-JWT on every login) — zero Horizon call at provisioning time.
+```
+GET /v0/members/{memberRNS}/tenants/{tenantRNS}/services/{serviceRNS}/access/roles?verify
+```
+
+The `?verify` flag bypasses Horizon's cache and forces a live lookup. Check
+`items[0].name` against the required role for the resource type being provisioned
+(e.g. `"admin"` or `"operator"` for DBaaS).
+
+### Two implementation options for Option 2
+
+| Approach | Freshness | Horizon call at provisioning | Implementation |
+|---|---|---|---|
+| **Live check** — call `access/roles?verify` at provisioning time | Real-time | 1 call per provision request | Wire `RequirePermission` middleware to call Horizon |
+| **Cached check** — read `oc_roles.oc_service_roles` (JWT-populated on login) | Stale up to token TTL (~10 min) | 0 calls | Wire middleware to query local DB |
+
+The cached approach uses data already collected — `oc_roles.oc_service_roles`
+is populated on every login from the JWT `groups` claim with no additional
+Horizon calls. Enabling it requires only a middleware wire-up, no schema changes.
+
+The live approach is the only option when real-time accuracy is required (e.g.
+a user's OC service role was downgraded since their last login).
 
 ---
 
