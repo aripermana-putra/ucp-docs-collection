@@ -10,7 +10,7 @@ parent_page_id: "../tenant-isolation.md"
 |---|---|
 | **Jira** | [MCUCP-192](https://jira.rakuten-it.com/jira/browse/MCUCP-192) |
 | **Author** | aripermana.putra |
-| **Date** | 2026-06-02 |
+| **Date** | 2026-05-29 |
 | **Status** | COMPLETED |
 
 ---
@@ -24,8 +24,8 @@ list endpoints, and ownership verification on all mutations. A `ValidatingAdmiss
 provides defense-in-depth at the cluster level independent of the API server.
 
 **Verdict: Go.** Tenant isolation is functionally complete for all current resource types.
-Namespace-per-tenant is the correct long-term path but is blocked on upstream provider
-support and deferred to MCUCP-119.
+Namespace-per-tenant is the correct long-term path but requires both upstream provider
+support and a ProviderConfig admission policy layer before it can be safely adopted.
 
 ---
 
@@ -48,7 +48,7 @@ label selectors and server-side ownership checks, without relying on namespace b
 | SC-7 | Wrong-tenant delete returns 404 not 403 — resource existence is not leaked | Pass |
 
 **Scope boundaries (out of scope):**
-- Namespace-per-tenant (deferred to MCUCP-119 — blocked on provider MR support)
+- Namespace-per-tenant — blocked on upstream provider MR support and ProviderConfig hardening design
 - Omnia-specific isolation — handled at the auth layer via per-tenant JWT
 - Terraform endpoints — `random` provider has no cloud credentials; per-tenant ProviderConfig is not applicable
 
@@ -84,8 +84,9 @@ not 403, to avoid leaking resource existence across tenants.
 
 A Kubernetes `ValidatingAdmissionPolicy` (GA in K8s 1.30) enforces that all XRs carry
 the tenant label and annotation on CREATE and UPDATE. This provides defense-in-depth:
-a rogue XR created by bypassing the API server (e.g. via direct `kubectl apply`) is
-rejected at the Kubernetes admission layer before persisting to etcd.
+a rogue XR created by bypassing the API server (e.g. via direct `kubectl apply` from
+a compromised platform team account) is rejected at the Kubernetes admission layer
+before persisting to etcd.
 
 ### ProviderConfig injection
 
@@ -94,28 +95,52 @@ The `ProviderConfig` name is computed server-side from the tenant ID and environ
 every XR for a tenant uses that tenant's cloud credentials — cross-tenant provisioning
 via a crafted `providerConfig` value is not possible.
 
-### Namespace-per-tenant is blocked
+### Namespace-per-tenant requires more than namespaced provider MRs
 
 Cluster-scoped XRs have no namespace boundary for Kubernetes RBAC to act on.
 Namespace-per-tenant would provide native Kubernetes isolation and eliminate the
-`getUserTenantIDs` Horizon call on list endpoints, but it requires all provider MRs
-to be namespace-scoped. The upjet GCP and Azure providers are still cluster-scoped
-(namespace support in progress upstream). This is tracked in MCUCP-119.
+`getUserTenantIDs` Horizon call on list endpoints. The commonly understood blocker
+is that provider MRs must be namespace-scoped first (provider-upjet-gcp and
+provider-upjet-azure are still cluster-scoped).
+
+However, research into the Crossplane threat model reveals an additional design
+requirement. Namespaced ProviderConfigs provide namespace isolation for the
+*reference graph* (MR → PC → Secret) but do **not** restrict the provider's
+credential configuration surface. A ProviderConfig can specify:
+
+- `credentials.source: InjectedIdentity` — the controller uses its own ambient cloud
+  identity (the operator's service account) instead of a tenant-supplied Secret
+- `endpoint: <attacker-controlled-url>` — the controller sends authenticated requests
+  to an attacker's server
+
+Combined, these allow a tenant (or a compromised operator) to craft a PC that causes
+the Crossplane controller to send its own cloud credentials to an attacker-controlled
+endpoint — an SSRF-via-configuration attack. The Crossplane runtime cannot prevent
+this because these fields are provider-specific and semantically opaque to the runtime.
+
+The Crossplane maintainers confirm this is the intended contract: namespaced PCs
+are safe only when operators constrain the credential configuration surface via
+admission policy. A `ValidatingAdmissionPolicy` or equivalent must block
+`InjectedIdentity` sources and custom endpoint overrides on all tenant-namespace
+ProviderConfigs before namespace-per-tenant can be safely adopted.
+
+This applies even when UCP controls PC creation (no direct tenant access) — it
+provides defense-in-depth against a compromised platform team account.
 
 ---
 
 ## 4. Open Questions
 
-1. **Namespace-per-tenant (MCUCP-119)** — the correct long-term isolation model.
-   Namespace-scoped XRs would shift list filtering from label selectors to namespace
-   scoping (faster, uses the namespace index), and would provide Kubernetes RBAC
-   enforcement independent of the API server. Blocked until provider-upjet-gcp and
-   provider-upjet-azure ship namespace-scoped MR support.
+1. **Namespace-per-tenant** — the correct long-term isolation model. Two blockers
+   must be resolved before it can be safely adopted:
+   - All required provider MRs must become namespace-scoped (provider-upjet-gcp and
+     provider-upjet-azure are still cluster-scoped)
+   - A `ValidatingAdmissionPolicy` for ProviderConfigs must block `InjectedIdentity`
+     credential sources and custom endpoint overrides in tenant namespaces
 
 2. **Legacy XRs without ownership labels** — XRs created before label stamping are
    invisible to list and delete endpoints. A migration strategy is needed before
-   namespace-per-tenant can be adopted: all existing cluster-scoped XRs must be
-   labelled or the migration will silently drop them from the API.
+   namespace-per-tenant can be adopted.
 
 3. **Approve/reject ownership check covers databases only** —
    `verifyWorkflowTenantOwnership` looks up the workflow ID in XDatabase annotations.
@@ -124,9 +149,8 @@ to be namespace-scoped. The upjet GCP and Azure providers are still cluster-scop
 
 4. **`getUserTenantIDs` Horizon call on unfiltered list** — when `?tenantId=` is absent,
    the API calls Horizon to fetch all tenants the caller belongs to. This adds a live
-   Horizon call to every unfiltered list request. Namespace-per-tenant eliminates this
-   entirely. Until then, the call is acceptable for PoC but worth caching or replacing
-   with the locally-synced `oc_roles` table before MVP.
+   Horizon call to every unfiltered list request. Worth replacing with the
+   locally-synced `oc_roles` table before MVP to reduce live Horizon dependency.
 
 ---
 
@@ -140,21 +164,21 @@ The ProviderConfig injection model correctly enforces per-tenant cloud credentia
 
 **Next steps:**
 
-1. Label all existing unlabelled XRs before namespace-per-tenant migration
-   (Open Question 2)
-2. Extend `verifyWorkflowTenantOwnership` to cover all resource types when their
+1. Design the ProviderConfig `ValidatingAdmissionPolicy` for tenant namespaces —
+   required before namespace-per-tenant can be safely adopted (Open Question 1)
+2. Define a migration strategy for unlabelled legacy XRs before any namespace
+   migration (Open Question 2)
+3. Extend `verifyWorkflowTenantOwnership` to cover all resource types when their
    approval workflows are added (Open Question 3)
-3. Replace the `getUserTenantIDs` Horizon call on unfiltered list with the locally-synced
-   `oc_roles` table (Open Question 4) — reduces live Horizon dependency before MVP
-4. Resume MCUCP-119 (namespace-per-tenant) once provider-upjet-gcp ships
-   namespace-scoped MR support (Open Question 1)
+4. Replace the `getUserTenantIDs` Horizon call on unfiltered list with the
+   locally-synced `oc_roles` table before MVP (Open Question 4)
 
 ---
 
 ## 6. References
 
 - Design docs: [Tenant Isolation — UCP Design](./ucp-tenant-isolation-design.md)
+- Crossplane threat model discussion: [crossplane/crossplane#7392](https://github.com/crossplane/crossplane/discussions/7392)
 - PRs: [ucp-platform #44](https://ghe.rakuten-it.com/clsd-ucp/ucp-platform/pull/44) · [ucp-api-gateway #15](https://ghe.rakuten-it.com/clsd-ucp/ucp-api-gateway/pull/15) · [ucp-ui #12](https://ghe.rakuten-it.com/clsd-ucp/ucp-ui/pull/12)
 - Jira: [MCUCP-192](https://jira.rakuten-it.com/jira/browse/MCUCP-192)
-- Follow-up: [MCUCP-119 — Namespace-scoped Crossplane resources](https://jira.rakuten-it.com/jira/browse/MCUCP-119)
 - Prerequisite: [MCUCP-189 — Quota Management](https://jira.rakuten-it.com/jira/browse/MCUCP-189)
