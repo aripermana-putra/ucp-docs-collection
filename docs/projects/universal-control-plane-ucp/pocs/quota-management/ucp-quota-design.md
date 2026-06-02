@@ -177,9 +177,8 @@ quota should be set below the GCP quota to leave headroom.
 
 ## Open Questions
 
-1. **Who sets initial platform quotas?** Platform-admin via API, or seeded from Horizon
-   tenant `tier` field (`standard`/`premium`)? The tier field suggests Horizon already
-   encodes capacity intent.
+1. **Who sets initial platform quotas?** Platform-admin via API, or seeded from some
+   external source of capacity intent (e.g. tenant subscription tier)? Needs PM decision.
 
 2. **Quota inheritance from org/folder GCP quota policies?** If an org quota policy caps
    a tenant project at 50 CPUs, should UCP read this cap and reflect it as the tenant's
