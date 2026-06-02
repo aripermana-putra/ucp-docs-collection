@@ -178,7 +178,7 @@ With namespace-scoped XRs, filtering shifts from a label selector to a namespace
 which uses Kubernetes's namespace index directly:
 
 ```go
-// After MCUCP-119: namespace index used instead of label scan
+// After namespace-per-tenant: namespace index used instead of label scan
 list, err := s.k8sClient.Resource(xObjectStorageGVR).Namespace(tenantNamespace).List(ctx, metav1.ListOptions{})
 ```
 
@@ -202,6 +202,6 @@ The approach is blocked until all required providers ship namespace-scoped manag
 The migration requires changing `scope: Cluster` to `scope: Namespaced` in the
 `OmniaDatabase` CRD and updating the reconciler to scope operations to the MR's namespace.
 
-Once all required providers support namespaced MRs, MCUCP-119 resumes: XRDs change from
+Once all required providers support namespaced MRs, the namespace-per-tenant migration can proceed: XRDs change from
 `scope: Cluster` to `scope: Namespaced`, and each tenant gets a dedicated Kubernetes
 namespace that Crossplane resources are provisioned into.

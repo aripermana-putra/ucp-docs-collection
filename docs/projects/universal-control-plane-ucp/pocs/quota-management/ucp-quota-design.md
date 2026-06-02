@@ -99,7 +99,7 @@ Open design questions for this layer are in `poc-report.md`.
 ## Open Questions
 
 1. **Who sets initial platform quotas?** Platform-admin via API, or seeded from some
-   external source of capacity intent (e.g. tenant subscription tier)? Needs PM decision.
+   external source of capacity intent (e.g. tenant subscription tier)? Needs decision.
 
 2. **Quota inheritance from GCP org quota policies?** If a GCP org policy caps a tenant
    project at 50 CPUs, should UCP read this and reflect it as the tenant's platform
@@ -114,4 +114,4 @@ Open design questions for this layer are in `poc-report.md`.
 
 5. **Platform quota drift** — if a resource is deleted directly in GCP outside UCP,
    the platform ledger count is wrong. How frequently should it reconcile against
-   actual GCP state? (Connects to drift detection — MCUCP-158.)
+   actual GCP state? (Connects to the drift detection work.)

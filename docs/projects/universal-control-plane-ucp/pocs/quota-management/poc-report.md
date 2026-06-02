@@ -123,7 +123,7 @@ prevent GCP-level failures.
 ## 4. Open Questions
 
 1. **Who sets initial platform quotas?** Platform-admin via API, or seeded from some
-   external source of capacity intent (e.g. tenant subscription tier)? Needs PM decision.
+   external source of capacity intent (e.g. tenant subscription tier)? Needs a decision.
 
 2. **Cross-provider quota** — should UCP enforce a single limit across all providers
    (e.g. 5 databases total regardless of GCP or Omnia), or per-provider limits
@@ -135,7 +135,7 @@ prevent GCP-level failures.
 
 4. **Platform quota drift when resources are deleted outside UCP** — if a resource is
    deleted directly in GCP, the platform ledger count is wrong until the next
-   reconciliation. This connects to the drift detection work (MCUCP-158).
+   reconciliation. This connects to the drift detection work.
 
 5. **Rate quotas vs resource count quotas in the display** — they serve different
    audiences (operations vs capacity planning). Should they be shown together or

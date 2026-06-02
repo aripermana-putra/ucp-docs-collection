@@ -1001,4 +1001,4 @@ type the tenant's credentials cover, with no per-service restriction.
 
 A UCP-native service-role layer (independent of OC) is not defined. Whether
 UCP should introduce per-service roles (e.g. `database-operator`) for both
-OC and public cloud resources is an open question to be resolved with the PM.
+OC and public cloud resources is an open question to be resolved.

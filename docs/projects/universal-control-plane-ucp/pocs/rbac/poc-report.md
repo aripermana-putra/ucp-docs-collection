@@ -207,7 +207,7 @@ See [Horizon Core Data API](./horizon-core-data-api.md) for full test results.
    The OC service roles approach is the lowest-friction path to finer-grained
    control and keeps OC as the source of truth. The data is already in
    `oc_roles.oc_service_roles`; enabling it is a middleware change only.
-   Decision deferred to PM.
+   Decision deferred.
 
    See [Cloud Provider Authorization Model](../../research/cloud-provider-authz-model.md)
    for full analysis including STRIDE threat model and comparison table.
