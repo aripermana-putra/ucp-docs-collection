@@ -23,7 +23,6 @@ This covers cloud provider quota visibility only. UCP platform-level soft quotas
 | `gcpQuotaProvider` | `backend/api-server/quota_handler.go` | Deployed |
 | `GET /api/v1/quota` | `backend/api-server/main.go:197` | Deployed |
 | Pre-provision gate (`CheckPreProvision`) | `backend/api-server/main.go:478` | Deployed — fails open |
-| Quota UI | `frontend/src/components/QuotaList.jsx` | Deployed |
 
 Both quota limits and usage are read from **Cloud Monitoring** (`serviceruntime.googleapis.com`).
 No separate quota API is used. See `gcp-api-reference.md` for confirmed field structures.
@@ -41,8 +40,6 @@ No separate quota API is used. See `gcp-api-reference.md` for confirmed field st
 - **Pre-provision gate** — `CheckPreProvision` is called by `POST /api/v1/databases` before
   creating any XR or Temporal workflow; returns HTTP 429 if quota is exhausted. Fails open
   for GCP — Cloud SQL instance count has no programmatic metric ID (see Limitations)
-- **Quota UI** — filterable, sortable table with service filter, metric search, usage % bar,
-  row highlighting at ≥80% (warning) and ≥100% (critical), pagination
 
 ### Out of Scope
 
@@ -91,14 +88,9 @@ sequenceDiagram
 
     Handler->>Handler: tenantID = query["tenantId"] → "rns:rakuten:ucp:xxx"
 
-    Note over Handler: requireTenantAdmin() check
+    Note over Handler: RequirePermission(PermManage) check
 
-    Handler->>Handler: extractBearerToken(r)<br/>→ reads Principal.AccessToken from context (set by SessionMiddleware)<br/>→ falls back to Authorization header only if context is empty<br/>extractEmailFromJWT(token) → reads "email" claim from JWT payload
-
-    Handler->>Horizon: GET /v0/tenants/rns:rakuten:ucp:xxx
-    Note over Handler,Horizon: Authorization: Bearer [session-access-token]
-    Horizon-->>Handler: {"admins": [{"email": "user@example.com"}, ...]}
-    Handler->>Handler: user email ∈ admins[] → authorized ✓
+    Handler->>Handler: extractBearerToken(r)<br/>→ reads Principal.AccessToken from context (set by SessionMiddleware)<br/>→ falls back to Authorization header only if context is empty
 
     Handler->>Handler: getEnvironment(r)<br/>X-Environment: "QA" → env = "qa"
 
@@ -204,23 +196,6 @@ than raw GCP quota topology.
 | `compute` | `compute.googleapis.com/cpus` (regional) | Not wired |
 | `k8s-cluster` | `container.googleapis.com/clusters` | Not wired |
 | `storage` | `storage.googleapis.com/buckets` | Not wired |
-
----
-
-## Display Design
-
-The quota table currently shows all metrics returned by Cloud Monitoring across the four
-monitored services. The recommended next direction is to group rows by UCP resource type
-rather than by GCP service, separating resource count quotas from rate quotas.
-
-### Open questions for production
-
-1. Should API rate quotas (req/min) be shown alongside resource count quotas? They serve
-   different audiences — rate quotas for operations, resource count quotas for capacity planning.
-2. For soft limits with no API support, show the usage-only row with "limit not available",
-   or omit it?
-3. For regional metrics, show all regions or only the tenant's configured region?
-4. Should the quota page aggregate across providers (GCP + Omnia in one view) or be per-provider?
 
 ---
 
