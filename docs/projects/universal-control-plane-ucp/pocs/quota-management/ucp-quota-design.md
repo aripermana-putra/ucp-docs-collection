@@ -57,8 +57,10 @@ returns HTTP 429 immediately.
 | `storage` | `storage.googleapis.com/buckets` | Not wired |
 
 The database gate fails open because Cloud SQL instance count per project is a soft
-limit with no metric ID in Cloud Monitoring or the Cloud Quotas API. This is a GCP
-platform constraint. The platform soft quota layer (see below) is the correct mitigation.
+limit with no metric ID in Cloud Monitoring or the Cloud Quotas API — a GCP platform
+constraint. This is one example of a broader gap: not all resource types have a
+programmatic quota metric, and the platform soft quota layer (see below) is the correct
+mitigation for cases where GCP does not expose a checkable limit.
 
 ### QuotaProvider interface
 
@@ -79,8 +81,10 @@ change.
 ## UCP Platform Soft Quota Layer (future)
 
 The platform soft quota enforces UCP-level per-tenant resource count limits,
-independently of GCP. It is the correct mitigation for the Cloud SQL gate gap and the
-foundation for cross-provider quota enforcement.
+independently of GCP. It is the correct mitigation for cases where a cloud provider
+does not expose a programmatic quota metric (Cloud SQL instance count being a confirmed
+example), and the foundation for consistent quota enforcement across all providers and
+resource types.
 
 The design intent:
 - A `quota_policies` table stores per-tenant per-resource-type limits

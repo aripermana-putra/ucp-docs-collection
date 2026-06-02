@@ -103,8 +103,9 @@ without workarounds.
 | UCP platform soft quota | UCP-enforced per-tenant resource count limits (`quota_policies` table + middleware) | Designed, not implemented |
 
 The platform soft quota layer is independent of GCP quotas. It enforces UCP-level
-entitlements regardless of what GCP allows — and crucially, it can gate Cloud SQL
-creation even though GCP provides no metric for it. The `quota_policies` table design
+entitlements regardless of what GCP allows — and crucially, it covers resource types
+where the cloud provider exposes no programmatic quota metric (Cloud SQL instance count
+being a confirmed example). The `quota_policies` table design
 and the `CheckQuota` middleware contract are specified in the design doc.
 
 ### Project-per-tenant means independent GCP quotas
@@ -153,8 +154,8 @@ provides a clean extension point for additional providers.
 **Next steps:**
 
 1. Implement the UCP platform soft quota layer (`quota_policies` + `CheckQuota`
-   middleware) — this is the correct mitigation for the Cloud SQL instance count gap
-   and the foundation for cross-provider quota enforcement
+   middleware) — this covers resource types where cloud providers expose no programmatic
+   quota metric, and provides a consistent enforcement layer across all providers
 2. Align with PM on initial quota values, cross-provider model, and quota increase
    workflow (Open Questions 1, 2, 3)
 3. Wire pre-provision gates for Compute Engine, GKE, and Cloud Storage once the
