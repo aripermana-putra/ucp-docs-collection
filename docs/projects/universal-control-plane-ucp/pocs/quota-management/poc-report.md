@@ -121,9 +121,8 @@ prevent GCP-level failures.
 
 ## 4. Open Questions
 
-1. **Who sets initial platform quotas?** Platform-admin via API, or seeded from Horizon
-   tenant tier (`standard`/`premium`)? The tier field suggests Horizon already encodes
-   capacity intent.
+1. **Who sets initial platform quotas?** Platform-admin via API, or seeded from some
+   external source of capacity intent (e.g. tenant subscription tier)? Needs PM decision.
 
 2. **Cross-provider quota** — should UCP enforce a single limit across all providers
    (e.g. 5 databases total regardless of GCP or Omnia), or per-provider limits
