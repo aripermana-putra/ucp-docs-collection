@@ -9,7 +9,8 @@ parent_page_id: "../pocs.md"
 UCP enforces tenant isolation at the API server layer using a
 **ProviderConfig-per-tenant** strategy combined with ownership labels on all
 Kubernetes XRs. Tenants have no direct access to the Kubernetes API — the API server is
-the sole isolation boundary.
+the sole isolation boundary. A `ValidatingAdmissionPolicy` at the cluster layer provides
+defense-in-depth independent of the API server.
 
 ---
 
@@ -23,18 +24,24 @@ tenant's `ProviderConfig`.
 
 All XRs created by the API server carry a `platform.ucp.io/tenant` label and a
 `platform.ucp.io/tenant-id` annotation. List and delete endpoints use these markers to
-enforce per-tenant scoping at the API layer.
+enforce per-tenant scoping at the API layer. The `ValidatingAdmissionPolicy` rejects any
+XR that does not carry these markers, even if created by bypassing the API server.
+
+Namespace-per-tenant is the planned long-term enhancement — adding native Kubernetes
+enforcement on top of the existing label-based isolation. It is blocked on namespace-scoped
+MR support in provider-upjet-gcp.
 
 ---
 
 ## Sub-Documents
 
+- [POC Report](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6670032897/POC+Report+Tenant+Isolation) — verdict, success criteria, findings, risks, open questions
 - [Concepts](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6646697166/Tenant+Isolation+%E2%80%94+Concepts) — ProviderConfig-per-tenant, tenant identity,
   label vs annotation, BFF auth, namespace isolation constraint
-- [Implementation](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6646697174/Tenant+Isolation+%E2%80%94+Implementation) — scope, API sequence, key
+- [Implementation](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6646697174/Tenant+Isolation+%E2%80%94+Implementation) — scope, API sequence diagrams, key
   functions, verification
 - [Design](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6646697182/Tenant+Isolation+%E2%80%94+UCP+Design) — global tenant context,
-  RBAC role model, ValidatingAdmissionPolicy, namespace-per-tenant path
+  ValidatingAdmissionPolicy, namespace-per-tenant path
 
 ---
 
@@ -42,5 +49,3 @@ enforce per-tenant scoping at the API layer.
 
 - `MCUCP-192` — API-layer isolation implementation
 - `MCUCP-191` — RBAC role model (depends on MCUCP-192)
-- `MCUCP-119` — namespace-scoped XRDs (blocked on upstream provider support)
-- `docs/architecture/RBAC.md` — 5-role RBAC design specification
