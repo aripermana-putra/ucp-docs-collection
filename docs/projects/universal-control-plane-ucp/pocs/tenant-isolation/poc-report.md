@@ -24,8 +24,10 @@ list endpoints, and ownership verification on all mutations. A `ValidatingAdmiss
 provides defense-in-depth at the cluster level independent of the API server.
 
 **Verdict: Go.** Tenant isolation is functionally complete for all current resource types.
-Namespace-per-tenant is the correct long-term path but requires both upstream provider
-support and a ProviderConfig admission policy layer before it can be safely adopted.
+Namespace-per-tenant is the correct long-term enhancement — it adds a native Kubernetes
+enforcement layer on top of the existing label-based isolation, not a replacement for it.
+It requires both namespace-scoped provider MR support and a ProviderConfig admission
+policy before it can be safely adopted.
 
 ---
 
@@ -49,8 +51,6 @@ label selectors and server-side ownership checks, without relying on namespace b
 
 **Scope boundaries (out of scope):**
 - Namespace-per-tenant — blocked on upstream provider MR support and ProviderConfig hardening design
-- Omnia-specific isolation — handled at the auth layer via per-tenant JWT
-- Terraform endpoints — `random` provider has no cloud credentials; per-tenant ProviderConfig is not applicable
 
 ---
 
@@ -152,7 +152,7 @@ MR support. No action is required to unblock that — it is an upstream dependen
 
 **Next steps:**
 
-1. Prove namespace-scoped MRs on `provider-roc` (Omnia) first
+1. Prove namespace-scoped MRs on `provider-roc` first
 2. Monitor provider-upjet-gcp progress on namespace-scoped MR support. If the
    timeline is too long, assess forking and patching it ourselves
 3. Design the ProviderConfig `ValidatingAdmissionPolicy` for tenant namespaces
