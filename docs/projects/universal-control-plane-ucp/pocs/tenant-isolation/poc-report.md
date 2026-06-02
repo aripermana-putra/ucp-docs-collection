@@ -137,6 +137,13 @@ provides defense-in-depth against a compromised platform team account.
    - A `ValidatingAdmissionPolicy` for ProviderConfigs must block `InjectedIdentity`
      credential sources and custom endpoint overrides in tenant namespaces
 
+   **Actionable next steps toward unblocking:**
+   - Migrate `provider-roc` (Omnia) to namespace-scoped MRs first — it is a custom
+     provider owned by the platform team and can be done independently of upstream
+   - Monitor provider-upjet-gcp upstream progress on namespace-scoped MR support.
+     If the upstream timeline is too long, assess forking and patching provider-upjet-gcp
+     to add namespace support ourselves
+
 ---
 
 ## 5. Recommendations
@@ -150,7 +157,7 @@ The ProviderConfig injection model correctly enforces per-tenant cloud credentia
 The current approach remains in place until provider-upjet-gcp ships namespace-scoped
 MR support. No action is required to unblock that — it is an upstream dependency.
 
-**Risks of the current implementation:**
+**Risks :**
 
 | Risk | Severity | Mitigation |
 |---|---|---|
