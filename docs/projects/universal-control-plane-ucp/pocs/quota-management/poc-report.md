@@ -73,20 +73,21 @@ These are joined on `(quota_metric, location)` to produce a usage percentage per
 The same tenant credentials used for provisioning are sufficient to call Cloud Monitoring
 — no additional credential setup is needed.
 
-### Cloud SQL instance count has no metric ID
+### Some resource types have no programmatic quota metric
 
-Cloud SQL instances per project is a **soft limit** managed via GCP support cases. It
-has no metric ID in any quota API and does not appear in Cloud Monitoring. The
-pre-provision gate for database creation therefore **fails open** — it cannot check
-Cloud SQL instance quota before provisioning.
+Not all GCP resource count limits are exposed as programmatic metrics. Cloud SQL
+instances per project is a confirmed example — it is a soft limit managed via GCP
+support cases with no metric ID in Cloud Monitoring or the Cloud Quotas API. The
+pre-provision gate for database creation therefore **fails open**.
 
 The Cloud SQL metrics that do appear in Cloud Monitoring (`connect`, `get`, `list`,
-`mutate`) are rate quotas on Admin API call frequency, not resource count quotas. They
+`mutate`) are rate quotas on Admin API call frequency, not resource count quotas, and
 are not relevant to provisioning decisions.
 
-This is a GCP platform constraint, not a UCP implementation gap. The UCP platform soft
-quota layer (see below) is the mitigation — it enforces a UCP-level database count limit
-independently of GCP quota visibility.
+This is a GCP platform constraint. The platform soft quota layer is the mitigation —
+it enforces UCP-level per-tenant resource count limits independently of what GCP
+exposes, covering any resource type regardless of whether GCP provides a quota metric
+for it.
 
 ### Cloud Monitoring returns fewer metrics than the GCP Console
 
