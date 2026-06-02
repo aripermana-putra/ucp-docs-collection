@@ -56,11 +56,10 @@ returns HTTP 429 immediately.
 | `k8s-cluster` | `container.googleapis.com/clusters` | Not wired |
 | `storage` | `storage.googleapis.com/buckets` | Not wired |
 
-The database gate fails open because Cloud SQL instance count per project is a soft
-limit with no metric ID in Cloud Monitoring or the Cloud Quotas API — a GCP platform
-constraint. This is one example of a broader gap: not all resource types have a
-programmatic quota metric, and the platform soft quota layer (see below) is the correct
-mitigation for cases where GCP does not expose a checkable limit.
+Not all GCP resource count limits are exposed as programmatic metrics. Cloud SQL
+instance count is a confirmed example — it is a soft limit with no metric ID, causing
+the database gate to fail open. The platform soft quota layer (see below) is the correct
+mitigation for any resource type where GCP does not expose a checkable limit.
 
 ### QuotaProvider interface
 

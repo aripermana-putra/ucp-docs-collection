@@ -39,7 +39,7 @@ No separate quota API is used. See `gcp-api-reference.md` for confirmed field st
   contract; adding a new provider means implementing the interface
 - **Pre-provision gate** — `CheckPreProvision` is called by `POST /api/v1/databases` before
   creating any XR or Temporal workflow; returns HTTP 429 if quota is exhausted. Fails open
-  for GCP — Cloud SQL instance count has no programmatic metric ID (see Limitations)
+  for GCP — some resource count limits have no programmatic metric ID (see Limitations)
 
 ### Out of Scope
 
@@ -161,15 +161,16 @@ percentage      = float64(usage) / float64(limit) * 100
 
 ## Limitations
 
-### Cloud SQL instance count is not quota-visible
+### Some resource count limits have no programmatic metric ID
 
-Cloud SQL instances per project is a soft limit managed via GCP support cases. It has no
-metric ID in any quota API and does not appear in Cloud Monitoring. The pre-provision gate
-for database provisioning therefore fails open — `CheckPreProvision` always returns nil.
+Not all GCP resource count limits are exposed as programmatic metrics. Cloud SQL
+instances per project is a confirmed example — it is a soft limit with no metric ID in
+any quota API and does not appear in Cloud Monitoring. The pre-provision gate therefore
+fails open for this resource type — `CheckPreProvision` always returns nil.
 
 The Cloud SQL metrics that do appear in Cloud Monitoring (`connect`, `get`, `list`,
 `mutate`) are **rate quotas** on Admin API call frequency. They are not relevant to
-provisioning decisions for UCP tenants.
+provisioning decisions.
 
 ### Cloud Monitoring returns fewer metrics than the GCP Console
 
