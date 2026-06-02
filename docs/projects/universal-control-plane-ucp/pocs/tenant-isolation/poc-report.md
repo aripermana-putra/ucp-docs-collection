@@ -133,24 +133,9 @@ provides defense-in-depth against a compromised platform team account.
 
 1. **Namespace-per-tenant** — the correct long-term isolation model. Two blockers
    must be resolved before it can be safely adopted:
-   - All required provider MRs must become namespace-scoped (provider-upjet-gcp and
-     provider-upjet-azure are still cluster-scoped)
+   - All required provider MRs must become namespace-scoped (provider-upjet-gcp is still cluster-scoped)
    - A `ValidatingAdmissionPolicy` for ProviderConfigs must block `InjectedIdentity`
      credential sources and custom endpoint overrides in tenant namespaces
-
-2. **Legacy XRs without ownership labels** — XRs created before label stamping are
-   invisible to list and delete endpoints. A migration strategy is needed before
-   namespace-per-tenant can be adopted.
-
-3. **Approve/reject ownership check covers databases only** —
-   `verifyWorkflowTenantOwnership` looks up the workflow ID in XDatabase annotations.
-   When approval workflows are added for other resource types (compute, storage, etc.),
-   the ownership check must be extended to cover those XR types.
-
-4. **`getUserTenantIDs` Horizon call on unfiltered list** — when `?tenantId=` is absent,
-   the API calls Horizon to fetch all tenants the caller belongs to. This adds a live
-   Horizon call to every unfiltered list request. Worth replacing with the
-   locally-synced `oc_roles` table before MVP to reduce live Horizon dependency.
 
 ---
 
@@ -162,16 +147,17 @@ Label-based tenant isolation is functionally complete for all current resource t
 The `ValidatingAdmissionPolicy` provides a meaningful safety net at the cluster layer.
 The ProviderConfig injection model correctly enforces per-tenant cloud credential scope.
 
-**Next steps:**
+The current approach remains in place until provider-upjet-gcp ships namespace-scoped
+MR support. No action is required to unblock that — it is an upstream dependency.
 
-1. Design the ProviderConfig `ValidatingAdmissionPolicy` for tenant namespaces —
-   required before namespace-per-tenant can be safely adopted (Open Question 1)
-2. Define a migration strategy for unlabelled legacy XRs before any namespace
-   migration (Open Question 2)
-3. Extend `verifyWorkflowTenantOwnership` to cover all resource types when their
-   approval workflows are added (Open Question 3)
-4. Replace the `getUserTenantIDs` Horizon call on unfiltered list with the
-   locally-synced `oc_roles` table before MVP (Open Question 4)
+**Risks of the current implementation:**
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| All isolation relies on the UCP API server — no independent Kubernetes-layer enforcement. A bug in permission middleware or auth bypass breaks all tenant isolation. | High | Route-level permission enforcement; parameterized queries; tenant-scoped DB queries; audit logging |
+| The `ValidatingAdmissionPolicy` enforces label *presence* but not label *ownership* — a platform team member with direct cluster access could stamp any tenant's label on a manually created XR. | Medium | Access to the cluster is restricted to the platform team; all tenant access goes through UCP's custom interface |
+| ProviderConfig SSRF — a compromised cluster account could craft a PC with `InjectedIdentity` + custom `endpoint`, causing the Crossplane controller to exfiltrate its own ambient cloud credentials. | Medium | UCP controls PC creation server-side; tenants have no direct cluster access. A ProviderConfig `ValidatingAdmissionPolicy` blocking `InjectedIdentity` and custom endpoints should be added as defense-in-depth. |
+| Namespace-per-tenant, once adopted, requires a ProviderConfig admission policy or the SSRF attack surface opens to anyone with namespace write access. | Low (future) | Must be designed and deployed before namespace-per-tenant migration (Open Question 1) |
 
 ---
 
