@@ -123,24 +123,11 @@ prevent GCP-level failures.
 
 ## 4. Open Questions
 
-1. **Who sets initial platform quotas?** Platform-admin via API, or seeded from some
-   external source of capacity intent (e.g. tenant subscription tier)? Needs a decision.
-
-2. **Cross-provider quota** — should UCP enforce a single limit across all providers
-   (e.g. 5 databases total regardless of GCP or Omnia), or per-provider limits
-   (e.g. 5 GCP databases + 5 Omnia databases)?
-
-3. **Quota increase workflow** — should tenants be able to request a platform quota
-   increase that triggers an approval workflow, optionally followed by a GCP
-   `QuotaPreference` submission?
-
-4. **Platform quota drift when resources are deleted outside UCP** — if a resource is
-   deleted directly in GCP, the platform ledger count is wrong until the next
-   reconciliation. This connects to the drift detection work.
-
-5. **Rate quotas vs resource count quotas in the display** — they serve different
-   audiences (operations vs capacity planning). Should they be shown together or
-   separated?
+1. **UCP platform soft quota design** — the PoC proves that a quota data source exists
+   for GCP and that the `QuotaProvider` interface is the right abstraction. The platform
+   soft quota layer itself — schema, enforcement mechanism, who sets limits, quota
+   increase workflow, display design, and equivalent data sources for other cloud
+   providers — will be worked out during MVP implementation.
 
 ---
 

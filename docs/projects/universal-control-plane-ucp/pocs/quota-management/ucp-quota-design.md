@@ -97,20 +97,7 @@ Open design questions for this layer are in `poc-report.md`.
 
 ## Open Questions
 
-1. **Who sets initial platform quotas?** Platform-admin via API, or seeded from some
-   external source of capacity intent (e.g. tenant subscription tier)? Needs decision.
-
-2. **Quota inheritance from GCP org quota policies?** If a GCP org policy caps a tenant
-   project at 50 CPUs, should UCP read this and reflect it as the tenant's platform
-   quota automatically?
-
-3. **Cross-provider quota** — single limit across all providers (e.g. 5 databases total
-   regardless of GCP or Omnia), or per-provider limits?
-
-4. **Quota increase workflow** — should tenants be able to request a platform quota
-   increase that triggers an approval workflow, optionally followed by a GCP
-   `QuotaPreference` submission?
-
-5. **Platform quota drift** — if a resource is deleted directly in GCP outside UCP,
-   the platform ledger count is wrong. How frequently should it reconcile against
-   actual GCP state? (Connects to the drift detection work.)
+1. **UCP platform soft quota design** — the full design of the platform soft quota
+   layer is unresolved: schema, enforcement mechanism, who sets limits and how, quota
+   increase workflow, display, cross-provider model, and equivalent data sources for
+   providers other than GCP. These will be worked out during MVP implementation.
