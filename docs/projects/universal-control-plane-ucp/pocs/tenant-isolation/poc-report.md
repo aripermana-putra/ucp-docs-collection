@@ -138,11 +138,9 @@ provides defense-in-depth against a compromised platform team account.
      credential sources and custom endpoint overrides in tenant namespaces
 
    **Actionable next steps toward unblocking:**
-   - Migrate `provider-roc` (Omnia) to namespace-scoped MRs first — it is a custom
-     provider owned by the platform team and can be done independently of upstream
-   - Monitor provider-upjet-gcp upstream progress on namespace-scoped MR support.
-     If the upstream timeline is too long, assess forking and patching provider-upjet-gcp
-     to add namespace support ourselves
+   - Prove namespace-scoped MRs on `provider-roc` (Omnia) first
+   - Monitor provider-upjet-gcp upstream progress. If the timeline is too long,
+     assess forking and patching it ourselves
 
 ---
 
