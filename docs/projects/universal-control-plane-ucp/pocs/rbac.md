@@ -29,13 +29,13 @@ bypasses all per-tenant checks.
 
 ## Sub-Documents
 
-- [Concepts](rbac/concepts.md) — role definitions, role hierarchy, role
+- [Concepts](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6655505015/RBAC+%E2%80%94+Concepts) — role definitions, role hierarchy, role
   resolution, RequireRole middleware pattern
-- [Implementation](rbac/implementation.md) — scope, status table, endpoint-role
+- [Implementation](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6655505026/RBAC+%E2%80%94+Implementation) — scope, status table, endpoint-role
   mapping, sequence diagrams, verification
-- [Design](rbac/ucp-rbac-design.md) — Role type, resolveUserRole, RequireRole
+- [Design](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6655505032/RBAC+%E2%80%94+UCP+Design) — Role type, resolveUserRole, RequireRole
   middleware, route grouping, platform-admin handling
-- [Horizon Core Data API](rbac/horizon-core-data-api.md) — member and tenant
+- [Horizon Core Data API](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6667713470/RBAC+%E2%80%94+Horizon+Core+Data+API) — member and tenant
   identity endpoints, JWT claim approach, Option 2 feasibility findings
 
 ---
@@ -44,4 +44,3 @@ bypasses all per-tenant checks.
 
 - `MCUCP-191` — RBAC implementation
 - `MCUCP-192` — Multi-tenancy (prerequisite: tenant labels on XRs)
-- `docs/architecture/RBAC.md` — role model specification

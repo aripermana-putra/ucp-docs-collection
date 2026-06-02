@@ -19,9 +19,9 @@ question.
 |---|---|
 | OpenAPI spec (QA) | [swagger.json](https://qa-horizon-data-api.r-local.net/v0/docs/swagger.json) |
 | Core Data — Overview | [Confluence — AMPORTAL](https://confluence.rakuten-it.com/confluence/display/AMPORTAL/1.+Core+Data+-+Overview) |
-| Core Data — API registry | [Confluence — \[Review\] Horizon Core Data](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6125028565) |
+| Core Data — API registry | [Confluence — [Review] Horizon Core Data](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6125028565) |
 | Core Data — Release changelog | [Confluence — Core Data releases](https://confluence.rakuten-it.com/confluence/display/CLDCPS/Core+Data+releases) |
-| PM requirements (Option 2) | [UCP Identity, Tenancy & Roles](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles) |
+| PM requirements (Draft) | [UCP Identity, Tenancy & Roles](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6645566515/UCP+Identity+Tenancy+Roles) |
 
 ---
 
