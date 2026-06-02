@@ -5,7 +5,7 @@ Publish updated documentation to Confluence.
 Run this command to get all markdown files changed in the last git commit, excluding files under `.claude/`:
 
 ```
-git diff --name-only HEAD~5 HEAD -- '*.md' | grep -v '^\.claude/'
+git diff --name-only HEAD~30 HEAD -- '*.md' | grep -v '^\.claude/'
 ```
 
 Also check for any locally modified (unstaged/staged) markdown files:

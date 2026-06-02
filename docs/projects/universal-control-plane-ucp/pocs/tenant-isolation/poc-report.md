@@ -170,8 +170,7 @@ MR support. No action is required to unblock that — it is an upstream dependen
 
 ## 6. References
 
-- Design docs: [Tenant Isolation — UCP Design](./ucp-tenant-isolation-design.md)
-- Crossplane threat model discussion: [crossplane/crossplane#7392](https://github.com/crossplane/crossplane/discussions/7392)
+- Design docs: [Tenant Isolation — UCP Design](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6646697182/Tenant+Isolation+%E2%80%94+UCP+Design)
+- Crossplane threat model related to namesapced ProviderConfig discussion: [crossplane/crossplane#7392](https://github.com/crossplane/crossplane/discussions/7392)
 - PRs: [ucp-platform #44](https://ghe.rakuten-it.com/clsd-ucp/ucp-platform/pull/44) · [ucp-api-gateway #15](https://ghe.rakuten-it.com/clsd-ucp/ucp-api-gateway/pull/15) · [ucp-ui #12](https://ghe.rakuten-it.com/clsd-ucp/ucp-ui/pull/12)
 - Jira: [MCUCP-192](https://jira.rakuten-it.com/jira/browse/MCUCP-192)
-- Prerequisite: [MCUCP-189 — Quota Management](https://jira.rakuten-it.com/jira/browse/MCUCP-189)

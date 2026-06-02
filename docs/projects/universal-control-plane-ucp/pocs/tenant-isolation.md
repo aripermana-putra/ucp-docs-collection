@@ -29,11 +29,11 @@ enforce per-tenant scoping at the API layer.
 
 ## Sub-Documents
 
-- [Concepts](tenant-isolation/concepts.md) — ProviderConfig-per-tenant, tenant identity,
+- [Concepts](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6646697166/Tenant+Isolation+%E2%80%94+Concepts) — ProviderConfig-per-tenant, tenant identity,
   label vs annotation, BFF auth, namespace isolation constraint
-- [Implementation](tenant-isolation/implementation.md) — scope, API sequence, key
+- [Implementation](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6646697174/Tenant+Isolation+%E2%80%94+Implementation) — scope, API sequence, key
   functions, verification
-- [Design](tenant-isolation/ucp-tenant-isolation-design.md) — global tenant context,
+- [Design](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6646697182/Tenant+Isolation+%E2%80%94+UCP+Design) — global tenant context,
   RBAC role model, ValidatingAdmissionPolicy, namespace-per-tenant path
 
 ---
