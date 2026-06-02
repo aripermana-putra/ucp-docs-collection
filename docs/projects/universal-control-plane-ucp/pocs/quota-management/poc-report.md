@@ -129,6 +129,13 @@ prevent GCP-level failures.
    increase workflow, display design, and equivalent data sources for other cloud
    providers — will be worked out during MVP implementation.
 
+2. **Quota data fetching strategy** — four approaches are viable (proactive background
+   sync, TTL cache, pure on-demand, lazy fetch with keep-warm for active tenants). No
+   approach has been chosen. The decision affects gate reliability, infrastructure cost,
+   data freshness, and whether the pre-provision gate should call the cloud provider
+   directly or read from a local store. See [Quota Data Fetching Strategy](./ucp-quota-design.md)
+   for full analysis.
+
 ---
 
 ## 5. Recommendations
@@ -139,11 +146,21 @@ GCP quota visibility is functional and the pre-provision gate correctly blocks
 over-provisioning for resource types with metric IDs. The `QuotaProvider` interface
 provides a clean extension point for additional providers.
 
+**Risks:**
+
+| Risk | Severity | Note |
+|---|---|---|
+| Cloud Monitoring data freshness — metrics are time-series with ~24h alignment; quota data can be up to 24 hours stale | Low | Quota changes are infrequent; acceptable for provisioning decisions |
+| Pre-provision gate fails open if Cloud Monitoring is unavailable | Medium | The current on-demand approach ties gate reliability to Cloud Monitoring uptime. Approaches that store quota data locally (Options A and D in the fetching strategy) mitigate this — but calling the cloud provider directly at provisioning time is arguably more accurate and avoids data freshness issues in UCP's own store. The right mitigation depends on which fetching strategy is chosen. |
+| Quota fetch cost grows with providers and services | Medium | Current on-demand approach: `providers × services × 2` calls per request, all sequential. Cost grows linearly as UCP adds providers and resource types. See [Quota Data Fetching Strategy](./ucp-quota-design.md) for long-term approach. |
+
 **Next steps:**
 
 1. Design and implement the UCP platform soft quota layer during MVP implementation
    (Open Question 1)
-2. Identify equivalent quota data sources for other cloud providers as they are
+2. Decide on the quota data fetching strategy before MVP implementation — the choice
+   affects the pre-provision gate design and infrastructure requirements (Open Question 2)
+3. Identify equivalent quota data sources for other cloud providers as they are
    onboarded — the `QuotaProvider` interface is ready for new implementations
 
 ---
