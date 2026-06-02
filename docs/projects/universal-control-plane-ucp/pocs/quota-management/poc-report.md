@@ -141,13 +141,10 @@ provides a clean extension point for additional providers.
 
 **Next steps:**
 
-1. Implement the UCP platform soft quota layer (`quota_policies` + `CheckQuota`
-   middleware) — this covers resource types where cloud providers expose no programmatic
-   quota metric, and provides a consistent enforcement layer across all providers
-2. Align with PM on initial quota values, cross-provider model, and quota increase
-   workflow (Open Questions 1, 2, 3)
-3. Wire pre-provision gates for Compute Engine, GKE, and Cloud Storage once the
-   quota metric mappings are confirmed
+1. Design and implement the UCP platform soft quota layer during MVP implementation
+   (Open Question 1)
+2. Identify equivalent quota data sources for other cloud providers as they are
+   onboarded — the `QuotaProvider` interface is ready for new implementations
 
 ---
 
