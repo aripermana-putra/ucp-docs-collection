@@ -6,172 +6,89 @@ parent_page_id: "../quota-management.md"
 
 # UCP Quota Design
 
-## Overview
+## Two-Layer Model
 
 UCP quota management has two layers:
 
-| Layer | What it controls | Status |
+| Layer | What it controls | PoC status |
 |---|---|---|
-| GCP cloud quota | Real-time quota limits and usage from the tenant's GCP project | Deployed — see `implementation.md` |
-| UCP platform soft quota | UCP-enforced per-tenant resource count limits | Design phase — spec below |
+| GCP cloud quota | Real-time quota limits and usage from the tenant's GCP project | Implemented |
+| UCP platform soft quota | UCP-enforced per-tenant resource count limits | Not implemented — future work |
 
-The platform soft quota layer is independent of GCP quotas. It enforces UCP-level
-entitlements regardless of what GCP allows. The design specification is below.
-Implementation is pending the prerequisite work described in this document.
+The two layers are independent. GCP cloud quota is a hard ceiling set by Google per
+project. Platform soft quota is a UCP-enforced entitlement that sits below the GCP
+ceiling. If the GCP project quota is exhausted, resource creation fails at the GCP API
+layer regardless of platform quota. If the platform soft quota is exhausted, UCP blocks
+the request before it reaches GCP.
+
+For UCP's ProviderConfig-per-tenant model, each tenant's GCP quota is independent —
+one tenant exhausting their quota does not affect another. Platform soft quota should
+be set below the GCP project quota to leave headroom.
 
 ---
 
-## Design Specification
+## GCP Cloud Quota Layer
 
-### Database Schema (from `docs/architecture/RBAC.md`)
+### Data source
 
-```sql
-CREATE TABLE quota_policies (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_external_id  VARCHAR(256) NOT NULL,      -- Horizon RNS, e.g. rns:roc:iam::clsd-ucp
-    resource            VARCHAR(64)  NOT NULL,       -- "database", "compute", "storage", etc.
-    limit_value         INTEGER NOT NULL DEFAULT -1, -- -1 = unlimited
-    updated_by          UUID REFERENCES users(id),
-    updated_at          TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(tenant_external_id, resource)
-);
-```
+Both quota limits and usage are read from Cloud Monitoring
+(`serviceruntime.googleapis.com`). No separate quota API is used.
 
-### CheckQuota Middleware Design (from `docs/architecture/RBAC.md`)
+| Metric type | What it provides |
+|---|---|
+| `serviceruntime.googleapis.com/quota/limit` | Configured limit per quota metric per region |
+| `serviceruntime.googleapis.com/quota/allocation/usage` | Current consumption |
+
+The two are joined on `(quota_metric, location)` to produce usage percentage per row.
+The tenant's stored provisioning credentials are sufficient to call Cloud Monitoring —
+no additional credential setup is needed.
+
+### Pre-provision gate
+
+`CheckPreProvision` is called on every resource creation request before the Temporal
+workflow is started. If the tenant's quota for the resource type is exhausted, it
+returns HTTP 429 immediately.
+
+| UCP resource type | GCP quota metric | Gate status |
+|---|---|---|
+| `database` | — (soft limit, no metric ID) | Fails open |
+| `compute` | `compute.googleapis.com/cpus` | Not wired |
+| `k8s-cluster` | `container.googleapis.com/clusters` | Not wired |
+| `storage` | `storage.googleapis.com/buckets` | Not wired |
+
+The database gate fails open because Cloud SQL instance count per project is a soft
+limit with no metric ID in Cloud Monitoring or the Cloud Quotas API. This is a GCP
+platform constraint. The platform soft quota layer (see below) is the correct mitigation.
+
+### QuotaProvider interface
+
+GCP-specific quota logic is abstracted behind a `QuotaProvider` interface:
 
 ```go
-func (a *APIServer) CheckQuota(resource string) mux.MiddlewareFunc {
-    return func(next http.Handler) http.Handler {
-        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            if r.Method != http.MethodPost {
-                next.ServeHTTP(w, r)
-                return
-            }
-            tenantRNS := r.Header.Get("X-Tenant-ID")
-            policy, _ := a.db.GetQuotaPolicy(tenantRNS, resource)
-            if policy.LimitValue == -1 {
-                next.ServeHTTP(w, r) // unlimited
-                return
-            }
-            current, _ := a.countTenantResources(r.Context(), tenantRNS, resource)
-            if current >= policy.LimitValue {
-                respondError(w, http.StatusTooManyRequests,
-                    fmt.Sprintf("quota exceeded: %s limit is %d", resource, policy.LimitValue))
-                return
-            }
-            next.ServeHTTP(w, r)
-        })
-    }
+type QuotaProvider interface {
+    ListQuotas(ctx context.Context, tenantID, env string) ([]QuotaEntry, error)
+    CheckPreProvision(ctx context.Context, tenantID, env, resourceType string) error
 }
 ```
 
-Usage count comes from the K8s API (same queries the existing list handlers use),
-keeping the API stateless.
-
-### Quota API Endpoints (from `docs/architecture/RBAC.md`)
-
-| Method | Path | Description | Permission |
-|---|---|---|---|
-| `GET` | `/api/v1/rbac/tenants/{tenantRNS}/quotas` | List all quotas | `quota:read` |
-| `PUT` | `/api/v1/rbac/tenants/{tenantRNS}/quotas/{resource}` | Set limit | `quota:update` |
-| `GET` | `/api/v1/rbac/tenants/{tenantRNS}/quotas/{resource}/usage` | Current count vs limit | `quota:read` |
+Adding a new cloud provider means implementing this interface. The API layer does not
+change.
 
 ---
 
-## Implementation Prerequisites
+## UCP Platform Soft Quota Layer (future)
 
-Quota enforcement depends on tenant isolation being in place first:
+The platform soft quota enforces UCP-level per-tenant resource count limits,
+independently of GCP. It is the correct mitigation for the Cloud SQL gate gap and the
+foundation for cross-provider quota enforcement.
 
-### Prerequisite 1 — Tenant Labels on XRs (Tenant Isolation Gap 2)
+The design intent:
+- A `quota_policies` table stores per-tenant per-resource-type limits
+- A `CheckQuota` middleware counts current tenant resources via K8s label-filtered
+  queries and blocks `POST` requests that would exceed the limit
+- Quota management endpoints allow platform-admins to set and view limits per tenant
 
-`countTenantResources()` must filter K8s resources by tenant. This requires the
-`ucp.platform/tenant` label to be applied on every XR at creation time.
-
-Without this label, counting "how many databases does tenant A have" is impossible —
-the API would count all tenants' databases.
-
-### Prerequisite 2 — Tenant-Scoped List Queries (Tenant Isolation Gap 1)
-
-The K8s list queries used for counting must use a `LabelSelector`:
-
-```go
-// Before quota can work:
-list, err := s.k8sClient.Resource(gvr).List(ctx, metav1.ListOptions{
-    LabelSelector: fmt.Sprintf("ucp.platform/tenant=%s", sanitizeTenantID(tenantRNS)),
-})
-```
-
-Currently all list handlers use `metav1.ListOptions{}` with no selector (tenant
-isolation gap documented in `pocs/tenant-isolation.md`).
-
-### Prerequisite 3 — RBAC Phase 1 (RequirePermission middleware)
-
-Quota API endpoints use `quota:read` and `quota:update` permissions. These require the
-RBAC permission model (Phase 1 from `docs/architecture/RBAC.md`) to be implemented first.
-Currently only `isUserTenantAdmin()` exists.
-
-**Sequence:**
-
-```
-1. Tenant isolation gaps (labels + list filtering)    ← fix first
-2. RBAC Phase 1 (roles, permissions, middleware)      ← enables quota API access control
-3. Quota Phase 2 (quota_policies table + middleware)  ← quota enforcement
-```
-
----
-
-## Two Layers of Quota: Platform vs GCP
-
-The `quota_policies` table and `CheckQuota` middleware implement **platform-level soft
-quotas** — UCP-enforced limits that exist independently of GCP's hard quotas.
-
-To fully manage quotas, UCP needs to handle both:
-
-| Layer | What it controls | Mechanism | Current state |
-|---|---|---|---|
-| GCP cloud quota | GCP-enforced per-project resource ceiling | Cloud Monitoring (`quota/limit` + `quota/allocation/usage`) | **Partially implemented** — listing works, pre-provision gate fails open |
-| Platform soft quota | UCP-enforced per-tenant resource count | `quota_policies` table + `CheckQuota` middleware | Designed only, not implemented |
-
-**Platform quota** prevents a tenant from provisioning more resources than their
-entitlement, regardless of GCP limits.
-
-**GCP quota** is a hard ceiling set by Google per project. If the GCP project quota is
-exhausted, resource creation fails at the GCP API layer regardless of platform quota.
-
-For UCP with project-per-tenant model (each ProviderConfig points to a dedicated cloud
-account), the GCP quota for each tenant project is independent. UCP's platform soft
-quota should be set below the GCP quota to leave headroom.
-
----
-
-## Recommended Implementation Path
-
-### Phase 1 — Platform Soft Quotas (Unblocked After Tenant Isolation)
-
-1. Add `quota_policies` migration to `db/db.go`
-2. Implement `db.GetQuotaPolicy()` and `db.SetQuotaPolicy()` in the DB layer
-3. Implement `countTenantResources()` using label-filtered K8s list queries
-4. Implement `CheckQuota()` middleware
-5. Wire `CheckQuota` to all `POST` resource creation handlers:
-   - `POST /api/v1/databases` → `CheckQuota("database")`
-   - `POST /api/v1/compute` → `CheckQuota("compute")`
-   - `POST /api/v1/storage` → `CheckQuota("storage")`
-   - `POST /api/v1/kubernetes-clusters` → `CheckQuota("k8s-cluster")`
-   - `POST /api/v1/terraform` → `CheckQuota("terraform")`
-6. Implement quota CRUD API endpoints (`/api/v1/rbac/tenants/{rns}/quotas/...`)
-7. Implement quota usage endpoint (count from K8s, stateless)
-
-### Phase 2 — GCP Cloud Quota Awareness
-
-8. Surface real-time GCP quota limits and usage per tenant via Cloud Monitoring (`GET /api/v1/quota`) — see `implementation.md`
-9. Detect when platform entitlement exceeds current GCP quota and surface as a condition on the tenant's quota status
-10. Optionally: submit `QuotaPreference` requests via Cloud Quotas API when a tenant's entitlement is increased beyond the current GCP limit
-
-### Phase 3 — Frontend and Quota UI
-
-11. Quota display table with service filter, usage % bar, and row highlighting — see `implementation.md`
-12. Quota management admin UI (platform-admin and tenant-admin views)
-13. Quota display integrated into resource list views (current usage / limit inline)
+Open design questions for this layer are in `poc-report.md`.
 
 ---
 
@@ -180,19 +97,17 @@ quota should be set below the GCP quota to leave headroom.
 1. **Who sets initial platform quotas?** Platform-admin via API, or seeded from some
    external source of capacity intent (e.g. tenant subscription tier)? Needs PM decision.
 
-2. **Quota inheritance from org/folder GCP quota policies?** If an org quota policy caps
-   a tenant project at 50 CPUs, should UCP read this cap and reflect it as the tenant's
-   platform quota automatically?
+2. **Quota inheritance from GCP org quota policies?** If a GCP org policy caps a tenant
+   project at 50 CPUs, should UCP read this and reflect it as the tenant's platform
+   quota automatically?
 
-3. **Cross-provider quota?** Should UCP enforce a single quota across all providers
-   (e.g., "5 databases total regardless of whether they are GCP or Omnia"), or per-provider
-   quotas (e.g., "5 GCP databases + 5 Omnia databases")?
+3. **Cross-provider quota** — single limit across all providers (e.g. 5 databases total
+   regardless of GCP or Omnia), or per-provider limits?
 
-4. **Quota increase workflow?** Should tenants be able to request a platform quota
-   increase via the UCP UI, which then triggers an approval workflow (Temporal) and
-   optionally submits a GCP `QuotaPreference`?
+4. **Quota increase workflow** — should tenants be able to request a platform quota
+   increase that triggers an approval workflow, optionally followed by a GCP
+   `QuotaPreference` submission?
 
-5. **Drift between platform quota and GCP quota.** If a resource is deleted directly
-   in GCP (not via UCP), the platform ledger count will be wrong. How frequently should
-   `countTenantResources()` reconcile against GCP actual state? (This connects to the
-   drift detection work — MCUCP-158.)
+5. **Platform quota drift** — if a resource is deleted directly in GCP outside UCP,
+   the platform ledger count is wrong. How frequently should it reconcile against
+   actual GCP state? (Connects to drift detection — MCUCP-158.)
