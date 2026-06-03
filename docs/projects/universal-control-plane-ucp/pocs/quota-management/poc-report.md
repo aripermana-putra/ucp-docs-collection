@@ -167,8 +167,8 @@ provides a clean extension point for additional providers.
 
 ## 6. References
 
-- Design docs: [UCP Quota Design](./ucp-quota-design.md)
-- GCP API reference: [GCP API Reference](./gcp-api-reference.md)
+- Design docs: [UCP Quota Design](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6681010042/UCP+Quota+Design)
+- GCP API reference: [GCP API Reference](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6681206350/GCP+Quota+API+Reference)
 - PRs: [ucp-platform #68](https://ghe.rakuten-it.com/clsd-ucp/ucp-platform/pull/68) · [ucp-api-gateway #22](https://ghe.rakuten-it.com/clsd-ucp/ucp-api-gateway/pull/22) · [ucp-ui #17](https://ghe.rakuten-it.com/clsd-ucp/ucp-ui/pull/17)
 - Jira: [MCUCP-189](https://jira.rakuten-it.com/jira/browse/MCUCP-189)
 - Prerequisite: [MCUCP-192 — Tenant Isolation](https://jira.rakuten-it.com/jira/browse/MCUCP-192)
