@@ -140,34 +140,20 @@ Approach D gets a structured, queryable audit log for free.
 
 ## 4. Open Questions
 
-1. **Notify vs approve mode per resource** — two modes are needed: `notify` (detect,
-   alert, no reconciliation) and `approve` (detect, alert, wait for human approval,
-   reconcile). The propagation mechanism (XRD parameter + MR label) is designed but
-   not fully implemented.
-
-2. **Chatty notification problem** — drift is continuously re-detected on every scan
+1. **Chatty notification problem** — drift is continuously re-detected on every scan
    cycle. Without a debounce mechanism, the same drift event generates repeated
    notifications. For `approve` mode, Temporal dedup already solves this. For `notify`
-   mode, a snooze mechanism is needed (designed: annotation on the MR,
-   `platform.io/drift-snoozed-until`; not implemented).
+   mode, a snooze mechanism is needed. The design (annotation on the MR:
+   `platform.io/drift-snoozed-until`) is in the shared design doc — the question is
+   how snooze duration should be configured and who controls it.
 
-3. **Non-recoverable drift — early detection** — currently the operator only learns
-   a drift is non-recoverable after approving and waiting for the timeout. Whether
-   to detect specific non-recoverable conditions (immutable fields, stale late-init)
-   before approval and surface them proactively needs a decision.
-
-4. **Late-initialized `forProvider` for deletion drift** — when a resource is deleted
-   and Crossplane recreates it, stale late-initialized `forProvider` fields cause
-   recreation to fail. The correct approach (delete composed MRs before switching
-   management policy) needs to be implemented for the deletion recovery path.
-
-5. **Omnia drift support** — `provider-roc`'s `OmniaDatabaseObservation` struct
-   only contains connection info. It must be extended to mirror driftable `forProvider`
-   fields so the `forProvider` vs `atProvider` diff can work for Omnia resources.
-
-6. **Approach B (WatchOperations) migration path** — Approach B is technically superior
-   on detection latency, memory footprint, and K8s API load. The migration plan from
-   Approach D to B when WatchOperations graduates from alpha should be defined.
+2. **How to handle non-recoverable drift** — certain drifts are confirmed non-recoverable:
+   immutable field changes (e.g. `disk_size` reduction) and deletion with stale
+   late-initialized `forProvider` fields (e.g. GKE pod secondary ranges). Detection and
+   classification of non-recoverable cases is testable and automated. The open question
+   is what UCP should do when it detects one: surface early before approval so the
+   operator knows reconciliation will fail, or accept the current behaviour (approve →
+   timeout → error surfaces) and invest in better error messaging instead.
 
 ---
 
@@ -175,18 +161,16 @@ Approach D gets a structured, queryable audit log for free.
 
 **Decision: Go**
 
-Approach D is production-ready with no alpha dependencies, no new infrastructure, and
-the richest built-in observability. The detection logic and approval workflow are solid
-and shared across all approaches, making a future migration to Approach B straightforward.
+Approach D has no alpha dependencies and requires no new infrastructure — the clearest
+path to production. The detection logic and approval workflow are solid and shared across
+all approaches, making a future migration to Approach B straightforward when WatchOperations
+graduates.
 
 **Next steps:**
 
-1. Implement notify vs approve mode and the snooze mechanism (Open Questions 1, 2)
-2. Implement the deletion recovery path — delete composed MRs before policy flip for
-   deletion drift (Open Question 4)
-3. Extend `provider-roc` `atProvider` to support drift detection for Omnia resources
-   (Open Question 5)
-4. Define the Approach B migration plan for when WatchOperations graduates (Open Question 6)
+1. Decide on snooze duration configuration and ownership (Open Question 1)
+2. Decide on non-recoverable drift handling strategy — early detection vs better error
+   messaging (Open Question 2)
 
 ---
 
