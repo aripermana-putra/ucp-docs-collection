@@ -129,9 +129,9 @@ prevent GCP-level failures.
    increase workflow, display design, and equivalent data sources for other cloud
    providers — will be worked out during MVP implementation.
 
-2. **Quota data fetching strategy** — four approaches are viable (proactive background
-   sync, TTL cache, pure on-demand, lazy fetch with keep-warm for active tenants). No
-   approach has been chosen. The decision affects gate reliability, infrastructure cost,
+2. **Quota data fetching strategy** — five approaches are viable (proactive background
+   sync, TTL cache, pure on-demand, lazy fetch with keep-warm, tiered Redis+DB+provider).
+   No approach has been chosen. The decision affects gate reliability, infrastructure cost,
    data freshness, and whether the pre-provision gate should call the cloud provider
    directly or read from a local store. See [Quota Data Fetching Strategy](./ucp-quota-design.md)
    for full analysis.

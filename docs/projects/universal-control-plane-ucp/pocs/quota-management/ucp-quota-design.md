@@ -211,28 +211,97 @@ tenants are not synced until they make a request again.
 
 ---
 
+### Option E — Tiered cache: Redis → DB → Cloud provider
+
+A variation of Option B with DB as a durable backing layer. Redis serves as the hot
+cache with a short TTL (minutes to hours). The DB holds the last fetched snapshot.
+Cloud provider is only called when both Redis and DB data are older than a configurable
+freshness threshold (e.g. 1 day for GCP — aligned with how frequently quota data actually
+changes). The threshold is provider-specific since different cloud providers update quota
+data at different frequencies.
+
+**Request flow:**
+
+```
+1. Check Redis
+   → hit, fresh      → return response (step 6)
+   → hit, stale      → fetch from cloud provider (step 3)
+   → miss            → check DB (step 2)
+
+2. Check DB
+   → fresh           → warm Redis from DB (step 5) → return response (step 6)
+   → stale           → fetch from cloud provider (step 3)
+
+3. Fetch from cloud provider (parallelized)
+4. Update DB with fresh data
+5. Warm Redis from DB data
+6. Return response
+```
+
+A singleflight mechanism deduplicates concurrent requests for the same tenant hitting
+a cold path simultaneously.
+
+**Pre-provision gate** uses the same flow but is surgical — it only checks the specific
+resource type and provider relevant to the provisioning request, not all quota data.
+Freshness status is tracked at tenant + provider granularity (not per resource type —
+the added precision doesn't justify the schema complexity).
+
+**Quantitative:**
+
+| Metric | Value |
+|---|---|
+| Cloud provider calls on Redis hit (fresh) | 0 |
+| Cloud provider calls on DB hit (fresh) | 0 |
+| Cloud provider calls on full cold start | `services × 2` per provider (parallelized) |
+| API response latency (Redis hit) | <1 ms |
+| API response latency (DB hit) | ~1–5 ms |
+| API response latency (cold start) | ~300 ms (parallelized) |
+| Infrastructure | Redis + DB |
+| DB storage | ~180 KB per active tenant per provider |
+
+**Qualitative pros:**
+- Tiered degradation: Redis down → DB → cloud provider — no single point of failure
+- DB serves last known data if cloud provider is unavailable at request time
+- Only fetches for tenants that actually use quota (lazy)
+- Pre-provision gate is fast after warm-up and surgical (single resource type + provider)
+- Redis TTL and cloud provider refresh threshold are independently configurable
+
+**Qualitative cons:**
+- Most complex option — three storage layers, two independent TTLs to configure
+- Requires singleflight for concurrent cold-start requests on the same tenant
+- Cloud provider refresh threshold must be defined and maintained per provider as new providers are added
+- Slightly more infrastructure than Option D (Redis in addition to DB + Temporal)
+
+---
+
 ### Comparison
 
-| Dimension | A (background sync all) | B (TTL cache) | C (on-demand) | D (lazy + keep-warm) |
-|---|---|---|---|---|
-| Cloud Monitoring calls per request | 0 | 0 (hit) / ~8 (miss) | ~8 (always) | 0 (warm) / ~8 (cold, one-time) |
-| Syncs inactive tenants | Yes | No | No | No |
-| Pre-provision gate reliability | ✅ Always | ❌ Depends on cache state | ❌ Depends on Cloud Monitoring | ✅ After first warm-up |
-| Cold start penalty | None | First request per TTL | Every request | First request ever per tenant |
-| Infrastructure added | DB + Temporal job | Redis or in-memory | None | DB + Temporal job |
-| Complexity | Medium | Medium | Low | Medium–High |
-| Scales with provider count | ✅ (background) | ❌ (miss cost grows) | ❌ (always grows) | ✅ (background after warm-up) |
+| Dimension | A | B | C | D | E |
+|---|---|---|---|---|---|
+| Cloud provider calls per request | 0 | 0 (hit) / ~8 (miss) | ~8 (always) | 0 (warm) / ~8 (cold) | 0 (Redis/DB hit) / ~8 (cold) |
+| Syncs inactive tenants | Yes | No | No | No | No |
+| Pre-provision gate reliability | ✅ Always | ❌ Cache-dependent | ❌ Provider-dependent | ✅ After warm-up | ✅ After warm-up |
+| Resilience to cloud provider outage | ✅ | ❌ On miss | ❌ | ✅ (DB fallback) | ✅ (DB fallback) |
+| Cold start penalty | None | First request per TTL | Every request | First request ever | First request ever |
+| Infrastructure added | DB + Temporal job | Redis | None | DB + Temporal job | Redis + DB |
+| Complexity | Medium | Medium | Low | Medium–High | High |
+| Scales with provider count | ✅ | ❌ | ❌ | ✅ | ✅ |
 
-**Recommendation: Option D**, with Option C's parallelization applied to all live fetch calls.
+**Recommendation: Option C for early MVP, Option E as the target architecture.**
 
-Option C is the simplest and is what the PoC implements. It is sufficient for early
-MVP with a small number of active tenants. As tenant count and provider count grow,
-Option D is the target architecture — it avoids syncing inactive tenants (A's main
-weakness), keeps the pre-provision gate reliable after first warm-up (C's main
-weakness), and adds infrastructure already present in the UCP stack (Temporal + DB).
+Option C is the simplest and is what the PoC implements — sufficient for early MVP
+with a small number of active tenants.
 
-Option B is not recommended — it requires additional cache infrastructure (Redis) and
-still has gate reliability issues on cache miss.
+As tenant count and provider count grow, Option E is the target:
+- Redis hit path is sub-millisecond for active tenants
+- DB fallback means the pre-provision gate stays reliable during cloud provider outages
+- Only fetches for active tenants (unlike A)
+- Lazy cold start means inactive tenants never generate unnecessary cloud provider calls
+- The independently configurable Redis TTL and provider refresh threshold allow fine-tuning
+  per provider as UCP adds AWS, Azure, and others with different quota data update frequencies
+
+Option D is a valid intermediate step if Redis adoption is not yet ready — it achieves
+Option E's DB resilience and active-tenant-only sync without the Redis layer.
 
 ---
 
