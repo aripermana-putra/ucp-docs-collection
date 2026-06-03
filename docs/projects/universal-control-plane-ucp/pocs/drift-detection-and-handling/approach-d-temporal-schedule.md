@@ -514,15 +514,16 @@ the workflow as in-flight for the full scan duration — the next trigger is ski
 the current scan is still running. This prevents concurrent scans and bounds total
 goroutine count at `worker_pods × max_concurrent_activities_per_pod`.
 
-#### Autoscaling with KEDA
+#### Dynamic autoscaling
 
-KEDA watches the `drift-detection` task queue backlog on the Temporal server. When Phase 2
-dispatches `GVRs × tenants` activities simultaneously, backlog spikes → KEDA scales up
-worker pods. Between scans, queue is empty → KEDA scales down to 0 or minimum.
+Worker pods scale based on task queue backlog depth using a queue-depth-based autoscaler
+(e.g. KEDA). When Phase 2 dispatches `GVRs × tenants` activities simultaneously, backlog
+spikes → autoscaler scales up worker pods. Between scans, queue is empty → autoscaler
+scales down to 0 or minimum.
 
 ```
-Scan starts  → activities flood queue → KEDA scales up pods
-Scan ends    → queue drains           → KEDA scales down to 0
+Scan starts  → activities flood queue → scale up pods
+Scan ends    → queue drains           → scale down to 0
 ```
 
 Cold-start latency (seconds) is acceptable given scan intervals are in minutes.
