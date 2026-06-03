@@ -448,56 +448,86 @@ availability for drift *detection* (not just handling).
 
 ## Scaling Considerations
 
-**Approach D has the strongest natural scale-out story of the four approaches.**
+### Current PoC design
 
-**Memory model — distributed spikes:**
+The PoC dispatches one `ScanDriftActivity` per GVR. A single worker pod picks up each
+activity and processes all tenants' MRs for that GVR sequentially (with internal
+goroutines). This is sufficient for small-scale testing but does not distribute load
+across tenants.
 
-Like Approach A, each scan activity fetches a LIST response and holds it in memory while
-processing, then discards it. Unlike A, individual activities run on separate Temporal worker
-pods — the memory spike is distributed across the worker fleet rather than concentrated in
-one pod.
+### Production scale design
+
+At production scale, the scan uses a two-phase workflow to distribute load at the tenant
+level across worker pods.
+
+#### Two-phase workflow
 
 ```
-DriftScanWorkflow fans out per GVR:
-  ├── DriftScanActivity(databaseinstances) → worker pod 1, ~50MB spike → GC
-  ├── DriftScanActivity(instances)         → worker pod 2, ~50MB spike → GC
-  ├── DriftScanActivity(clusters)          → worker pod 3, ~50MB spike → GC
-  └── ...
-
-Per-pod peak: ~50MB (one GVR)
-Total across fleet: 20 GVRs × 50MB = ~1GB (distributed)
+DriftScanWorkflow
+  │
+  │ Phase 1 — Discover (parallel per GVR)
+  ├── DiscoverMRsActivity(gvr=cloudsql)    ──► K8s LIST ──► [(tenant-A, mr1), (tenant-B, mr2)]
+  ├── DiscoverMRsActivity(gvr=gce)         ──► K8s LIST ──► [(tenant-A, mr3)]
+  ├── DiscoverMRsActivity(gvr=gke-cluster) ──► K8s LIST ──► [(tenant-B, mr4)]
+  └── DiscoverMRsActivity(gvr=gcs)         ──► K8s LIST ──► [(tenant-A, mr5)]
+  │
+  │ (workflow aggregates results → (GVR, tenant) pairs)
+  │
+  │ Phase 2 — Scan (parallel per GVR × tenant)
+  ├── ScanTenantActivity(cloudsql, tenant-A, [mr1])    ──► Worker Pod 1
+  ├── ScanTenantActivity(cloudsql, tenant-B, [mr2])    ──► Worker Pod 2
+  ├── ScanTenantActivity(gce, tenant-A, [mr3])         ──► Worker Pod 3
+  ├── ScanTenantActivity(gke-cluster, tenant-B, [mr4]) ──► Worker Pod 1
+  └── ScanTenantActivity(gcs, tenant-A, [mr5])         ──► Worker Pod 2
+  │
+  │ Phase 3 — Approve (fire and forget)
+  └── DriftApprovalWorkflow per drifted MR
 ```
 
-This is a key advantage over A at large scale: A concentrates the full burst in one pod;
-D distributes it across the worker fleet automatically.
+**Activity granularity: `(GVR, tenant)` — not per MR.** One `ScanTenantActivity` handles
+all MRs for one tenant in one GVR (expected ≤100 MRs per tenant per resource type).
+MR-level concurrency is handled internally by bounded goroutines (semaphore). This keeps
+Temporal activity count at `GVRs × tenants` — reasonable for Matching service load and
+workflow history size.
 
-**Scale-out mechanism — Temporal worker fleet:**
+#### Worker model
 
-Scaling D requires no sharding logic, no ConfigMap splitting, no coordination between pods:
+One binary registers all activity and workflow types and polls one task queue (`drift-detection`).
+All pods are identical — Temporal distributes tasks to whichever pod is free.
 
-1. Add more Temporal worker pods polling the same task queue
-2. Temporal automatically distributes activity execution across available workers
-3. Fan-out parallelism in the workflow controls how many activities run concurrently
-
-To increase throughput, increase either worker pod count or workflow parallelism:
-
-```go
-// Workflow fan-out — all GVRs scanned in parallel, each on a separate worker
-for _, gvr := range gvrs {
-    workflow.Go(ctx, func(ctx workflow.Context) {
-        workflow.ExecuteActivity(ctx, DriftScanActivity, gvr)
-    })
-}
+```
+Drift Worker Pod (N replicas, identical)
+  registers:
+    - DriftScanWorkflow
+    - DiscoverMRsActivity
+    - ScanTenantActivity
+  polls: drift-detection task queue
 ```
 
-**Namespace/tenant sharding:**
+No manual pod-to-GVR mapping, no sharding config — adding pods increases capacity automatically.
 
-For multi-tenant platforms, the schedule can pass a namespace filter to each activity. To
-isolate tenant scan load, run separate schedules per namespace — Temporal routes them to
-whichever workers are available without any manual pod-to-namespace mapping.
+#### Scan overlap prevention
 
-**The trade-off:**
+Temporal schedule overlap policy set to `SKIP`. `DriftScanWorkflow` only completes
+when all Phase 1 and Phase 2 activities finish (Phase 3 is fire-and-forget). SKIP sees
+the workflow as in-flight for the full scan duration — the next trigger is skipped if
+the current scan is still running. This prevents concurrent scans and bounds total
+goroutine count at `worker_pods × max_concurrent_activities_per_pod`.
 
-Scale-out in D is natural but requires Temporal to be healthy. If Temporal is unavailable,
-all scanning stops — there is no fallback. A and C continue scanning independently of Temporal
-(only the workflow-start call fails).
+#### Autoscaling with KEDA
+
+KEDA watches the `drift-detection` task queue backlog on the Temporal server. When Phase 2
+dispatches `GVRs × tenants` activities simultaneously, backlog spikes → KEDA scales up
+worker pods. Between scans, queue is empty → KEDA scales down to 0 or minimum.
+
+```
+Scan starts  → activities flood queue → KEDA scales up pods
+Scan ends    → queue drains           → KEDA scales down to 0
+```
+
+Cold-start latency (seconds) is acceptable given scan intervals are in minutes.
+
+#### Trade-off
+
+Scale-out requires Temporal to be healthy. If Temporal is unavailable, all scanning stops.
+Approaches A and C continue scanning independently of Temporal.

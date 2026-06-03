@@ -166,6 +166,15 @@ path to production. The detection logic and approval workflow are solid and shar
 all approaches, making a future migration to Approach B straightforward when WatchOperations
 graduates.
 
+**Risks:**
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| Scan cost scales with resource count — each scan cycle iterates all drift-protected MRs | Medium | Two-phase workflow: `DiscoverMRsActivity` per GVR + `ScanTenantActivity` per `(GVR, tenant)`. Load distributed across worker pods automatically via Temporal task queue. Autoscale workers with KEDA. |
+| Scan overlap / race condition — if a scan takes longer than the interval, the next scan starts before the previous completes | Medium | Temporal schedule overlap policy `SKIP` — next scan only starts after `DriftScanWorkflow` fully completes (all activities done). Workflow is the natural fence. |
+| False positives from late-initialized `forProvider` fields — GCP writes observed values back into `forProvider`, causing persistent diffs that are not real drift | Medium | Skip list for known late-initialized fields (e.g. `bootDisk`, `clusterRef`). Skip list grows as more resource types are added — needs maintenance process as new providers are onboarded. |
+| Provider poll interval is the actual detection floor — drift is only detectable after Crossplane's `Observe()` updates `atProvider` | Low | Separate concern from scan frequency. Monitor provider pod health and poll lag independently. Configured at `--poll=1m` in PoC. |
+
 **Next steps:**
 
 1. Decide on snooze duration configuration and ownership (Open Question 1)
