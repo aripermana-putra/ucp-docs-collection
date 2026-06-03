@@ -186,7 +186,7 @@ graduates.
 
 ## 6. References
 
-- Design docs: [Shared Design](./shared-design.md) · [POC Results](./poc-results.md)
-- Reconciliation limitations: [reconciliation-limitations.md](./reconciliation-limitations.md)
+- Design docs: [Shared Design](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6591418173) · [POC Results](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6597734702/POC+Results) · [Approach D](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6591418235)
+- Reconciliation limitations: [reconciliation-limitations.md](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6608838856/Drift+Reconciliation+Limitations)
 - PRs: [ucp-platform #55](https://ghe.rakuten-it.com/clsd-ucp/ucp-platform/pull/55) · [ucp-api-gateway #18](https://ghe.rakuten-it.com/clsd-ucp/ucp-api-gateway/pull/18)
 - Jira: [MCUCP-158](https://jira.rakuten-it.com/jira/browse/MCUCP-158)
