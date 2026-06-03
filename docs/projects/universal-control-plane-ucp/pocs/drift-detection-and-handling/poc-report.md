@@ -24,8 +24,9 @@ detection and recovery design underpins all four approaches — switching trigge
 requires no changes to detection logic or the approval workflow.
 
 **Verdict: Go.** Drift detection and the human approval workflow are functionally
-complete. Approach D is production-ready today. Several design decisions remain open
-for the production hardening phase.
+complete. Approach D has no alpha dependencies and requires no new infrastructure —
+the clearest path to production among the four. Several design decisions remain open
+before production hardening.
 
 ---
 
@@ -51,7 +52,6 @@ Crossplane to reconcile the drift.
 
 **Scope boundaries (out of scope):**
 - Real notification delivery (Slack, PagerDuty) — notification stub implemented; swap in production
-- Periodic background sync (login-triggered only in PoC)
 - Omnia (`provider-roc`) drift support — requires `atProvider` changes in provider-roc
 - Drift detection for Terraform-managed resources
 
