@@ -169,8 +169,9 @@ graduates.
 **Next steps:**
 
 1. Decide on snooze duration configuration and ownership (Open Question 1)
-2. Decide on non-recoverable drift handling strategy — early detection vs better error
-   messaging (Open Question 2)
+2. Identify most if not all non-recoverable drift scenarios across all resource types
+   per cloud provider, then decide on handling strategy — early detection vs better
+   error messaging (Open Question 2)
 
 ---
 
