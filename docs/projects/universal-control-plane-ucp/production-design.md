@@ -12,6 +12,13 @@ System design specifications for the UCP production deployment.
 
 ## Documents
 
+### [Architecture Foundations](./production-design/architecture-foundations.md)
+
+Pre-design questions answered before drawing the architecture. Covers what the
+system does, who uses it, data ownership boundaries, integration points,
+operational ownership, NFRs, scalability dimensions, security boundaries, and
+what is deferred vs decided now. Start here before reading the system design.
+
 ### [System Design](./production-design/system-design.md)
 
 Full production architecture specification for the MVP milestone (2 cloud providers,
@@ -19,6 +26,13 @@ Full production architecture specification for the MVP milestone (2 cloud provid
 topology options with comparison by scalability, availability, blast radius, and
 operational complexity, and per-component design with justification for every
 technology choice including explicit reasoning for components not included.
+
+### [Database Engine Analysis](./production-design/database-engine-analysis.md)
+
+Detailed analysis supporting ADR-002. Full data model with entity relationships,
+access patterns, consistency requirements, scale projections, audit log
+partitioning strategy, and evaluation of all alternative database engines
+(MongoDB, Cassandra, TimescaleDB, Neo4j) with explicit dismissal rationale.
 
 ### [Architecture Diagrams](./production-design/diagrams.md)
 
