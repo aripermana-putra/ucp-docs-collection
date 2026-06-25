@@ -173,11 +173,10 @@ K8s targets (CaaS, GKE) are simpler to operate — CloudNativePG removes the
 need for Patroni and separate DCS infrastructure. VM/bare metal targets
 (VMaaS, BMaaS) require Patroni and etcd.
 
-### Architecture
+### Architecture — K8s targets (CaaS, GKE)
 
-PostgreSQL runs as pods managed by **CloudNativePG** — a Kubernetes-native
-operator that implements HA, failover, replication, and backup management
-directly. No Patroni. No separate HA tool. CloudNativePG is a CNCF sandbox
+On Kubernetes, PostgreSQL is managed by **CloudNativePG** — a K8s-native
+operator. No Patroni. No separate HA tooling. CloudNativePG is a CNCF sandbox
 project built specifically for K8s.
 
 You declare a `Cluster` resource and the operator handles everything:
@@ -193,36 +192,67 @@ spec:
     size: 50Gi
 ```
 
-CloudNativePG creates:
-- A StatefulSet with correct pod configuration
-- `ucp-platform-db-rw` Service → primary only (writes)
-- `ucp-platform-db-ro` Service → replicas only (reads)
-- PVCs for each pod
-- RBAC for K8s API access
-- Manages label updates on failover automatically
+CloudNativePG creates the StatefulSet, PVCs, RBAC, and two Services:
+- `ucp-platform-db-rw` → primary only (writes)
+- `ucp-platform-db-ro` → replicas only (reads)
 
-### HA — replication mechanism
+Failover is automatic — CloudNativePG detects primary failure via K8s liveness
+probes and promotes the standby. The `-rw` Service updates within seconds.
+No HAProxy, no separate routing component.
 
-PostgreSQL native **WAL streaming replication**, configured and managed by
-CloudNativePG. Synchronous replication (RPO = 0) is the default for the
-standby — primary waits for standby acknowledgment before confirming writes.
+---
 
-### Failover mechanism
+### Architecture — VM/Bare Metal targets (VMaaS, BMaaS)
 
-CloudNativePG detects primary failure via K8s liveness probes and promotes
-the standby automatically. The `-rw` Service endpoint updates within seconds
-— no HAProxy, no separate routing component.
+On VMs or bare metal, PostgreSQL is installed directly on the server.
+**Patroni** manages HA — it is a Python daemon that runs alongside PostgreSQL
+on each node and coordinates leader election via a **Distributed Configuration
+Store (DCS)**.
+
+On VMs/bare metal there is no K8s API available, so a dedicated DCS must be
+deployed separately. The most common choice is **etcd**, which requires a
+minimum of 3 nodes for quorum:
 
 ```
-Application → ucp-platform-db-rw (K8s Service, stable DNS)
-                    │
-                    └──► primary pod (CloudNativePG updates on failover)
+Server 1 (DC1):  PostgreSQL + Patroni + etcd node 1   (primary)
+Server 2 (DC2):  PostgreSQL + Patroni + etcd node 2   (standby)
+Server 3 (DC3):  etcd node 3 only                     (tiebreaker)
 ```
 
-### Read replicas
+The tiebreaker node (Server 3) exists solely to give etcd quorum — if DC1
+goes down, DC2 and DC3 still have majority (2 of 3) and Patroni can elect
+a new primary. Without it, losing one server leaves etcd with no majority
+and the database cluster freezes.
 
-The `-ro` Service routes to standby pods. All standbys serve reads and act
-as failover candidates simultaneously.
+Failover routing on VMs also requires **HAProxy** as a gateway layer — it
+polls Patroni's REST API to track which node is the current primary and
+routes writes there. This is the stable endpoint the application connects to.
+
+**Minimum VM/bare metal infrastructure for HA:**
+
+| Server | Runs | AZ |
+|---|---|---|
+| Server 1 | PostgreSQL + Patroni + etcd | AZ-A |
+| Server 2 | PostgreSQL + Patroni + etcd | AZ-B |
+| Server 3 | etcd tiebreaker only | AZ-C |
+| HAProxy | Routing layer | Any |
+
+3 servers minimum across 3 different AZs for proper redundancy.
+
+---
+
+### HA — replication mechanism (both paths)
+
+PostgreSQL native **WAL streaming replication**. Every write goes to the WAL
+first and is streamed continuously to standby nodes. Synchronous mode: primary
+waits for at least one standby to confirm receipt before acknowledging the
+write — RPO = 0.
+
+### Read replicas (both paths)
+
+All standbys serve reads and act as failover candidates simultaneously. On
+K8s: the `-ro` Service routes to standby pods. On VMs: HAProxy routes reads
+to standby nodes.
 
 ### Backup and PITR
 
