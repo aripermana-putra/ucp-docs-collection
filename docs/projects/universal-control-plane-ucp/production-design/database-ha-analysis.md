@@ -153,13 +153,25 @@ Enterprise is sufficient for UCP's 99.9% target.
 
 ---
 
-## Option B — Self-managed PostgreSQL on CaaS (OneCloud)
+## Option B — Self-managed PostgreSQL
 
-VMaaS production is currently restricted to TAM and CPSD service providers
-(DBaaS, CaaS, LBaaS, MonaaS, etc.) and is not available to other users.
-An exception may be possible for UCP — worth exploring with the VMaaS team.
-Until then, the available compute options are CaaS and BMaaS. CaaS is the
-primary path. BMaaS is documented at the end of this section for reference.
+PostgreSQL managed by **CloudNativePG** (on K8s) or **Patroni** (on VMs/bare
+metal). The deployment target determines the compute cost, storage type, and
+ops burden — the database architecture and replication mechanism are the same
+regardless.
+
+### Deployment options
+
+| Target | Status | Notes |
+|---|---|---|
+| **VMaaS** | Restricted — currently available to TAM and CPSD service providers only. Exception may be possible for UCP. | VM-based, Patroni + etcd |
+| **BMaaS** | Available | Bare metal, Patroni + etcd or external K8s DCS. See BMaaS section below. |
+| **CaaS cluster** | Available | K8s pods, CloudNativePG, K8s API as DCS |
+| **GKE cluster** | Available (if UCP on GCP) | K8s pods, CloudNativePG, K8s API as DCS, pd-ssd storage |
+
+K8s targets (CaaS, GKE) are simpler to operate — CloudNativePG removes the
+need for Patroni and separate DCS infrastructure. VM/bare metal targets
+(VMaaS, BMaaS) require Patroni and etcd.
 
 ### Architecture
 
@@ -276,18 +288,17 @@ stable endpoint. The key difference is storage.
 which is block storage with low, consistent I/O latency. No NFS overhead.
 Comparable to bare metal for database workloads.
 
-**Cost:** If PostgreSQL pods run on existing GKE nodes already provisioned for
-UCP's other workloads, the cost is marginal — you're consuming spare capacity
-on nodes you're already paying for. If dedicated nodes are needed:
+**Cost:** PostgreSQL pods run on the **same GKE cluster** as UCP's other
+workloads. GKE charges per node, not per pod. If existing nodes have spare
+capacity, the incremental cost of adding PostgreSQL pods is **marginal — near
+zero**. A new node is only needed if the cluster is already at capacity.
 
-- 2 × `n2-standard-2` (2 vCPU, 8GB): ~$48/month each → ~$96/month ≈ **¥14,400/month**
-- 50GB pd-ssd storage × 2: ~$17/month ≈ ¥2,550/month
-- **Total: ~¥16,950/month** — slightly cheaper than Cloud SQL (~¥17,000) with better I/O, but self-managed
-
-**Trade-off vs Cloud SQL:** Cloud SQL at roughly the same cost gives you fully
-managed HA, automated backups, PITR, and zero ops overhead. PostgreSQL on GKE
-costs roughly the same but you own operations. The cost saving is minimal —
-the decision comes down to whether self-managed is acceptable, not cost.
+**Trade-off vs Cloud SQL:** Cloud SQL costs ~¥17,000/month always. PostgreSQL
+on a shared GKE cluster costs near zero additionally if the cluster is already
+provisioned. Same region, same network, no cross-cloud overhead. The difference
+is ops burden: Cloud SQL is fully managed, PostgreSQL on GKE is yours to
+operate. If the cluster already exists, the cost argument strongly favors
+self-managed PostgreSQL on GKE over Cloud SQL.
 
 | | CaaS + CloudNativePG | GKE + CloudNativePG | Cloud SQL |
 |---|---|---|---|
@@ -532,25 +543,33 @@ comfortably within standard CaaS node capacity.
 
 ## Cost Estimates
 
-> All figures are estimates. Option A based on GCP public list pricing
-> (committed use discounts would reduce it ~30–55%). Option B CaaS based on
-> FY26 shared node rate ¥2,616/unit. Option C based on FY24 DBaaS compute
-> tier pricing. MySQL Primary-Replica pricing needs confirmation from the
-> DBaaS team as it may bundle compute differently.
+> **Disclaimer:** All figures are rough estimates for directional comparison
+> only — not quotes. Actual costs depend on final spec, environment, and
+> negotiated pricing.
+>
+> - **Option A**: GCP public list pricing, asia-northeast1 region. Committed
+>   use discounts (1yr ~30%, 3yr ~55%) would reduce this significantly.
+> - **Option B CaaS**: FY26 shared node rate ¥2,616/unit from the CaaS pricing
+>   page. GKE cost is marginal on a shared cluster (node cost already paid).
+> - **Option C**: FY24 DBaaS compute tier pricing. MySQL Primary-Replica may
+>   bundle compute differently — needs confirmation from the DBaaS team.
 
-**Spec used:** 2 vCPU / 8GB RAM, 50GB storage — appropriate for UCP's load
-profile (300 concurrent users, simple queries, ~0.1 writes/second).
+**Spec basis:** The minimum reasonable production spec for UCP's load profile
+(~300 concurrent users peak, simple queries, ~0.1 writes/second). This is
+NOT the lowest possible spec — it includes headroom. A smaller spec (1 vCPU /
+4GB) would likely work and cost roughly half, but has not been load tested.
 
-**Temporal DB is not included** — it runs as a pod inside the K8s cluster
-(same cluster as Temporal Server) at negligible marginal cost.
+**What's included:** Platform DB only (HA, storage). Temporal DB is excluded
+— it runs as a pod inside the K8s cluster at negligible marginal cost.
+
+**What's not included:** Network egress, backup storage, monitoring agent cost.
 
 | | Option A — Cloud SQL | Option B — CaaS + CloudNativePG | Option C — DBaaS MySQL |
 |---|---|---|---|
-| **Compute** | db-custom-2-8192, Regional HA | 2 pods × 4 units × ¥2,616 | S tier (4 CPU/16GB) × 2 instances |
-| **Storage** | 50GB SSD | NFS PV | 50GB high-spec disk |
-| **Estimated monthly** | ~¥17,000 | ~¥20,928 (shared nodes) | ~¥12,650 |
-| **On dedicated cluster** | N/A | Marginal | N/A |
-| **Billing** | GCP | OneCloud internal | OneCloud internal |
+| **Spec** | db-custom-2-8192 (2 vCPU, 8GB), Regional HA | 2 pods × 2 vCPU / 8GB (4 units each) | S tier (4 CPU / 16GB) × 2 instances |
+| **Storage** | 50GB SSD | NFS PV (CaaS) / pd-ssd (GKE) | 50GB high-spec disk |
+| **Estimated monthly** | ~¥17,000 | ~¥20,928 CaaS shared / ~¥0 additional GKE shared | ~¥12,650 |
+| **Billing** | GCP | OneCloud internal / GCP | OneCloud internal |
 
 ---
 
