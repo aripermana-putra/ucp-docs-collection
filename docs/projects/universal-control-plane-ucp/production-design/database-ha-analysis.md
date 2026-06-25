@@ -558,20 +558,74 @@ operational gap versus bare metal.
 > reserved for specific use cases where control and customization justify
 > the operational complexity.*
 
-### Verdict for UCP
+### For UCP specifically
 
 UCP's database workload is not I/O intensive — ~0.1 writes/second, simple
-point lookups, ~300 concurrent users peak. The performance argument is
-irrelevant at this scale. NFS-backed PVs on CaaS will not be a bottleneck.
-
-Running PostgreSQL on CaaS or GKE with CloudNativePG is a reasonable production
-choice for UCP. The operator reduces lifecycle overhead, the K8s Service
-provides a stable endpoint without HAProxy, and the workload fits comfortably
-within standard node capacity.
+point lookups, ~300 concurrent users peak. The performance argument against
+K8s is irrelevant at this scale. NFS-backed PVs on CaaS will not be a
+bottleneck. Running PostgreSQL on K8s with CloudNativePG is a reasonable
+production choice.
 
 **References:**
 - [Google Cloud: To run or not to run a database on Kubernetes](https://cloud.google.com/blog/products/databases/to-run-or-not-to-run-a-database-on-kubernetes-what-to-consider)
 - [CockroachDB: Running databases on Kubernetes](https://www.cockroachlabs.com/blog/kubernetes-databases/)
+
+---
+
+## Recommendation
+
+### 1st — Cloud SQL (Option A)
+
+**When:** UCP platform is deployed on GCP, and cost is not the primary concern.
+
+Cloud SQL is the first recommendation because UCP is a small, early-stage team.
+Operational simplicity matters more than cost optimization at this stage. Cloud
+SQL is fully managed by GCP — no HA setup, no failover testing, no backup
+pipeline, no DB patching, no operator lifecycle to manage. The team can focus
+entirely on building UCP features rather than operating database infrastructure.
+
+The 99.95% SLA, automatic failover in ~60s, continuous PITR, and self-service
+restore are all provided out of the box. When deployed on GCP alongside the
+rest of UCP's infrastructure, there is no cross-cloud overhead.
+
+**Trade-off accepted:** Higher cost vs self-managed. Not a concern given the
+ops savings for a small team.
+
+---
+
+### 2nd — CloudNativePG on K8s (Option B, K8s path)
+
+**When:** UCP platform is deployed on CaaS (OneCloud) with a dedicated cluster
+already procured, or when cost reduction is a priority over Cloud SQL.
+
+If UCP is running on a dedicated CaaS cluster anyway, deploying PostgreSQL as
+pods on the same cluster is the more logical choice. The database becomes part
+of the cluster you're already operating and paying for — no separate
+infrastructure, no separate billing, marginal incremental cost.
+
+CloudNativePG significantly reduces the traditional operational burden of
+self-managed PostgreSQL. A single `Cluster` CRD replaces everything —
+StatefulSet, HA, failover, services, backups. It is substantially easier to
+maintain compared to installing PostgreSQL manually, managing Patroni, running
+etcd, and configuring HAProxy. The K8s-native tooling also means the team
+already knows how to interact with it.
+
+**Trade-off accepted:** Self-managed — the team owns backup configuration, DB
+version upgrades, and recovery procedures. CloudNativePG reduces this burden
+but does not eliminate it.
+
+---
+
+### Not recommended (Option C — DBaaS MySQL)
+
+The confirmed absence of automatic failover is a blocker. If the primary goes
+down, the DBaaS team must manually intervene — RTO is unknown and outside
+UCP's control. This makes it difficult to commit to a 99.9% availability
+target for the Platform DB. The engine change (MySQL instead of PostgreSQL)
+also requires reopening ADR-002 with a weaker technical rationale.
+
+Option C would only become viable if the DBaaS team confirms automatic failover
+support in a future release.
 
 ---
 
