@@ -107,9 +107,10 @@ available out of the box:
 - `cloudsql.googleapis.com/database/postgresql/num_backends`
 - `cloudsql.googleapis.com/database/postgresql/deadlock_count`
 
-These can be exported to the LGTM stack via the **GCP Managed Service for
-Prometheus** or Grafana Cloud GCP integration, keeping observability consistent
-with the rest of UCP's monitoring.
+UCP uses **MonaaS** for metrics and **EaaS** for logging. Cloud SQL metrics
+live in GCP Cloud Monitoring natively. Whether these can be federated into
+MonaaS needs confirmation — this is an open item specific to Option A given
+that Cloud SQL sits in GCP while UCP's monitoring stack is on OneCloud.
 
 ### SLA
 
@@ -241,9 +242,9 @@ No managed monitoring — you own the observability stack:
   Prometheus.
 - **node_exporter** — OS-level metrics (CPU, memory, disk) on each VM.
 
-All three feed into the existing **LGTM stack** (Prometheus → Grafana). No
-separate monitoring service needed — consistent with the rest of UCP's
-observability.
+All three expose Prometheus-format metrics that feed into **MonaaS** for
+metrics collection. Database and application logs ship to **EaaS** for log
+aggregation. No distributed tracing.
 
 ### SLA
 
@@ -343,9 +344,9 @@ covers this.
 **MonaaS (Monitoring as a Service)** — OneCloud's managed monitoring platform.
 Provides database performance metrics out of the box, managed by the DBaaS team.
 
-Integration with UCP's LGTM stack is not confirmed — needs clarification from
-the DBaaS team on whether MonaaS metrics can be federated into an external
-Prometheus/Grafana instance.
+MonaaS is UCP's metrics platform. Since DBaaS MySQL also uses MonaaS natively,
+this is the best-aligned option for metrics. Logs ship to EaaS. No additional
+integration work required — monitoring is consistent with UCP's stack.
 
 ### SLA
 
@@ -400,7 +401,7 @@ the managed alternative).
 | **Read replicas** | Yes, separate instances, async | Yes, all standbys serve reads | Yes, multiple within DC |
 | **PITR** | 7 days, continuous, self-service | Manual pipeline (pgBackRest), self-managed | 30-min granularity, 7 days, **DBaaS team required** |
 | **Ops overhead** | Minimal | High | Minimal |
-| **Monitoring** | GCP Cloud Monitoring → LGTM | postgres_exporter → LGTM | MonaaS (LGTM integration TBC) |
+| **Monitoring** | GCP Cloud Monitoring (MonaaS federation TBC) | postgres_exporter → MonaaS, logs → EaaS | MonaaS native, logs → EaaS |
 | **Network dependency** | Cross-interconnect if app on OneCloud | Local to OneCloud | Local to OneCloud |
 | **Cost** | GCP billing | Internal billing | Internal billing (lowest) |
 | **Internal precedent** | Strong (multiple teams) | None | Strong (multiple teams) |
@@ -409,8 +410,10 @@ the managed alternative).
 
 ## Open Items Before Decision
 
-1. **Option C — MonaaS to LGTM federation**: Can MonaaS metrics be federated
-   into an external Prometheus/Grafana? Needs confirmation from DBaaS team.
+1. **Option A — GCP Cloud Monitoring to MonaaS**: Cloud SQL metrics live in
+   GCP Cloud Monitoring natively. Needs confirmation on whether these can be
+   federated into MonaaS, or whether Option A requires a separate monitoring
+   path for database metrics.
 
 2. **Option C — RTO**: What is the actual RTO for vMotion-based failover?
    vMotion is typically seconds, but exact SLA from DBaaS team is unknown.
