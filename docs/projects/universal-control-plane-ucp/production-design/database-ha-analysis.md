@@ -256,17 +256,17 @@ to standby nodes.
 
 ### Backup and PITR
 
-No managed backup — you own the entire backup pipeline:
+No managed backup — you own the pipeline. Approach differs by deployment target:
 
-- **pgBackRest** (recommended): full, incremental, and differential backups
-  with PITR via WAL archiving. Industry standard for PostgreSQL backup.
-- **pg_dump**: logical backups, no PITR.
-- Backup storage: STaaS or GCS, configured by you.
-- Retention: configured by you.
-- Restore: self-service, but entirely manual — you run the restore procedure.
+**K8s targets (CaaS, GKE):** CloudNativePG provides a `ScheduledBackup` CRD
+that triggers backups to an object store (STaaS or GCS). PITR is supported via
+WAL archiving. You configure the backup schedule, storage target, and retention.
+Restore is self-service via CloudNativePG but manual — you run the recovery procedure.
 
-PITR is possible with WAL archiving (pgBackRest), but you configure the
-archive destination, test restores, and monitor backup health yourself.
+**VM/bare metal targets (VMaaS, BMaaS):** Use **pgBackRest** — the industry
+standard for PostgreSQL backup. Supports full, incremental, and differential
+backups with PITR via WAL archiving. Backup storage (STaaS or GCS), retention,
+and restore are entirely your responsibility.
 
 ### Storage consideration on CaaS
 
@@ -278,34 +278,37 @@ debate on databases on Kubernetes.
 
 ### Monitoring
 
-- **postgres_exporter** — connects to PostgreSQL, queries internal statistics
-  views, exposes Prometheus-format metrics.
-- **CloudNativePG** — exposes its own `/metrics` endpoint covering cluster
-  health, replication lag, and failover events.
+**K8s targets:** postgres_exporter + CloudNativePG `/metrics` endpoint → MonaaS.
+Both run in the same cluster as the database pods.
 
-Both feed into **MonaaS**. Both run in the same cluster as the database pods.
+**VM/bare metal targets:** postgres_exporter + node_exporter → MonaaS.
+postgres_exporter runs on each server, same network as the database.
 
 ### SLA
 
-No SLA commitment — availability is as good as you operate it. CaaS
-infrastructure has its own SLA, but database-layer availability is your
-responsibility.
+No SLA commitment — availability is as good as you operate it. The underlying
+infrastructure (CaaS, GKE, BMaaS) has its own SLA, but database-layer
+availability is your responsibility.
 
 ### Key properties
+
+Properties below reflect the K8s deployment path (CaaS or GKE with
+CloudNativePG), which is the recommended path. VM/bare metal adds Patroni,
+etcd, and HAProxy to the ops burden.
 
 | Dimension | Detail |
 |---|---|
 | Engine | PostgreSQL — ADR-002 stands |
-| Lv2 satisfied? | Yes — CloudNativePG, 2 pods same DC |
-| Failover | Automatic via CloudNativePG, ~30s, stable endpoint via K8s Service |
-| RPO | 0 with synchronous standby |
-| Ops overhead | Medium — CloudNativePG handles HA, failover, and replication. Backup pipeline configuration and DB version upgrades remain your responsibility. |
-| PITR | CloudNativePG has built-in backup and PITR via `ScheduledBackup` CRD. Storage target (STaaS/GCS) configured by you. |
-| Monitoring | postgres_exporter + CloudNativePG metrics → MonaaS |
-| Network | Local to OneCloud — no cross-cloud dependency |
-| Storage | NFS-backed PVs — network I/O latency, acceptable for UCP's load profile |
-| Cost | ~¥20,928/month shared nodes (2 pods × 4 units × ¥2,616/unit). Marginal if on dedicated cluster already procured for UCP. |
-| Internal precedent | None for PostgreSQL on CaaS |
+| Lv2 satisfied? | Yes — 2 pods/nodes in same DC |
+| Failover | K8s: Automatic via CloudNativePG, ~30s. VM/bare metal: Automatic via Patroni, ~30–60s + HAProxy |
+| RPO | 0 (synchronous replication) |
+| Ops overhead | K8s: Medium — CloudNativePG handles HA and failover; backup and DB upgrades are yours. VM/bare metal: High — Patroni, etcd, HAProxy, OS patches, backup pipeline all manual. |
+| PITR | K8s: CloudNativePG `ScheduledBackup` CRD, storage target configured by you. VM: pgBackRest, fully self-managed. |
+| Monitoring | postgres_exporter + CloudNativePG metrics → MonaaS (K8s) |
+| Network | Local to deploy target — OneCloud (CaaS/BMaaS) or GCP (GKE) |
+| Storage | NFS PV (CaaS) / pd-ssd (GKE) / local disk (BMaaS) |
+| Cost | ~¥20,928/month CaaS shared nodes. ~¥0 additional on existing GKE cluster. ~¥63,246/month BMaaS (3 nodes, HA). |
+| Internal precedent | None for self-managed PostgreSQL on any OneCloud target |
 
 ### GKE sub-option
 
@@ -333,7 +336,7 @@ self-managed PostgreSQL on GKE over Cloud SQL.
 | | CaaS + CloudNativePG | GKE + CloudNativePG | Cloud SQL |
 |---|---|---|---|
 | Storage | NFS (network I/O) | pd-ssd (block I/O) | GCP SSD (managed) |
-| Cost | ~¥20,928 | ~¥16,950 (dedicated) / marginal | ~¥17,000 |
+| Cost | ~¥20,928 shared | ~¥0 additional on existing cluster | ~¥17,000 |
 | Managed? | No | No | Yes |
 | Location | OneCloud | GCP | GCP |
 
@@ -349,7 +352,7 @@ nodes minimum across different AZs) or CaaS/GKE K8s API as the DCS.
 
 | | CaaS (pods) | GKE (pods) | BMaaS (bare metal) |
 |---|---|---|---|
-| Monthly cost | ~¥20,928 | ~¥16,950 | ~¥63,246 (3 nodes, HA) |
+| Monthly cost | ~¥20,928 shared | ~¥0 additional on existing cluster | ~¥63,246 (3 nodes, HA) |
 | Storage | NFS PV | pd-ssd | Local disk (best I/O) |
 | Right-sized for UCP? | Yes | Yes | No — overkill |
 | Stable endpoint | K8s Service | K8s Service | HAProxy or CaaS DCS |
@@ -368,6 +371,7 @@ not at UCP's scale.
 - [CaaS pricing](https://onecloud.rakuten-it.com/one-docs/docs/Compute/CaaS/caas-pricing)
 - [BMaaS pricing](https://onecloud.rakuten-it.com/one-docs/docs/Compute/BMaaS/bmaas-pricing)
 - [GKE Persistent Disk pricing](https://cloud.google.com/compute/disks-image-pricing)
+- [Deploy PostgreSQL to GKE using CloudNativePG](https://docs.cloud.google.com/kubernetes-engine/docs/tutorials/stateful-workloads/cloudnativepg)
 
 ---
 
@@ -498,12 +502,12 @@ the managed alternative).
 | **Failover** | Automatic, ~60s, stable endpoint | Automatic via CloudNativePG, ~30s | **No automatic failover** — manual DBaaS intervention on primary failure |
 | **Read replicas** | Yes, separate instances, async | Yes, all standbys serve reads | Yes, multiple within DC |
 | **PITR** | 7 days, continuous, self-service | Manual pipeline (pgBackRest), self-managed | 30-min granularity, 7 days, **DBaaS team required** |
-| **Ops overhead** | Minimal | High | Minimal |
-| **Storage** | GCP SSD (managed) | NFS PV (CaaS) / pd-ssd (GKE) | DBaaS managed |
-| **Cost (Platform DB only)** | ~¥17,000/month | ~¥20,928 CaaS shared / ~¥16,950 GKE dedicated / marginal on existing cluster | ~¥12,650/month |
-| **Monitoring** | GCP Cloud Monitoring (MonaaS federation TBC) | postgres_exporter → MonaaS | MonaaS native |
-| **Network dependency** | Cross-interconnect if app on OneCloud | Local to OneCloud | Local to OneCloud |
-| **Cost** | GCP billing | Internal billing | Internal billing (lowest) |
+| **Ops overhead** | Minimal | K8s: Medium. VM/bare metal: High | Minimal |
+| **Storage** | GCP SSD (managed) | NFS PV (CaaS) / pd-ssd (GKE) / local disk (BMaaS) | DBaaS managed |
+| **Cost (Platform DB only)** | ~¥17,000/month | ~¥20,928 CaaS shared / ~¥0 additional on existing GKE cluster | ~¥12,650/month |
+| **Monitoring** | postgres_exporter → MonaaS (GCP network) | postgres_exporter → MonaaS | MonaaS native |
+| **Network dependency** | Cross-interconnect if app on OneCloud | Local to deploy target | Local to OneCloud |
+| **Billing** | GCP | OneCloud internal (CaaS/BMaaS) / GCP (GKE) | OneCloud internal |
 | **Internal precedent** | Strong (multiple teams) | None | Strong (multiple teams) |
 
 ---
@@ -560,10 +564,10 @@ UCP's database workload is not I/O intensive — ~0.1 writes/second, simple
 point lookups, ~300 concurrent users peak. The performance argument is
 irrelevant at this scale. NFS-backed PVs on CaaS will not be a bottleneck.
 
-Running PostgreSQL on CaaS with CloudNativePG or Zalando PGO is a reasonable
-production choice for UCP. The operator reduces lifecycle overhead, the K8s
-Service provides a stable endpoint without HAProxy, and the workload fits
-comfortably within standard CaaS node capacity.
+Running PostgreSQL on CaaS or GKE with CloudNativePG is a reasonable production
+choice for UCP. The operator reduces lifecycle overhead, the K8s Service
+provides a stable endpoint without HAProxy, and the workload fits comfortably
+within standard node capacity.
 
 **References:**
 - [Google Cloud: To run or not to run a database on Kubernetes](https://cloud.google.com/blog/products/databases/to-run-or-not-to-run-a-database-on-kubernetes-what-to-consider)
@@ -605,12 +609,14 @@ NOT the lowest possible spec — it includes headroom. A smaller spec (1 vCPU /
 
 ## Open Items Before Decision
 
-1. **Option A — GCP Cloud Monitoring to MonaaS**: Cloud SQL metrics live in
-   GCP Cloud Monitoring natively. Needs confirmation on whether these can be
-   federated into MonaaS, or whether Option A requires a separate monitoring
-   path for database metrics.
+1. **Option A — monitoring**: postgres_exporter deployed in the same GCP
+   network as Cloud SQL exposes metrics to MonaaS. Needs validation in practice.
 
-3. **Infrastructure decision**: Option A's cross-interconnect dependency is only
-   relevant if the Platform cluster runs on OneCloud. If the Platform cluster
-   moves to GCP, Option A has no cross-cloud overhead. This decision is tied
-   to OQ#3 in architecture foundation doc (where to deploy UCP).
+2. **Option C — RTO for manual failover**: DBaaS team involvement is required
+   on primary failure. Actual response time SLA from the DBaaS team is unknown.
+   Needs confirmation before Option C can be evaluated against the 99.9% target.
+
+3. **Infrastructure decision**: Option A and Option B (GKE) costs assume UCP is
+   on GCP. Option B (CaaS) and Option C assume OneCloud. The final cost and
+   network dependency picture depends on OQ#3 (where to deploy UCP) in
+   architecture-foundations.md.
