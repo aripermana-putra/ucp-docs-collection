@@ -372,7 +372,7 @@ the managed alternative).
 |---|---|
 | Engine | **MySQL** — ADR-002 rejected, new ADR required |
 | Lv2 satisfied? | Yes — Primary-Replica, single DC |
-| Failover | Automatic via vMotion, stable endpoint |
+| Failover | Automatic via vMotion within DC, stable endpoint. Cross-DC failover likely manual (unconfirmed) |
 | RPO | 0 (semi-synchronous replication) |
 | Ops overhead | Minimal — DBaaS team manages |
 | PITR | 30-min granularity, 7-day retention, **restore requires DBaaS team** |
@@ -398,7 +398,7 @@ the managed alternative).
 | **SLA** | 99.95% (Enterprise) | No commitment | 99.95% (single DC) |
 | **Replication** | Synchronous (HA standby) | Synchronous (configurable) | Semi-synchronous |
 | **RPO** | 0 | 0 | 0 |
-| **Failover** | Automatic, ~60s, stable endpoint | Automatic via Patroni + HAProxy | Automatic via vMotion, stable endpoint |
+| **Failover** | Automatic, ~60s, stable endpoint | Automatic via Patroni + HAProxy | Automatic via vMotion within DC. Cross-DC likely manual (unconfirmed) |
 | **Read replicas** | Yes, separate instances, async | Yes, all standbys serve reads | Yes, multiple within DC |
 | **PITR** | 7 days, continuous, self-service | Manual pipeline (pgBackRest), self-managed | 30-min granularity, 7 days, **DBaaS team required** |
 | **Ops overhead** | Minimal | High | Minimal |
