@@ -314,19 +314,14 @@ failures. This is stronger than standard async MySQL replication.
 
 ### Failover mechanism
 
-**vMotion-based automatic recovery**. VMware vMotion performs live VM migration
-from the failed host to a healthy host. The migrated VM retains the same IP
-address. From the application perspective:
+**Within DC:** vMotion automatically migrates the MySQL VM to another host in
+the same DC on host failure. Same IP retained, stable endpoint, no app-side
+changes needed.
 
-```
-Before failure:  app → 10.x.x.1 (MySQL VM on host A)
-Host A fails:    vMotion migrates VM to host B, same IP retained
-After failover:  app → 10.x.x.1 (MySQL VM now on host B)
-```
-
-**Connection endpoint is stable by design** — no HAProxy required, no
-application reconnection to a different address. Conceptually similar to
-Cloud SQL's managed endpoint.
+**Cross-DC:** vMotion only operates within a single vSphere cluster (same
+physical DC). For a full DC failure, the cross-DC replica would need to be
+promoted to primary. This is likely a manual switchover — unconfirmed, needs
+clarification from the DBaaS team.
 
 ### Backup and PITR
 
