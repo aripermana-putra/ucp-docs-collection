@@ -107,10 +107,10 @@ available out of the box:
 - `cloudsql.googleapis.com/database/postgresql/num_backends`
 - `cloudsql.googleapis.com/database/postgresql/deadlock_count`
 
-UCP uses **MonaaS** for metrics and **EaaS** for logging. Cloud SQL metrics
-live in GCP Cloud Monitoring natively. Whether these can be federated into
-MonaaS needs confirmation — this is an open item specific to Option A given
-that Cloud SQL sits in GCP while UCP's monitoring stack is on OneCloud.
+UCP uses **MonaaS** for metrics. Cloud SQL metrics live in GCP Cloud Monitoring
+natively. Whether these can be federated into MonaaS needs confirmation — this
+is an open item specific to Option A given that Cloud SQL sits in GCP while
+UCP's monitoring stack is on OneCloud.
 
 ### SLA
 
@@ -243,8 +243,7 @@ No managed monitoring — you own the observability stack:
 - **node_exporter** — OS-level metrics (CPU, memory, disk) on each VM.
 
 All three expose Prometheus-format metrics that feed into **MonaaS** for
-metrics collection. Database and application logs ship to **EaaS** for log
-aggregation. No distributed tracing.
+metrics collection.
 
 ### SLA
 
@@ -262,7 +261,7 @@ responsibility.
 | RPO | 0 with synchronous standby |
 | Ops overhead | **High** — OS patches, DB upgrades, security patches, backup pipeline, failover testing, HAProxy operation, all manual |
 | PITR | Possible via pgBackRest + WAL archiving, self-managed |
-| Monitoring | postgres_exporter + Patroni metrics → MonaaS, logs → EaaS |
+| Monitoring | postgres_exporter + Patroni metrics → MonaaS |
 | Network | Local to OneCloud — no cross-cloud dependency |
 | Cost | Internal billing |
 | Internal precedent | None — no team running self-managed PostgreSQL on VMaaS |
@@ -345,8 +344,8 @@ covers this.
 Provides database performance metrics out of the box, managed by the DBaaS team.
 
 MonaaS is UCP's metrics platform. Since DBaaS MySQL also uses MonaaS natively,
-this is the best-aligned option for metrics. Logs ship to EaaS. No additional
-integration work required — monitoring is consistent with UCP's stack.
+this is the best-aligned option for metrics — no additional integration work
+required.
 
 ### SLA
 
@@ -375,7 +374,7 @@ the managed alternative).
 | RPO | 0 (semi-synchronous replication) |
 | Ops overhead | Minimal — DBaaS team manages |
 | PITR | 30-min granularity, 7-day retention, **restore requires DBaaS team** |
-| Monitoring | MonaaS native, logs → EaaS |
+| Monitoring | MonaaS native |
 | Network | Local to OneCloud — no cross-cloud dependency |
 | Cost | Internal billing (lowest) |
 | Internal precedent | Strong — many Rakuten teams use OneCloud DBaaS |
@@ -401,7 +400,7 @@ the managed alternative).
 | **Read replicas** | Yes, separate instances, async | Yes, all standbys serve reads | Yes, multiple within DC |
 | **PITR** | 7 days, continuous, self-service | Manual pipeline (pgBackRest), self-managed | 30-min granularity, 7 days, **DBaaS team required** |
 | **Ops overhead** | Minimal | High | Minimal |
-| **Monitoring** | GCP Cloud Monitoring (MonaaS federation TBC) | postgres_exporter → MonaaS, logs → EaaS | MonaaS native, logs → EaaS |
+| **Monitoring** | GCP Cloud Monitoring (MonaaS federation TBC) | postgres_exporter → MonaaS | MonaaS native |
 | **Network dependency** | Cross-interconnect if app on OneCloud | Local to OneCloud | Local to OneCloud |
 | **Cost** | GCP billing | Internal billing | Internal billing (lowest) |
 | **Internal precedent** | Strong (multiple teams) | None | Strong (multiple teams) |
