@@ -153,28 +153,49 @@ Enterprise is sufficient for UCP's 99.9% target.
 
 ---
 
-## Option B — Self-managed PostgreSQL on VMaaS (OneCloud)
+## Option B — Self-managed PostgreSQL on CaaS (OneCloud)
+
+VMaaS production is currently restricted to TAM and CPSD service providers
+(DBaaS, CaaS, LBaaS, MonaaS, etc.) and is not available to other users.
+An exception may be possible for UCP — worth exploring with the VMaaS team.
+Until then, the available compute options are CaaS and BMaaS. CaaS is the
+primary path. BMaaS is documented at the end of this section for reference.
 
 ### Architecture
 
-PostgreSQL runs on VMaaS VMs. **Patroni** manages the cluster — it is a Python
-daemon that runs alongside each PostgreSQL process on every node, using a
-consensus store (etcd or Kubernetes API) for leader election.
+PostgreSQL runs as pods on a dedicated CaaS cluster. **Patroni** manages the
+cluster — it is a Python daemon that runs alongside each PostgreSQL process,
+using the **Kubernetes API as the consensus store** (no separate etcd needed
+on K8s).
 
 ```
-Node 1 (VM)              Node 2 (VM)              Node 3 (VM)
-┌──────────────┐         ┌──────────────┐         ┌──────────────┐
-│  PostgreSQL  │         │  PostgreSQL  │         │  PostgreSQL  │
-│  Patroni     │         │  Patroni     │         │  Patroni     │
-└──────┬───────┘         └──────┬───────┘         └──────┬───────┘
-       └─────────────────────── etcd ────────────────────┘
-                         (leader election,
-                          cluster state)
+Pod 1 (CaaS)             Pod 2 (CaaS)
+┌──────────────┐         ┌──────────────┐
+│  PostgreSQL  │         │  PostgreSQL  │
+│  Patroni     │         │  Patroni     │
+└──────┬───────┘         └──────┬───────┘
+       └──────── K8s API ───────┘
+                (leader election via
+                 Kubernetes endpoints)
 ```
 
-All Patroni daemons coordinate via the consensus store. On failover, Patroni
-promotes a standby and updates the cluster state. All other nodes repoint to
-the new primary.
+All Patroni daemons coordinate via the K8s API. On failover, Patroni promotes
+a standby and updates the cluster state. All other nodes repoint to the new
+primary.
+
+### Stable endpoint on Kubernetes
+
+On K8s, HAProxy is not needed. Patroni updates pod labels on failover
+(`role=primary` / `role=replica`). A Kubernetes Service with a label selector
+on `role=primary` automatically updates its endpoint to the new primary pod.
+The application connects to the stable K8s Service DNS name — same behavior
+as Cloud SQL's managed endpoint, built natively into K8s.
+
+```
+Application → postgres-primary.namespace.svc  (K8s Service, stable DNS)
+                    │
+                    └──► Pod with label role=primary (updated by Patroni on failover)
+```
 
 ### Read replicas
 
@@ -222,8 +243,9 @@ Application
      └── reads  ──► Node 2, Node 3 (standbys)
 ```
 
-HAProxy provides the stable endpoint that Cloud SQL builds in natively. It is
-an additional component to deploy and operate.
+On bare metal or VMs (without K8s), HAProxy is needed as a separate component
+to provide a stable endpoint. On CaaS (K8s), the K8s Service handles this
+natively — no HAProxy needed.
 
 ### Backup and PITR
 
@@ -239,23 +261,27 @@ No managed backup — you own the entire backup pipeline:
 PITR is possible with WAL archiving (pgBackRest), but you configure the
 archive destination, test restores, and monitor backup health yourself.
 
+### Storage consideration on CaaS
+
+CaaS supports NFS-backed and STaaS persistent volumes. Network-attached storage
+adds I/O latency compared to local SSD. For UCP's load profile (~0.1
+writes/second, simple queries), NFS latency is unlikely to be noticeable in
+practice. See the trade-off section at the end of this document for the broader
+debate on databases on Kubernetes.
+
 ### Monitoring
 
-No managed monitoring — you own the observability stack:
+- **postgres_exporter** — connects to PostgreSQL, queries internal statistics
+  views, exposes Prometheus-format metrics.
+- **Patroni metrics** — Patroni exposes a `/metrics` endpoint.
 
-- **postgres_exporter** — Prometheus exporter for PostgreSQL metrics. Exposes
-  database-level metrics (connections, locks, replication lag, table stats).
-- **Patroni metrics** — Patroni exposes a `/metrics` endpoint compatible with
-  Prometheus.
-- **node_exporter** — OS-level metrics (CPU, memory, disk) on each VM.
-
-All three expose Prometheus-format metrics that feed into **MonaaS** for
-metrics collection.
+Both feed into **MonaaS**. postgres_exporter runs in the same CaaS cluster,
+same network as the database pods.
 
 ### SLA
 
-No SLA commitment — availability is as good as you operate it. The underlying
-VMaaS infrastructure has its own SLA, but database-layer availability is your
+No SLA commitment — availability is as good as you operate it. CaaS
+infrastructure has its own SLA, but database-layer availability is your
 responsibility.
 
 ### Key properties
@@ -263,22 +289,44 @@ responsibility.
 | Dimension | Detail |
 |---|---|
 | Engine | PostgreSQL — ADR-002 stands |
-| Lv2 satisfied? | Yes — Patroni, 2 nodes same DC |
-| Failover | Automatic via Patroni, ~30–60s, requires HAProxy for stable endpoint |
+| Lv2 satisfied? | Yes — Patroni, 2 pods same DC |
+| Failover | Automatic via Patroni + K8s Service label selector, ~30–60s, no HAProxy needed on K8s |
 | RPO | 0 with synchronous standby |
-| Ops overhead | **High** — OS patches, DB upgrades, security patches, backup pipeline, failover testing, HAProxy operation, all manual |
+| Ops overhead | Medium — K8s operator (CloudNativePG / Zalando PGO) reduces lifecycle burden vs bare metal, but backup pipeline and DB upgrades remain your responsibility |
 | PITR | Possible via pgBackRest + WAL archiving, self-managed |
 | Monitoring | postgres_exporter + Patroni metrics → MonaaS |
 | Network | Local to OneCloud — no cross-cloud dependency |
-| Cost | Internal billing |
-| Internal precedent | None — no team running self-managed PostgreSQL on VMaaS |
+| Storage | NFS-backed PVs — network I/O latency, acceptable for UCP's load profile |
+| Cost | ~¥20,928/month shared nodes (2 pods × 4 units × ¥2,616/unit). Marginal if on dedicated cluster already procured for UCP. |
+| Internal precedent | None for PostgreSQL on CaaS |
+
+### BMaaS reference
+
+If CaaS is unavailable and a VMaaS exception cannot be obtained, BMaaS is the
+fallback. PostgreSQL + Patroni runs on bare metal servers. Architecture and
+replication are identical — only the compute unit changes.
+
+| | CaaS (pods) | BMaaS (bare metal) |
+|---|---|---|
+| Min spec (Patroni HA) | 2 pods × 4 units | 2 × c7.standard |
+| Monthly cost | ~¥20,928 | ~¥42,164 |
+| Right-sized for UCP? | Yes | No — significant overkill |
+| Stable endpoint | K8s Service (native) | HAProxy (extra component) |
+| Storage | NFS PV | Local disk (better I/O) |
+
+BMaaS delivers better raw I/O (local disk vs NFS) but at ~2× the cost and
+with significant over-provisioning. Only justified if local disk performance
+is a demonstrated requirement — which it is not at UCP's scale.
 
 ### References
 
 - [Patroni documentation](https://patroni.readthedocs.io/)
+- [CloudNativePG operator](https://cloudnative-pg.io/)
+- [Zalando Postgres Operator](https://github.com/zalando/postgres-operator)
 - [pgBackRest documentation](https://pgbackrest.org/)
 - [postgres_exporter](https://github.com/prometheus-community/postgres_exporter)
-- [HAProxy PostgreSQL routing with Patroni](https://patroni.readthedocs.io/en/latest/ha_multi_dc.html)
+- [CaaS pricing](https://onecloud.rakuten-it.com/one-docs/docs/Compute/CaaS/caas-pricing)
+- [BMaaS pricing](https://onecloud.rakuten-it.com/one-docs/docs/Compute/BMaaS/bmaas-pricing)
 
 ---
 
@@ -402,10 +450,99 @@ the managed alternative).
 | **Read replicas** | Yes, separate instances, async | Yes, all standbys serve reads | Yes, multiple within DC |
 | **PITR** | 7 days, continuous, self-service | Manual pipeline (pgBackRest), self-managed | 30-min granularity, 7 days, **DBaaS team required** |
 | **Ops overhead** | Minimal | High | Minimal |
+| **Storage** | GCP SSD (managed) | NFS PV on CaaS | DBaaS managed |
+| **Cost (Platform DB only)** | ~¥17,000/month | ~¥20,928/month shared; marginal on dedicated | ~¥12,650/month |
 | **Monitoring** | GCP Cloud Monitoring (MonaaS federation TBC) | postgres_exporter → MonaaS | MonaaS native |
 | **Network dependency** | Cross-interconnect if app on OneCloud | Local to OneCloud | Local to OneCloud |
 | **Cost** | GCP billing | Internal billing | Internal billing (lowest) |
 | **Internal precedent** | Strong (multiple teams) | None | Strong (multiple teams) |
+
+---
+
+## Running Databases on Kubernetes — Community Perspective
+
+Option B deploys PostgreSQL inside a K8s cluster (CaaS). This is a topic with
+a strong community opinion history worth understanding before committing.
+
+### Historical stance (2018–2020): don't do it
+
+The dominant view was to keep databases off Kubernetes. StatefulSets were
+immature, persistent volume handling was unreliable, operators barely existed,
+and every K8s upgrade was a potential disruption to the data layer.
+
+### Current stance (2024–2026): it depends
+
+The consensus has shifted. Mature operators (CloudNativePG, Zalando Postgres
+Operator, Crunchy PGO, Percona Operator) have significantly reduced the
+operational gap versus bare metal.
+
+**Arguments for databases on K8s:**
+
+- Unified platform — one tool, one monitoring stack, one deployment model for
+  teams already running K8s.
+- K8s handles operational primitives — automatic pod restart, rescheduling on
+  node failure, resource limits.
+- Operator maturity — production-grade PostgreSQL operators handle HA, failover,
+  upgrades, and scaling. The manual work has shrunk considerably.
+- Cost efficiency — if you're already paying for a dedicated cluster, the DB
+  runs there at marginal cost.
+
+**Arguments against:**
+
+- **Storage is the hardest problem** — the most cited concern. Network-attached
+  PVs (NFS, cloud disks) add I/O latency that bare metal never has. Local
+  storage gives better performance but removes pod mobility — if the node dies,
+  the pod can't reschedule without data loss unless storage is replicated.
+- **Performance ceiling** — bare metal always wins on raw I/O. Container
+  networking and cgroup overhead are measurable for write-heavy workloads.
+- **K8s upgrade risk** — cluster upgrades can disrupt StatefulSet pods.
+  Database upgrades and K8s upgrades become entangled.
+- **Expertise required** — PersistentVolumeClaims, StorageClasses, StatefulSets,
+  PodDisruptionBudgets. Getting this wrong means data loss.
+
+**Google's recommendation:**
+> *Managed services are the recommended default. Kubernetes databases are
+> reserved for specific use cases where control and customization justify
+> the operational complexity.*
+
+### Verdict for UCP
+
+UCP's database workload is not I/O intensive — ~0.1 writes/second, simple
+point lookups, ~300 concurrent users peak. The performance argument is
+irrelevant at this scale. NFS-backed PVs on CaaS will not be a bottleneck.
+
+Running PostgreSQL on CaaS with CloudNativePG or Zalando PGO is a reasonable
+production choice for UCP. The operator reduces lifecycle overhead, the K8s
+Service provides a stable endpoint without HAProxy, and the workload fits
+comfortably within standard CaaS node capacity.
+
+**References:**
+- [Google Cloud: To run or not to run a database on Kubernetes](https://cloud.google.com/blog/products/databases/to-run-or-not-to-run-a-database-on-kubernetes-what-to-consider)
+- [CockroachDB: Running databases on Kubernetes](https://www.cockroachlabs.com/blog/kubernetes-databases/)
+
+---
+
+## Cost Estimates
+
+> All figures are estimates. Option A based on GCP public list pricing
+> (committed use discounts would reduce it ~30–55%). Option B CaaS based on
+> FY26 shared node rate ¥2,616/unit. Option C based on FY24 DBaaS compute
+> tier pricing. MySQL Primary-Replica pricing needs confirmation from the
+> DBaaS team as it may bundle compute differently.
+
+**Spec used:** 2 vCPU / 8GB RAM, 50GB storage — appropriate for UCP's load
+profile (300 concurrent users, simple queries, ~0.1 writes/second).
+
+**Temporal DB is not included** — it runs as a pod inside the K8s cluster
+(same cluster as Temporal Server) at negligible marginal cost.
+
+| | Option A — Cloud SQL | Option B — CaaS + Patroni | Option C — DBaaS MySQL |
+|---|---|---|---|
+| **Compute** | db-custom-2-8192, Regional HA | 2 pods × 4 units × ¥2,616 | S tier (4 CPU/16GB) × 2 instances |
+| **Storage** | 50GB SSD | NFS PV | 50GB high-spec disk |
+| **Estimated monthly** | ~¥17,000 | ~¥20,928 (shared nodes) | ~¥12,650 |
+| **On dedicated cluster** | N/A | Marginal | N/A |
+| **Billing** | GCP | OneCloud internal | OneCloud internal |
 
 ---
 
