@@ -362,14 +362,21 @@ failures. This is stronger than standard async MySQL replication.
 
 ### Failover mechanism
 
-**Within DC:** vMotion automatically migrates the MySQL VM to another host in
-the same DC on host failure. Same IP retained, stable endpoint, no app-side
-changes needed.
+**MySQL Primary Replica does not support high availability or automatic
+failover.** This is confirmed by the official DBaaS FAQ:
 
-**Cross-DC:** vMotion only operates within a single vSphere cluster (same
-physical DC). For a full DC failure, the cross-DC replica would need to be
-promoted to primary. This is likely a manual switchover — unconfirmed, needs
-clarification from the DBaaS team.
+> *"No, it does not support high availability solutions. DBaaS involvement is
+> required in case of primary server is down."*
+> — [OneCloud DBaaS FAQs](https://onecloud.rakuten-it.com/one-docs/docs/Database/DBaaS/dbaas-faqs)
+
+**Within DC (host failure only):** vMotion can automatically migrate the MySQL
+VM to another host in the same DC if the physical host fails. Same IP retained.
+This is not HA in the database sense — it is VM-level host recovery.
+
+**Primary failure (any other cause):** If the MySQL primary goes down for any
+reason other than a simple host failure that vMotion can handle, the replica
+does NOT automatically promote. The DBaaS team must manually promote the replica
+to primary. RTO is unknown — depends on DBaaS team response time.
 
 ### Backup and PITR
 
@@ -420,7 +427,7 @@ the managed alternative).
 |---|---|
 | Engine | **MySQL** — ADR-002 rejected, new ADR required |
 | Lv2 satisfied? | Yes — Primary-Replica, single DC |
-| Failover | Automatic via vMotion within DC, stable endpoint. Cross-DC failover likely manual (unconfirmed) |
+| Failover | **No automatic failover.** vMotion handles host-level failure within DC only. Any primary failure requires manual DBaaS team intervention. RTO unknown. |
 | RPO | 0 (semi-synchronous replication) |
 | Ops overhead | Minimal — DBaaS team manages |
 | PITR | 30-min granularity, 7-day retention, **restore requires DBaaS team** |
@@ -434,6 +441,7 @@ the managed alternative).
 - [OneCloud MySQL Primary-Replica intro](https://onecloud.rakuten-it.com/one-docs/docs/Database/DBaaS/mysql-primary-replica/singledc/mysql-primary-replica-intro)
 - [DBaaS MySQL Primary-Replica v3.0.0 release notes](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6597402687)
 - [DBaaS manual restore operation](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6434577007)
+- [OneCloud DBaaS FAQs — HA and failover](https://onecloud.rakuten-it.com/one-docs/docs/Database/DBaaS/dbaas-faqs)
 
 ---
 
@@ -446,7 +454,7 @@ the managed alternative).
 | **SLA** | 99.95% (Enterprise) | No commitment | 99.95% (single DC) |
 | **Replication** | Synchronous (HA standby) | Synchronous (configurable) | Semi-synchronous |
 | **RPO** | 0 | 0 | 0 |
-| **Failover** | Automatic, ~60s, stable endpoint | Automatic via Patroni + HAProxy | Automatic via vMotion within DC. Cross-DC likely manual (unconfirmed) |
+| **Failover** | Automatic, ~60s, stable endpoint | Automatic via Patroni + K8s Service | **No automatic failover** — manual DBaaS intervention on primary failure |
 | **Read replicas** | Yes, separate instances, async | Yes, all standbys serve reads | Yes, multiple within DC |
 | **PITR** | 7 days, continuous, self-service | Manual pipeline (pgBackRest), self-managed | 30-min granularity, 7 days, **DBaaS team required** |
 | **Ops overhead** | Minimal | High | Minimal |
