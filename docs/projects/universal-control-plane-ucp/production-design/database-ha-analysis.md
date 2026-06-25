@@ -300,23 +300,57 @@ responsibility.
 | Cost | ~¥20,928/month shared nodes (2 pods × 4 units × ¥2,616/unit). Marginal if on dedicated cluster already procured for UCP. |
 | Internal precedent | None for PostgreSQL on CaaS |
 
+### GKE sub-option
+
+If UCP's platform cluster is deployed on GCP (GKE), PostgreSQL + Patroni can
+run on the same GKE cluster instead of Cloud SQL. The architecture is identical
+to CaaS — CloudNativePG operator, K8s API as DCS, K8s Service for stable
+endpoint. The key difference is storage.
+
+**Storage advantage over CaaS:** GKE supports Persistent Disk SSD (pd-ssd),
+which is block storage with low, consistent I/O latency. No NFS overhead.
+Comparable to bare metal for database workloads.
+
+**Cost:** If PostgreSQL pods run on existing GKE nodes already provisioned for
+UCP's other workloads, the cost is marginal — you're consuming spare capacity
+on nodes you're already paying for. If dedicated nodes are needed:
+
+- 2 × `n2-standard-2` (2 vCPU, 8GB): ~$48/month each → ~$96/month ≈ **¥14,400/month**
+- 50GB pd-ssd storage × 2: ~$17/month ≈ ¥2,550/month
+- **Total: ~¥16,950/month** — slightly cheaper than Cloud SQL (~¥17,000) with better I/O, but self-managed
+
+**Trade-off vs Cloud SQL:** Cloud SQL at roughly the same cost gives you fully
+managed HA, automated backups, PITR, and zero ops overhead. PostgreSQL on GKE
+costs roughly the same but you own operations. The cost saving is minimal —
+the decision comes down to whether self-managed is acceptable, not cost.
+
+| | CaaS + Patroni | GKE + CloudNativePG | Cloud SQL |
+|---|---|---|---|
+| Storage | NFS (network I/O) | pd-ssd (block I/O) | GCP SSD (managed) |
+| Cost | ~¥20,928 | ~¥16,950 (dedicated) / marginal | ~¥17,000 |
+| Managed? | No | No | Yes |
+| Location | OneCloud | GCP | GCP |
+
+GKE + CloudNativePG is the self-managed PostgreSQL option for teams on GCP
+who want the engine control without the NFS storage penalty of CaaS.
+
 ### BMaaS reference
 
 If CaaS is unavailable and a VMaaS exception cannot be obtained, BMaaS is the
-fallback. PostgreSQL + Patroni runs on bare metal servers. Architecture and
-replication are identical — only the compute unit changes.
+fallback. PostgreSQL + Patroni on bare metal. Architecture and replication are
+identical — only the compute unit changes. Requires either co-located etcd (3
+nodes minimum across different AZs) or CaaS/GKE K8s API as the DCS.
 
-| | CaaS (pods) | BMaaS (bare metal) |
-|---|---|---|
-| Min spec (Patroni HA) | 2 pods × 4 units | 2 × c7.standard |
-| Monthly cost | ~¥20,928 | ~¥42,164 |
-| Right-sized for UCP? | Yes | No — significant overkill |
-| Stable endpoint | K8s Service (native) | HAProxy (extra component) |
-| Storage | NFS PV | Local disk (better I/O) |
+| | CaaS (pods) | GKE (pods) | BMaaS (bare metal) |
+|---|---|---|---|
+| Monthly cost | ~¥20,928 | ~¥16,950 | ~¥63,246 (3 nodes, HA) |
+| Storage | NFS PV | pd-ssd | Local disk (best I/O) |
+| Right-sized for UCP? | Yes | Yes | No — overkill |
+| Stable endpoint | K8s Service | K8s Service | HAProxy or CaaS DCS |
+| DCS | K8s API (built-in) | K8s API (built-in) | etcd (3 nodes) or external K8s |
 
-BMaaS delivers better raw I/O (local disk vs NFS) but at ~2× the cost and
-with significant over-provisioning. Only justified if local disk performance
-is a demonstrated requirement — which it is not at UCP's scale.
+BMaaS is only justified if local disk I/O is a hard requirement, which it is
+not at UCP's scale.
 
 ### References
 
@@ -327,6 +361,7 @@ is a demonstrated requirement — which it is not at UCP's scale.
 - [postgres_exporter](https://github.com/prometheus-community/postgres_exporter)
 - [CaaS pricing](https://onecloud.rakuten-it.com/one-docs/docs/Compute/CaaS/caas-pricing)
 - [BMaaS pricing](https://onecloud.rakuten-it.com/one-docs/docs/Compute/BMaaS/bmaas-pricing)
+- [GKE Persistent Disk pricing](https://cloud.google.com/compute/disks-image-pricing)
 
 ---
 
@@ -458,8 +493,8 @@ the managed alternative).
 | **Read replicas** | Yes, separate instances, async | Yes, all standbys serve reads | Yes, multiple within DC |
 | **PITR** | 7 days, continuous, self-service | Manual pipeline (pgBackRest), self-managed | 30-min granularity, 7 days, **DBaaS team required** |
 | **Ops overhead** | Minimal | High | Minimal |
-| **Storage** | GCP SSD (managed) | NFS PV on CaaS | DBaaS managed |
-| **Cost (Platform DB only)** | ~¥17,000/month | ~¥20,928/month shared; marginal on dedicated | ~¥12,650/month |
+| **Storage** | GCP SSD (managed) | NFS PV (CaaS) / pd-ssd (GKE) | DBaaS managed |
+| **Cost (Platform DB only)** | ~¥17,000/month | ~¥20,928 CaaS shared / ~¥16,950 GKE dedicated / marginal on existing cluster | ~¥12,650/month |
 | **Monitoring** | GCP Cloud Monitoring (MonaaS federation TBC) | postgres_exporter → MonaaS | MonaaS native |
 | **Network dependency** | Cross-interconnect if app on OneCloud | Local to OneCloud | Local to OneCloud |
 | **Cost** | GCP billing | Internal billing | Internal billing (lowest) |
