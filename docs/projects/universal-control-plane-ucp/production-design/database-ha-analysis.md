@@ -107,10 +107,11 @@ available out of the box:
 - `cloudsql.googleapis.com/database/postgresql/num_backends`
 - `cloudsql.googleapis.com/database/postgresql/deadlock_count`
 
-UCP uses **MonaaS** for metrics. Cloud SQL metrics live in GCP Cloud Monitoring
-natively. Whether these can be federated into MonaaS needs confirmation — this
-is an open item specific to Option A given that Cloud SQL sits in GCP while
-UCP's monitoring stack is on OneCloud.
+UCP uses **MonaaS** for metrics. Run **postgres_exporter** in the same GCP
+network as Cloud SQL — it connects as a regular PostgreSQL client, queries
+internal statistics views, and exposes a `/metrics` endpoint. MonaaS scrapes
+that endpoint. No installation on Cloud SQL itself is required. Needs
+validation in practice.
 
 ### SLA
 
