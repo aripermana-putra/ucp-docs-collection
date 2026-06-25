@@ -10,6 +10,12 @@ Detailed analysis of three deployment options for the Platform DB, supporting th
 decision that will follow ADR-002 (database engine). If Option C is chosen, ADR-002
 is rejected and the engine changes from PostgreSQL to MySQL.
 
+> **Note on read replicas:** Read replica coverage in each option is included
+> for completeness. Given UCP's load profile (~300 concurrent users peak, simple
+> point lookups, ~0.1 writes/second), read replicas are not justified at MVP
+> scale. This section documents the capability for future reference, not as a
+> current requirement.
+
 **Working assumptions:**
 
 - IT service redundancy level: **Lv2 minimum** (CIO Instruction `[002453]`) —
@@ -415,13 +421,7 @@ the managed alternative).
    federated into MonaaS, or whether Option A requires a separate monitoring
    path for database metrics.
 
-2. **Option C — RTO**: What is the actual RTO for vMotion-based failover?
-   vMotion is typically seconds, but exact SLA from DBaaS team is unknown.
-
-3. **Option C — read replica endpoint**: Does each read replica have its own
-   stable endpoint, or does the DBaaS team provide a load-balanced read endpoint?
-
-4. **Infrastructure decision**: Option A's cross-interconnect dependency is only
+3. **Infrastructure decision**: Option A's cross-interconnect dependency is only
    relevant if the Platform cluster runs on OneCloud. If the Platform cluster
    moves to GCP, Option A has no cross-cloud overhead. This decision is tied
-   to OQ#3 (where to deploy UCP).
+   to OQ#3 in architecture foundation doc (where to deploy UCP).
