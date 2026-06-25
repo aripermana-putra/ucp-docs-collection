@@ -131,7 +131,7 @@ Enterprise is sufficient for UCP's 99.9% target.
 | RPO | 0 (synchronous replication) |
 | Ops overhead | Minimal — fully managed |
 | PITR | 7 days (Enterprise), self-service restore |
-| Monitoring | GCP Cloud Monitoring, exportable to LGTM |
+| Monitoring | GCP Cloud Monitoring (MonaaS federation TBC) |
 | Network | Cross-interconnect if Platform cluster on OneCloud (~3–8ms per query) |
 | Cost | GCP billing |
 | Internal precedent | Strong — Flat35, GDSP, RMagazine, Coupon all use Cloud SQL in production |
@@ -262,7 +262,7 @@ responsibility.
 | RPO | 0 with synchronous standby |
 | Ops overhead | **High** — OS patches, DB upgrades, security patches, backup pipeline, failover testing, HAProxy operation, all manual |
 | PITR | Possible via pgBackRest + WAL archiving, self-managed |
-| Monitoring | postgres_exporter + Patroni metrics → LGTM stack |
+| Monitoring | postgres_exporter + Patroni metrics → MonaaS, logs → EaaS |
 | Network | Local to OneCloud — no cross-cloud dependency |
 | Cost | Internal billing |
 | Internal precedent | None — no team running self-managed PostgreSQL on VMaaS |
@@ -375,7 +375,7 @@ the managed alternative).
 | RPO | 0 (semi-synchronous replication) |
 | Ops overhead | Minimal — DBaaS team manages |
 | PITR | 30-min granularity, 7-day retention, **restore requires DBaaS team** |
-| Monitoring | MonaaS — LGTM integration TBC |
+| Monitoring | MonaaS native, logs → EaaS |
 | Network | Local to OneCloud — no cross-cloud dependency |
 | Cost | Internal billing (lowest) |
 | Internal precedent | Strong — many Rakuten teams use OneCloud DBaaS |

@@ -84,7 +84,7 @@ All components run in one multi-AZ Kubernetes cluster per environment.
   crossplane-system ns Crossplane, Providers
   ucp-workers ns       provisioning-worker, drift-worker
   ucp-db ns            PostgreSQL (platform + temporal, separate schemas)
-  monitoring ns        Prometheus, Grafana, Loki, Tempo
+  monitoring ns        MonaaS agent, EaaS log shipper
 ```
 
 ### Option B — Platform + Operations Cluster (two clusters per environment)
@@ -97,7 +97,7 @@ Temporal.
   API Server ×2                        Temporal Server (HA)
   PostgreSQL Platform (HA)             PostgreSQL Temporal (HA)
   Vault (HA)                           Temporal Workers (provisioning, drift)
-  Monitoring (LGTM)                    Crossplane (HA)
+  Monitoring (MonaaS + EaaS)           Crossplane (HA)
   Ingress + LoadBalancer               Crossplane Providers (gcp, roc)
                                        External Secrets Operator
                                        KEDA
@@ -175,7 +175,7 @@ clusters with the same layout.
   Namespace: vault-system
     Vault                   3-node Raft cluster, one per AZ
   Namespace: monitoring
-    Prometheus, Grafana, Loki, Tempo
+    MonaaS agent, EaaS log shipper
   Ingress: nginx LoadBalancer, TLS termination
 
 [Operations Cluster — multi-AZ, 3 AZs]
@@ -409,7 +409,7 @@ HashiCorp Vault (Platform Cluster, 3-node Raft HA)
     kv-v2/ucp/tenants/{tenant-slug}/omnia  Omnia credentials
     kv-v2/ucp/platform/                    Platform secrets (session key, etc.)
   Policies:       per-tenant read-only, platform-admin
-  Audit backend:  file → shipped to Loki for 3-year retention
+  Audit backend:  file → shipped to EaaS for 3-year retention
 
 External Secrets Operator (Operations Cluster)
   VaultProvider   reads from Vault using K8s auth (cross-cluster)
@@ -526,30 +526,28 @@ here.
 
 ---
 
-### Monitoring — LGTM Stack
+### Monitoring
 
 ```
-Prometheus       Scrapes: API server, Temporal workers, Crossplane, providers
-                 Recording rules: quota check latency p99, drift scan success rate,
-                                  workflow queue depth SLIs
-
-Grafana          Dashboards:
+MonaaS           Metrics platform (OneCloud managed).
+                 Scrapes: API server, Temporal workers, Crossplane, providers
+                 Key metrics:
                    UCP SLI: API p99 latency, drift detection lag, provisioning depth
                    Tenant health: per-tenant quota usage, drift status, active workflows
                    Infra: PostgreSQL replication lag, Vault seal status, etcd latency
+                 Alerting:
+                   DriftScanWorkflow failure rate > 5% in 5-minute window
+                   API error rate > 1% for 5 minutes
+                   Temporal task queue backlog > 100 for 5 minutes
+                   PostgreSQL replication lag > 30s
+                   Vault sealed or leader change
 
-Loki             Aggregates slog JSON logs from all pods
-                 Vault audit log file → Loki for 3-year retention
+EaaS             Log aggregation (OneCloud managed).
+                 Aggregates structured logs from all pods
+                 Vault audit log file → EaaS for 3-year retention
 
-Tempo            OTel OTLP traces from API server, workers
-                 TraceID in every API error response — clickable from Grafana
-
-Alerting:
-  DriftScanWorkflow failure rate > 5% in 5-minute window
-  API error rate > 1% for 5 minutes
-  Temporal task queue backlog > 100 for 5 minutes
-  PostgreSQL replication lag > 30s
-  Vault sealed or leader change
+Note: No distributed tracing. TraceID is included in API error responses
+for correlation with logs in EaaS.
 ```
 
 ---

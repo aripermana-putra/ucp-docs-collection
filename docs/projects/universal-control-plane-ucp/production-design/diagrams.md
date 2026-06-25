@@ -94,7 +94,7 @@ C4Container
 
         Container(keda, "KEDA", "KEDA", "Scales drift workers based on Temporal task queue depth.")
 
-        Container(monitoring, "LGTM Monitoring", "Prometheus, Grafana, Loki, Tempo", "Metrics, structured logs, and distributed traces via OTel.")
+        Container(monitoring, "Monitoring", "MonaaS (metrics), EaaS (logs)", "Metrics collection and log aggregation. No distributed tracing.")
     }
 
     Rel(user, ingress, "HTTPS")
@@ -156,7 +156,7 @@ C4Container
 
         Container(vault, "Vault", "HashiCorp Vault, Raft HA", "Cloud provider credentials and platform secrets.")
 
-        Container(monitoring, "LGTM Monitoring", "Prometheus, Grafana, Loki, Tempo", "Metrics, structured logs, and distributed traces.")
+        Container(monitoring, "Monitoring", "MonaaS (metrics), EaaS (logs)", "Metrics collection and log aggregation. No distributed tracing.")
     }
 
     Container_Boundary(ops, "Operations Cluster — GKE, multi-AZ") {
@@ -237,7 +237,7 @@ C4Container
 
         Container(vault, "Vault", "HashiCorp Vault, Raft HA", "Cloud provider credentials and platform secrets.")
 
-        Container(monitoring, "LGTM Monitoring", "Prometheus, Grafana, Loki, Tempo", "Metrics, structured logs, traces.")
+        Container(monitoring, "Monitoring", "MonaaS (metrics), EaaS (logs)", "Metrics collection and log aggregation. No distributed tracing.")
     }
 
     Container_Boundary(cp, "Crossplane Cluster — GKE, multi-AZ") {
