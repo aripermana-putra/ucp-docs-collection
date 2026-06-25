@@ -34,6 +34,14 @@ access patterns, consistency requirements, scale projections, audit log
 partitioning strategy, and evaluation of all alternative database engines
 (MongoDB, Cassandra, TimescaleDB, Neo4j) with explicit dismissal rationale.
 
+### [Database HA Deployment Analysis](./production-design/database-ha-analysis.md)
+
+Three-way comparison of Platform DB deployment options: Cloud SQL (GCP managed
+PostgreSQL), self-managed PostgreSQL with Patroni on VMaaS, and MySQL on
+OneCloud DBaaS. Covers replication mechanism, failover, read replicas, PITR,
+monitoring, ops overhead, and SLA for each option. Includes open items before
+a final decision can be made.
+
 ### [Architecture Diagrams](./production-design/diagrams.md)
 
 C1 (System Context) and C2 (Container) diagrams for all three cluster topology
