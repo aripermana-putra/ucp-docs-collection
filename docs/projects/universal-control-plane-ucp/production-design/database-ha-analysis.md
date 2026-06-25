@@ -163,89 +163,54 @@ primary path. BMaaS is documented at the end of this section for reference.
 
 ### Architecture
 
-PostgreSQL runs as pods on a dedicated CaaS cluster. **Patroni** manages the
-cluster — it is a Python daemon that runs alongside each PostgreSQL process,
-using the **Kubernetes API as the consensus store** (no separate etcd needed
-on K8s).
+PostgreSQL runs as pods managed by **CloudNativePG** — a Kubernetes-native
+operator that implements HA, failover, replication, and backup management
+directly. No Patroni. No separate HA tool. CloudNativePG is a CNCF sandbox
+project built specifically for K8s.
+
+You declare a `Cluster` resource and the operator handles everything:
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: ucp-platform-db
+spec:
+  instances: 2          # primary + 1 standby
+  storage:
+    size: 50Gi
+```
+
+CloudNativePG creates:
+- A StatefulSet with correct pod configuration
+- `ucp-platform-db-rw` Service → primary only (writes)
+- `ucp-platform-db-ro` Service → replicas only (reads)
+- PVCs for each pod
+- RBAC for K8s API access
+- Manages label updates on failover automatically
+
+### HA — replication mechanism
+
+PostgreSQL native **WAL streaming replication**, configured and managed by
+CloudNativePG. Synchronous replication (RPO = 0) is the default for the
+standby — primary waits for standby acknowledgment before confirming writes.
+
+### Failover mechanism
+
+CloudNativePG detects primary failure via K8s liveness probes and promotes
+the standby automatically. The `-rw` Service endpoint updates within seconds
+— no HAProxy, no separate routing component.
 
 ```
-Pod 1 (CaaS)             Pod 2 (CaaS)
-┌──────────────┐         ┌──────────────┐
-│  PostgreSQL  │         │  PostgreSQL  │
-│  Patroni     │         │  Patroni     │
-└──────┬───────┘         └──────┬───────┘
-       └──────── K8s API ───────┘
-                (leader election via
-                 Kubernetes endpoints)
-```
-
-All Patroni daemons coordinate via the K8s API. On failover, Patroni promotes
-a standby and updates the cluster state. All other nodes repoint to the new
-primary.
-
-### Stable endpoint on Kubernetes
-
-On K8s, HAProxy is not needed. Patroni updates pod labels on failover
-(`role=primary` / `role=replica`). A Kubernetes Service with a label selector
-on `role=primary` automatically updates its endpoint to the new primary pod.
-The application connects to the stable K8s Service DNS name — same behavior
-as Cloud SQL's managed endpoint, built natively into K8s.
-
-```
-Application → postgres-primary.namespace.svc  (K8s Service, stable DNS)
+Application → ucp-platform-db-rw (K8s Service, stable DNS)
                     │
-                    └──► Pod with label role=primary (updated by Patroni on failover)
+                    └──► primary pod (CloudNativePG updates on failover)
 ```
 
 ### Read replicas
 
-**All Patroni standbys are hot standbys** — they serve reads AND act as failover
-candidates simultaneously. There is no distinction between a "HA standby" and a
-"read replica" at the node level.
-
-```
-Primary  ──WAL streaming──► Standby 1  ← reads + failover candidate
-         ──WAL streaming──► Standby 2  ← reads + failover candidate
-```
-
-Sync vs async is configurable per standby:
-
-- **Synchronous standby**: primary waits for confirmation before acknowledging
-  writes. RPO = 0. Used for the primary failover target.
-- **Asynchronous standby**: primary does not wait. Some replication lag. Used
-  for read scaling or cross-DC BCP copy.
-
-### HA — replication mechanism
-
-PostgreSQL native **WAL streaming replication**. Every write goes to the WAL
-first. The WAL is streamed continuously to standby nodes. Synchronous mode:
-primary waits for at least one sync standby to confirm receipt before
-acknowledging the write to the client.
-
-### Failover mechanism
-
-Patroni detects primary failure and promotes a standby. However, Patroni nodes
-have fixed IPs. After failover, the new primary is a different IP from the old
-primary. Applications would connect to the wrong node.
-
-**Solution: HAProxy** sits in front of the cluster as a gateway layer. It polls
-Patroni's REST API every 2 seconds to determine who is current primary, then
-routes writes there and reads to standbys.
-
-```
-Application
-     │
-     ▼
-  HAProxy  ←── polls Patroni REST API
-  (stable endpoint)
-     │
-     ├── writes ──► Node 1 (current primary)
-     └── reads  ──► Node 2, Node 3 (standbys)
-```
-
-On bare metal or VMs (without K8s), HAProxy is needed as a separate component
-to provide a stable endpoint. On CaaS (K8s), the K8s Service handles this
-natively — no HAProxy needed.
+The `-ro` Service routes to standby pods. All standbys serve reads and act
+as failover candidates simultaneously.
 
 ### Backup and PITR
 
@@ -273,10 +238,10 @@ debate on databases on Kubernetes.
 
 - **postgres_exporter** — connects to PostgreSQL, queries internal statistics
   views, exposes Prometheus-format metrics.
-- **Patroni metrics** — Patroni exposes a `/metrics` endpoint.
+- **CloudNativePG** — exposes its own `/metrics` endpoint covering cluster
+  health, replication lag, and failover events.
 
-Both feed into **MonaaS**. postgres_exporter runs in the same CaaS cluster,
-same network as the database pods.
+Both feed into **MonaaS**. Both run in the same cluster as the database pods.
 
 ### SLA
 
@@ -289,12 +254,12 @@ responsibility.
 | Dimension | Detail |
 |---|---|
 | Engine | PostgreSQL — ADR-002 stands |
-| Lv2 satisfied? | Yes — Patroni, 2 pods same DC |
-| Failover | Automatic via Patroni + K8s Service label selector, ~30–60s, no HAProxy needed on K8s |
+| Lv2 satisfied? | Yes — CloudNativePG, 2 pods same DC |
+| Failover | Automatic via CloudNativePG, ~30s, stable endpoint via K8s Service |
 | RPO | 0 with synchronous standby |
-| Ops overhead | Medium — K8s operator (CloudNativePG / Zalando PGO) reduces lifecycle burden vs bare metal, but backup pipeline and DB upgrades remain your responsibility |
-| PITR | Possible via pgBackRest + WAL archiving, self-managed |
-| Monitoring | postgres_exporter + Patroni metrics → MonaaS |
+| Ops overhead | Medium — CloudNativePG handles HA, failover, and replication. Backup pipeline configuration and DB version upgrades remain your responsibility. |
+| PITR | CloudNativePG has built-in backup and PITR via `ScheduledBackup` CRD. Storage target (STaaS/GCS) configured by you. |
+| Monitoring | postgres_exporter + CloudNativePG metrics → MonaaS |
 | Network | Local to OneCloud — no cross-cloud dependency |
 | Storage | NFS-backed PVs — network I/O latency, acceptable for UCP's load profile |
 | Cost | ~¥20,928/month shared nodes (2 pods × 4 units × ¥2,616/unit). Marginal if on dedicated cluster already procured for UCP. |
@@ -302,10 +267,10 @@ responsibility.
 
 ### GKE sub-option
 
-If UCP's platform cluster is deployed on GCP (GKE), PostgreSQL + Patroni can
-run on the same GKE cluster instead of Cloud SQL. The architecture is identical
-to CaaS — CloudNativePG operator, K8s API as DCS, K8s Service for stable
-endpoint. The key difference is storage.
+If UCP's platform cluster is deployed on GCP (GKE), PostgreSQL managed by
+CloudNativePG can run on the same GKE cluster instead of Cloud SQL. The
+architecture is identical to CaaS — same operator, same K8s Service for
+stable endpoint. The key difference is storage.
 
 **Storage advantage over CaaS:** GKE supports Persistent Disk SSD (pd-ssd),
 which is block storage with low, consistent I/O latency. No NFS overhead.
@@ -324,7 +289,7 @@ managed HA, automated backups, PITR, and zero ops overhead. PostgreSQL on GKE
 costs roughly the same but you own operations. The cost saving is minimal —
 the decision comes down to whether self-managed is acceptable, not cost.
 
-| | CaaS + Patroni | GKE + CloudNativePG | Cloud SQL |
+| | CaaS + CloudNativePG | GKE + CloudNativePG | Cloud SQL |
 |---|---|---|---|
 | Storage | NFS (network I/O) | pd-ssd (block I/O) | GCP SSD (managed) |
 | Cost | ~¥20,928 | ~¥16,950 (dedicated) / marginal | ~¥17,000 |
@@ -482,14 +447,14 @@ the managed alternative).
 
 ## Comparison Summary
 
-| Dimension | A — Cloud SQL | B — Self-managed Patroni | C — DBaaS MySQL |
+| Dimension | A — Cloud SQL | B — Self-managed PostgreSQL | C — DBaaS MySQL |
 |---|---|---|---|
 | **Engine** | PostgreSQL ✓ | PostgreSQL ✓ | MySQL — ADR-002 rejected |
 | **Lv2 satisfied** | Yes (ZONAL) | Yes | Yes |
 | **SLA** | 99.95% (Enterprise) | No commitment | 99.95% (single DC) |
 | **Replication** | Synchronous (HA standby) | Synchronous (configurable) | Semi-synchronous |
 | **RPO** | 0 | 0 | 0 |
-| **Failover** | Automatic, ~60s, stable endpoint | Automatic via Patroni + K8s Service | **No automatic failover** — manual DBaaS intervention on primary failure |
+| **Failover** | Automatic, ~60s, stable endpoint | Automatic via CloudNativePG, ~30s | **No automatic failover** — manual DBaaS intervention on primary failure |
 | **Read replicas** | Yes, separate instances, async | Yes, all standbys serve reads | Yes, multiple within DC |
 | **PITR** | 7 days, continuous, self-service | Manual pipeline (pgBackRest), self-managed | 30-min granularity, 7 days, **DBaaS team required** |
 | **Ops overhead** | Minimal | High | Minimal |
@@ -579,7 +544,7 @@ profile (300 concurrent users, simple queries, ~0.1 writes/second).
 **Temporal DB is not included** — it runs as a pod inside the K8s cluster
 (same cluster as Temporal Server) at negligible marginal cost.
 
-| | Option A — Cloud SQL | Option B — CaaS + Patroni | Option C — DBaaS MySQL |
+| | Option A — Cloud SQL | Option B — CaaS + CloudNativePG | Option C — DBaaS MySQL |
 |---|---|---|---|
 | **Compute** | db-custom-2-8192, Regional HA | 2 pods × 4 units × ¥2,616 | S tier (4 CPU/16GB) × 2 instances |
 | **Storage** | 50GB SSD | NFS PV | 50GB high-spec disk |
