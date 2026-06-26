@@ -23,7 +23,7 @@ decision in the system design traces back to these answers.
 | Approve or reject a provisioning request | Human signal | Temporal signal, developer submits → tenant-admin approves |
 | Approve or reject drift reconciliation | Human signal | Temporal signal with 24h timeout window |
 | View and manage quotas | Sync read/write | Pre-provision gate on every create request |
-| Upload and manage cloud credentials | Sync write | Stored in Vault, synced to Crossplane via ESO |
+| Upload and manage cloud credentials | Sync write | Stored in Secret Manager (TBD), synced to Crossplane via ESO |
 | Manage team roles and access | Sync read/write | Per-tenant RBAC, 1–2 DB rows per request |
 | Register a tenant | Sync write | One-time onboarding, triggers OC role sync |
 
@@ -51,7 +51,8 @@ queued. The user retries after the dependency (Horizon, PostgreSQL) recovers.
 |---|---|---|
 | Developer | Provision resources, view status, take lifecycle actions on own resources | CLI (MVP), Web UI, open API |
 | Tenant Admin | Register tenant, approve provisioning and drift, manage roles, manage credentials, manage quotas | CLI (MVP), Web UI |
-| Platform Admin | Cross-tenant operations, manage tenants, platform-level configuration | CLI (MVP), Web UI |
+| Platform Admin *(TBC)* | Cross-tenant operations, manage tenants, platform-level configuration | CLI (MVP), Web UI |
+| *(Reserved — TBC)* | Additional roles (e.g. Auditor: read-only cross-tenant access for compliance and reporting) may be added as requirements are confirmed | TBC |
 
 ### Concurrency and load profile
 
@@ -80,18 +81,17 @@ queued. The user retries after the dependency (Horizon, PostgreSQL) recovers.
 
 | Data | Store | Retention | Notes |
 |---|---|---|---|
-| User sessions | Platform DB | xx days | 
+| User sessions | Platform DB | TBD | 
 | Blueprint template | Platform DB | Indefinite | 
 | Quota policies | Platform DB | Indefinite |
 | Notification config | Platform DB | Indefinite |
-| Tenant registry | PostgreSQL (Platform DB) | Indefinite |
-| Role tenant assignment cache | Platform DB | Updated on login | Might need regular background sync
-| Temporal workflow state | Temporal DB | 90 days active, archived to object storage |
+| Tenant registry | Platform DB | Indefinite |
+| Temporal workflow state | Temporal DB | TBD |
 | XR / MR objects (desired + observed state) | Kubernetes etcd (Ops crossplane cluster) | Lifecycle of the resource |
-| Managed resource (Desired state of single resource) | Platform DB | Lifecycle of the resource | Might need regular sync to etcd |
-| Blueprint run instance | Platform DB | Lifecycle of the resource | relation to managed resource
-| Provisioning history (Single resource or blueprint) | Platform DB | 3 years ? |
-| Audit logs | Platform DB | 3 years ? | Might need partition |
+| Managed resource (metadata only — name, ID, tenant, type) | Platform DB | Lifecycle of the resource | Read-optimized copy for fast queries. Full desired state lives in etcd (XR/MR). |
+| Blueprint run instance | Platform DB | Lifecycle of the resource | related to managed resource
+| Provisioning history (Single resource or blueprint) | Platform DB | TBD (3 years ?) |
+| Audit logs | Platform DB | TBD (3 years ?) | Might need partition |
 | Security policies | Platform DB | Indefinite | Platform-admin defined. Scoped per provider, resource type, tenant. Definition stored as JSONB (OPA rego, structured condition, etc). |
 | Policy violations | Platform DB | Lifecycle of the resource | Written on provisioning and scheduled/on-demand scan. Cleared on resolution or resource deletion. detail as JSONB. |
 
@@ -99,9 +99,9 @@ queued. The user retries after the dependency (Horizon, PostgreSQL) recovers.
 
 | Data | Owner | How UCP accesses it |
 |---|---|---|
-| Tenant membership and OC roles | Horizon / Keycloak | OIDC JWT groups claim + Horizon REST API at login |
+| Tenant information, membership and roles | Keycloak / Core Data | OIDC JWT groups claim (from keycloak) + Core Data API |
 | Cloud resource actual state | GCP / Omnia APIs | Crossplane Observe() writes to MR status.atProvider |
-| Cloud provider credentials | Vault | External Secrets Operator syncs to K8s secrets |
+| Cloud provider credentials | Secret Manager (TBD) | External Secrets Operator syncs to K8s secrets |
 | GCP quota metrics | GCP Cloud Monitoring | Fetched on demand, optionally cached |
 
 ### Consistency requirements
@@ -115,7 +115,7 @@ response. Not acceptable to lose an audit event silently.
 XR/MR state in etcd: Kubernetes guarantees strong consistency within a cluster
 via Raft. No cross-cluster consistency needed — each cluster owns its own state.
 
-Managed resource: Eventual consistent is acceptable, source of truth is in etcd.
+Managed resource: Eventual consistency is acceptable. Platform DB holds metadata only for fast reads. Source of truth is etcd.
 
 Quota data: eventually consistent is acceptable. Respective cloud platform API will be used for provisioning guardrails.
 
@@ -187,15 +187,16 @@ only (TBD).
 API server, Temporal workers, Crossplane, and Platform Database can each be deployed
 and upgraded independently. The only hard coupling is:
 
-- Temporal workers must share the same Temporal Server task queues as the API server
-- Crossplane providers must be co-located with Temporal workers (in-cluster K8s
-  API access for drift activities)
-- ESO must run on the same cluster as Crossplane (to sync secrets into the
+- Ideally, Crossplane providers must be co-located with Temporal workers (in-cluster K8s
+  API access for drift activities) to minimize latency
+- External Secrets Operator (ESO) must run on the same cluster as Crossplane (to sync secrets into the
   crossplane-system namespace)
 
 ---
 
 ## 6. Non-functional requirements
+
+> **Disclaimer:** The targets and mechanisms below are working assumptions as of this writing. They have not been formally confirmed and are subject to change pending management alignment and infrastructure decisions (deployment target, secret manager selection).
 
 ### Availability
 
@@ -204,8 +205,8 @@ and upgraded independently. The only hard coupling is:
 | API server | 99.9% | 2 replicas, PodAntiAffinity across AZs |
 | Temporal Server | 99.9% | HA stack (2 replicas per service), PostgreSQL sync replication |
 | Crossplane + providers | 99.9% | 2 replicas, leader election |
-| Database (both instances) | 99.9% | Patroni HA: primary + sync standby + async read replica across 3 AZs |
-| Secret Manager | 99.9% | 3-node Raft cluster across 3 AZs |
+| Database (both instances) | 99.9% | HA deployment TBD — see RFC-005 |
+| Secret Manager | 99.9% | TBD — depends on secret manager selection |
 
 ### Durability
 
@@ -214,7 +215,6 @@ and upgraded independently. The only hard coupling is:
 | Audit logs | Synchronous DB write before API response |
 | Temporal workflow state | DB sync replication (RPO < 1 min) |
 | XR/MR state | Kubernetes etcd Raft (RPO = 0 within cluster) |
-| Vault secrets | Raft consensus (RPO = 0 within cluster) |
 
 ### Recovery targets
 
@@ -227,10 +227,10 @@ and upgraded independently. The only hard coupling is:
 
 - Authentication: Keycloak OIDC (JWT groups claim for tenant/role data)
 - Authorization: per-request RBAC at use case layer, permission bitmask model
-- Secrets: Vault + ESO — credentials never stored in application config
+- Secrets: Secret Manager (TBD) + ESO — credentials never stored in application config
 - Audit: every mutating operation writes an audit log entry synchronously
-- Cloud credentials: encrypted at rest in Vault, scoped per tenant per provider
-- Traffic on ROC–GCP dedicated interconnect: not encrypted by default — application-level TLS required for sensitive data in transit
+- Cloud credentials: encrypted at rest in Secret manager, scoped per tenant per provider
+- Resource (XR/MR) in Crossplane: Tenant isolation at namespace level in the cluster
 
 ---
 
@@ -241,23 +241,71 @@ and upgraded independently. The only hard coupling is:
 | Dimension | What it affects |
 |---|---|
 | Tenant count | Crossplane provider informer cache memory, drift scan activity count, DB row count |
-| Resources per tenant | etcd object count, Crossplane reconcile frequency, drift scan time, resource table row count in platform DB |
+| Resources per tenant | etcd object count, Crossplane reconcile frequency, drift scan time, resource table row count in Platform DB |
 | API request rate | API server replicas, PostgreSQL connection pool |
-| Cloud providers | Provider plugin deployments, drift scan GVR list, notification routing |
+| Resource types per provider | Number of sub-provider pods deployed, CRD count, drift scan GVR list |
+| Cloud providers | New provider family + sub-provider pods added per provider, drift scan GVR list, notification routing, credential management scope |
+
+### Initial cluster spec (estimated)
+
+Single cluster for all UCP workloads. Split into Platform + Ops only when
+there is a measured reason to (see Section 9 — defer list).
+
+**Node spec: 3 × (4 vCPU, 16GB RAM) across 3 AZs**
+
+provider-upjet-gcp follows the family split model — one pod per GCP service
+domain. Only sub-providers for services UCP actively uses are deployed.
+
+| Workload | Pods | Memory estimate | Notes |
+|---|---|---|---|
+| **Crossplane core** | | | |
+| crossplane + rbac-manager | 2 | ~512MB | |
+| **GCP provider family (MVP)** | | | |
+| upbound-provider-family-gcp | 1 | ~256MB | Parent, bootstraps sub-providers |
+| provider-gcp-sql | 1 | ~256–512MB | Cloud SQL |
+| provider-gcp-container | 1 | ~512MB–1GB | GKE clusters + node pools |
+| provider-gcp-compute | 1 | ~256–512MB | GCE instances |
+| provider-gcp-storage | 1 | ~128–256MB | GCS buckets |
+| **ROC provider (MVP)** | | | |
+| provider-roc | 1 | ~256–512MB | Omnia DBaaS and other ROC services. Custom-built by us. May adopt family split pattern (one sub-provider per ROC service, similar to upjet gcp provider) as service coverage grows. |
+| **Crossplane functions** | | | |
+| function-* (5 functions) | 5 | ~128–256MB each = ~640MB–1.28GB | patch-and-transform, go-templating, etc. |
+| **Temporal Server** | | | |
+| Frontend + History + Matching | 3+ | ~2–2.5GB | 2 replicas each for HA |
+| **Temporal workers** | | | |
+| Provisioning workers (KEDA, 1–2) | 1-2 | ~512MB | |
+| Drift workers (KEDA, 1–10) | 1–10 | ~512MB–2.5GB | Scales on queue depth |
+| **Platform components** | | | |
+| API server | 2 | ~512MB | |
+| Platform DB (CloudNativePG) | 2 | ~1–2GB | Only if we host it ourselves. 2 replicas for HA |
+| Secret Manager | 3 | ~768MB | Only if we host it ourselves. 3-node HA. |
+| KEDA | 1 | ~128–256MB | Autoscales temporal workers on Temporal queue depth |
+| ESO | 1 | ~128–256MB | Syncs secrets from Secret Manager to K8s Secrets for Crossplane |
+| System overhead | — | ~512MB | kube-system, monitoring agents |
+| **Total estimate** | | **~10–14GB** | |
+
+Total cluster capacity: 48GB RAM, 12 vCPUs — comfortable headroom at MVP scale.
+GKE Cluster Autoscaler adds nodes automatically under load.
+
+**Adding a new cloud provider** adds one provider family pod (~256MB) plus one
+sub-provider pod per resource type used (~256–512MB each). Each provider is
+independently deployed, resource-limited, and scaled — no impact on existing
+providers.
 
 ### First bottleneck as system grows
 
 Crossplane provider informer cache. Each provider holds an in-memory cache of
-all MR objects it manages. At ~500+ tenants (7,500+ resources), provider pod
-memory starts approaching node limits. Mitigation: vertical scaling of provider
-pods first, then cluster sharding if needed.
+all MR objects it manages. At the target ceiling of ~500 tenants × 100 resources
+= 50,000 resources, provider memory is estimated at 4–6GB combined — still within
+the 3-node spec. The actual threshold should be measured in practice; vertical
+scaling of provider pods is the first mitigation before any cluster split.
 
 ### Scaling strategy
 
-- **0–500 tenants**: single Ops cluster, KEDA autoscaling for drift workers,
-  vertical pod scaling for providers
-- **500–2,000 tenants**: evaluate provider pod memory pressure; split Ops
-  cluster from Platform cluster if Crossplane write churn affects API latency
+- **0–500 tenants**: single cluster, KEDA autoscaling for drift workers,
+  vertical pod scaling for providers, GKE Cluster Autoscaler for nodes
+- **500–2,000 tenants**: evaluate provider pod memory pressure; split into
+  Platform + Ops clusters if Crossplane write churn affects API latency
 - **2,000+ tenants**: cluster sharding by tenant, shard router in API server,
   per-shard Temporal task queues
 
@@ -299,16 +347,18 @@ trade-off for zero per-request overhead.
 ### Secret flow
 
 ```
-Vault (Platform Cluster)
-  → External Secrets Operator (Ops Cluster)
-    → K8s Secret (crossplane-system namespace)
-      → Crossplane ProviderConfig (references the secret)
-        → Provider plugin (reads secret, calls cloud API)
+Secret Manager (TBD)
+  → ESO (syncs to K8s Secret in crossplane-system namespace)
+    → Crossplane ProviderConfig (references the K8s Secret)
+      → Sub-provider pod (reads secret, calls cloud API)
 ```
 
-Secrets never flow through the API server. Credential upload writes to Vault
-directly. Rotation is zero-downtime: update Vault → ESO refreshes within TTL →
-Crossplane picks up on next reconcile.
+Secrets never flow through the API server. Credential upload writes to the
+Secret Manager directly. Rotation is zero-downtime: update Secret Manager →
+ESO refreshes within its sync TTL → Crossplane picks up on next reconcile.
+
+Secret Manager selection is TBD — the flow above holds regardless of which
+Secret Manager is chosen, as ESO supports all major backends.
 
 ### Token TTL as the unified staleness boundary
 
@@ -352,7 +402,7 @@ If a Crossplane provider is compromised: attacker has access to cloud provider
 credentials for all tenants that provider serves. Mitigation: namespace-per-tenant
 (target architecture) limits blast radius to one tenant's credentials per pod.
 
-If Vault is compromised: all cloud credentials are exposed. Vault audit logs
+If the Secret Manager is compromised: all cloud credentials are exposed. Audit logs
 provide forensic trail. Rotation invalidates all exposed credentials.
 
 ---
@@ -371,29 +421,29 @@ provide forensic trail. Rotation invalidates all exposed credentials.
 
 ### Decide now — decision is hard or expensive to reverse later
 
-| Item | Why decide now |
-|---|---|
-| CaaS vs GKE for Ops cluster | CRD support is a hard blocker for Crossplane. Must confirm before any infrastructure is provisioned. |
-| Vault vs delegated secret manager | Secret schema and ESO configuration depend on this. Changing it later requires migrating all tenant credentials. |
-| Namespace-per-tenant vs cluster-scoped | Blocked on provider support (MCUCP-119), but the XRD schema decision affects all existing resources. Decide the target and track provider readiness. |
-| PostgreSQL HA operator | Cloud SQL vs Patroni vs Crunchy PGO — choice affects backup strategy, failover time, and operational model. Low cost to decide early, high cost to migrate a live database later. |
-| API-C as the inbound gateway | Affects auth model, rate limiting design, and onboarding process. Locking in now means all client tooling (CLI, open API docs) uses the API-C URL pattern. |
+| Item | Status | Why decide now |
+|---|---|---|
+| K8s runtime — CaaS vs GKE | Open (OQ#3) | CRD support is a hard blocker for Crossplane. Must confirm before any infrastructure is provisioned. |
+| Secret manager selection | Open (OQ#2) | ESO configuration and credential migration depend on this. Changing it later requires migrating all tenant credentials. |
+| PostgreSQL HA deployment model | Proposed (RFC-005) | Cloud SQL vs CloudNativePG — choice affects backup strategy, failover time, and operational model. Low cost to decide early, high cost to migrate a live database later. |
+| API-C as the inbound gateway | Open | Affects auth model, rate limiting design, and onboarding process. Locking in now means all client tooling (CLI, open API docs) uses the API-C URL pattern. |
+| Cloud provider authentication model | Open (OQ#4) | Affects credential storage, ESO usage, and tenant onboarding flow. WIF (GCP) is the target direction — pending validation. |
 
 ## Open Questions
 
-1. Database to use ?
-2. Secret manager to use ?
-3. Where to deploy UCP ? OneCloud ? GCP ? Multiple UCP instance in each supported cloud platform (to cut latency and connectivity configuration (ACL etc)) ?
-4. UCP to cloud provider authentication ? Long lived token from service account is not allowed by security team
+1. **Secret manager** — which secret manager to use? Affects ESO configuration and credential storage model.
+2. **Deployment target** — where to deploy UCP? OneCloud? GCP? Hybrid? Determines K8s runtime (CaaS vs GKE), database HA option (RFC-005), and network topology.
+3. **Cloud provider authentication** — long-lived service account keys are not allowed by the security team. WIF (Workload Identity Federation) is the target direction for GCP — pending hands-on validation. ROC authentication model TBD separately.
+4. **Reliability targets** — SLA (99.9%), RTO, RPO, and IT service redundancy level (Lv2/Lv3) are working assumptions. Must be formally confirmed with management before production deployment.
 
 ### Reliability targets (unconfirmed — requires management alignment)
 
 Working assumptions only. Must be formally agreed before production deployment.
 
-| Metric | Current assumption | Status |
-|---|---|---|
-| **SLA (availability)** | 99.9% | Assumed |
-| **IT service redundancy level** | Lv2 minimum (CIO Instruction `[002453]`), targeting Lv3 by choice | Classification TBC |
-| **RTO** | < 15 minutes | Assumed |
-| **RPO** | < 1 minute | Assumed |
-| **Drift detection lag SLA** | < 5 minutes from detection to notification | Assumed |
+| Metric | Current assumption |
+|---|---|
+| SLA (availability) | 99.9% |
+| IT service redundancy level | Lv2 minimum ([CIO Instruction 002453](https://officerakuten.sharepoint.com/sites/RGR/Library/CIO%20Guidelines%20&%20Instructions/%5B002453%5DCIO%20Instruction%E3%80%80Information%20Technology%20Business%20Continuity%20Plan%20(IT-BCP)/%5B002453%5DInstruction%20for%20Information%20Technology%20Business%20Continuity%20Plan%20(IT-BCP).pdf?CID=6072ebe5-fffc-40ee-82de-494b4d3b2f78)), targeting Lv3 by choice |
+| RTO | < 15 minutes |
+| RPO | < 1 minute |
+| Drift detection lag SLA | < 5 minutes from detection to notification |
