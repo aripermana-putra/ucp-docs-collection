@@ -15,6 +15,101 @@ for transition thresholds.
 
 ---
 
+## Infrastructure Topology
+
+High-level diagrams showing what single-cluster multi-AZ and multi-region
+deployments physically look like. No UCP components shown — infrastructure
+context only.
+
+### Single Cluster — Multi-AZ
+
+One K8s cluster with worker nodes spread across 3 availability zones within
+a single region. The control plane (API server, etcd, scheduler) is managed
+by the cloud provider and automatically replicated across AZs. Pods are
+scheduled across worker nodes in different AZs via PodAntiAffinity.
+
+A single zone failure loses some pods — K8s reschedules them to surviving
+zones. The cluster itself stays operational.
+
+```mermaid
+graph TB
+    subgraph region["Region (e.g. asia-northeast1)"]
+        subgraph cp["Control Plane — managed by cloud provider (GKE/CaaS)"]
+            apiserver["API Server + etcd\nReplicated across AZs automatically\nNot on worker nodes — not your responsibility"]
+        end
+
+        subgraph az_a["Availability Zone A"]
+            nodes_a["Worker Nodes\nUCP pods scheduled here"]
+        end
+
+        subgraph az_b["Availability Zone B"]
+            nodes_b["Worker Nodes\nUCP pods scheduled here"]
+        end
+
+        subgraph az_c["Availability Zone C"]
+            nodes_c["Worker Nodes\nUCP pods scheduled here"]
+        end
+
+        apiserver --- nodes_a
+        apiserver --- nodes_b
+        apiserver --- nodes_c
+    end
+```
+
+---
+
+### Multi-Region — Active-Passive
+
+Two separate K8s clusters across two regions. Each cluster is multi-AZ within
+its own region. Databases replicate from Region A to Region B. Region B is a
+warm standby — cluster running, databases up to date, not serving traffic.
+
+etcd is NOT replicated cross-region. XR desired state is reconstructed on
+failover — mechanism TBD (OQ#5).
+
+```mermaid
+graph LR
+    subgraph region_a["Region A — Primary (serves traffic)"]
+        subgraph cluster_a["K8s Cluster — multi-AZ"]
+            direction TB
+            cp_a["Control Plane\n(managed)"]
+            az_a1["AZ-a · Worker Nodes"]
+            az_a2["AZ-b · Worker Nodes"]
+            az_a3["AZ-c · Worker Nodes"]
+            cp_a --- az_a1
+            cp_a --- az_a2
+            cp_a --- az_a3
+        end
+        platdb_a[("Platform DB\nprimary")]
+        tempdb_a[("Temporal DB\nprimary")]
+    end
+
+    subgraph region_b["Region B — Standby (not serving traffic)"]
+        subgraph cluster_b["K8s Cluster — multi-AZ"]
+            direction TB
+            cp_b["Control Plane\n(managed)"]
+            az_b1["AZ-a · Worker Nodes"]
+            az_b2["AZ-b · Worker Nodes"]
+            az_b3["AZ-c · Worker Nodes"]
+            cp_b --- az_b1
+            cp_b --- az_b2
+            cp_b --- az_b3
+        end
+        platdb_b[("Platform DB\nstandby replica")]
+        tempdb_b[("Temporal DB\nstandby replica")]
+    end
+
+    secrets[("Secret Manager\nGlobal — shared by both regions")]
+
+    platdb_a -->|"streaming replication · RPO ~1–5s"| platdb_b
+    tempdb_a -->|"streaming replication · RPO ~1–5s"| tempdb_b
+    region_a -. "DNS / LB failover" .-> region_b
+    region_a --- secrets
+    region_b --- secrets
+```
+
+---
+
 ## C1 — System Context
 
 ```mermaid
@@ -288,7 +383,7 @@ C4Container
 
 ---
 
-## Multi-Region Active-Passive (BCP Lv4 — future path)
+## Multi-Region Active-Passive (BCP Lv4 - If needed)
 
 Two clusters across two regions. Region A is the primary and serves all traffic.
 Region B is a warm standby — all components deployed and running, databases
@@ -304,13 +399,13 @@ to Region B via DNS/load balancer failover and standby databases are promoted.
 > - etcd (K8s state) — XR/MR objects are NOT replicated cross-region. On failover,
 >   XR desired state is re-applied to Region B cluster and Crossplane reconstructs
 >   MR state via Observe() against actual cloud resources. Mechanism TBD — see
->   [OQ#5](./architecture-foundations.md#open-questions).
+>   [OQ#5]).
 >
 > **In-flight Temporal workflows** at time of failure are lost and must be
 > re-submitted after failover. Acceptable at UCP's workflow volume (~4–5 active at any moment).
 >
 > **Failover automation level TBD** — fully automated, semi-automated (human triggers,
-> automated execution), or manual runbook. See [OQ#5](./architecture-foundations.md#open-questions).
+> automated execution), or manual runbook. See [OQ#5]().
 
 ```mermaid
 C4Container
