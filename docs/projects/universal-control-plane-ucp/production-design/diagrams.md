@@ -76,12 +76,12 @@ graph LR
             az_a1["AZ-a · Worker Nodes"]
             az_a2["AZ-b · Worker Nodes"]
             az_a3["AZ-c · Worker Nodes"]
+            tempdb_a[("Temporal DB\nprimary\ninside cluster")]
             cp_a --- az_a1
             cp_a --- az_a2
             cp_a --- az_a3
         end
-        platdb_a[("Platform DB\nprimary")]
-        tempdb_a[("Temporal DB\nprimary")]
+        platdb_a[("Platform DB\nprimary\ninside or outside cluster — see RFC-005")]
     end
 
     subgraph region_b["Region B — Standby (not serving traffic)"]
@@ -91,15 +91,15 @@ graph LR
             az_b1["AZ-a · Worker Nodes"]
             az_b2["AZ-b · Worker Nodes"]
             az_b3["AZ-c · Worker Nodes"]
+            tempdb_b[("Temporal DB\nstandby replica\ninside cluster")]
             cp_b --- az_b1
             cp_b --- az_b2
             cp_b --- az_b3
         end
-        platdb_b[("Platform DB\nstandby replica")]
-        tempdb_b[("Temporal DB\nstandby replica")]
+        platdb_b[("Platform DB\nstandby replica\ninside or outside cluster — see RFC-005")]
     end
 
-    secrets[("Secret Manager\nGlobal — shared by both regions")]
+    secrets[("Secret Manager\nTBD — replication depends on OQ#1\ne.g. Vault needs cross-region setup, GCP Secret Manager is global")]
 
     platdb_a -->|"streaming replication · RPO ~1–5s"| platdb_b
     tempdb_a -->|"streaming replication · RPO ~1–5s"| tempdb_b
