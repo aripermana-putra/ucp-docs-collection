@@ -46,3 +46,9 @@ a final decision can be made.
 
 C1 (System Context) and C2 (Container) diagrams for all three cluster topology
 options: single cluster, Platform + Operations split, and three-cluster separation.
+
+### [Scaling Architecture](./production-design/scaling-architecture.md)
+
+C2 diagrams per scale level showing how the architecture evolves as tenant count
+grows: Level 1 (single cluster, 0–500 tenants), Level 2 (Platform + Ops split,
+500–2,000 tenants), and Level 3 (cluster sharding by tenant, 2,000+ tenants).
