@@ -20,7 +20,7 @@ showing the internal containers and how they are distributed across Kubernetes c
 C4Context
     title System Context — Universal Control Plane (UCP)
 
-    Person(dev, "Developer", "Provisions cloud resources via CLI or Web UI. Receives drift alerts and monitors resource status.")
+    Person(dev, "Developer", "Provisions cloud resources via CLI or Web UI. Receives alerts and monitors resource status.")
     Person(ta, "Tenant Admin", "Approves provisioning requests and drift reconciliation. Manages team roles, quotas, and cloud credentials.")
     Person(pa, "Platform Admin", "Manages registered tenants and platform-level configuration.")
 
@@ -31,20 +31,22 @@ C4Context
     System_Ext(gcp, "Google Cloud Platform", "Provisions and manages Cloud SQL, GKE clusters, GCE instances, and GCS buckets.")
     System_Ext(omnia, "OneCloud / Omnia", "Provisions and manages Omnia DBaaS resources.")
     System_Ext(horizon, "Horizon / Keycloak", "OIDC authentication. Tenant membership and role data via ROC realm JWT groups.")
-    System_Ext(pd, "PagerDuty", "Receives drift detection incident alerts.")
-    System_Ext(slack, "Slack", "Receives drift detection notifications.")
-    System_Ext(email, "Email", "Receives drift detection notifications.")
+    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, and correlation ID injection.")
+    System_Ext(pd, "PagerDuty", "Receives incident alerts from UCP.")
+    System_Ext(slack, "Slack", "Receives notifications from UCP.")
+    System_Ext(email, "Email", "Receives notifications from UCP.")
 
-    Rel(dev, ucp, "Provisions resources, views status, approves drift via CLI or Web UI", "HTTPS")
-    Rel(ta, ucp, "Approves workflows, manages roles and credentials", "HTTPS")
-    Rel(pa, ucp, "Manages platform configuration", "HTTPS")
+    Rel(dev, apic, "Provisions resources, views status, approves drift via CLI or Web UI", "HTTPS")
+    Rel(ta, apic, "Approves workflows, manages roles and credentials", "HTTPS")
+    Rel(pa, apic, "Manages platform configuration", "HTTPS")
+    Rel(apic, ucp, "Routes inbound requests", "HTTPS")
 
     Rel(ucp, gcp, "Provisions and reconciles GCP resources", "GCP REST APIs")
     Rel(ucp, omnia, "Provisions and reconciles Omnia DBaaS resources", "Omnia REST API")
     Rel(ucp, horizon, "Authenticates users, syncs tenant memberships and roles", "OIDC / Horizon REST API")
-    Rel(ucp, pd, "Sends drift alerts", "PagerDuty Events API v2")
-    Rel(ucp, slack, "Sends drift notifications", "Incoming Webhook")
-    Rel(ucp, email, "Sends drift notifications", "SMTP")
+    Rel(ucp, pd, "Sends alerts", "PagerDuty Events API v2")
+    Rel(ucp, slack, "Sends notifications", "Incoming Webhook")
+    Rel(ucp, email, "Sends notifications", "SMTP")
 
     UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
 ```
@@ -65,16 +67,17 @@ C4Container
 
     Person(user, "User", "Developer / Tenant Admin / Platform Admin")
 
+    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
     System_Ext(gcp, "Google Cloud Platform", "Cloud SQL, GKE, GCE, GCS")
     System_Ext(omnia, "OneCloud / Omnia", "Omnia DBaaS")
     System_Ext(horizon, "Horizon / Keycloak", "OIDC, tenant membership")
-    System_Ext(notif, "Notification Services", "PagerDuty, Slack, Email")
+    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
 
     Container_Boundary(cluster, "GKE Cluster — multi-AZ (Production)") {
 
-        Container(ingress, "nginx Ingress", "nginx / K8s Ingress", "TLS termination, rate limiting, load balancing")
+        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, rate limiting, load balancing")
 
-        Container(api, "API Server", "Go 1.26 / Echo", "REST API. Handles auth, RBAC, quota checks, and workflow submission.")
+        Container(api, "API Server", "Go / Echo", "REST API. Handles auth, RBAC, quota checks, and workflow submission.")
 
         ContainerDb(pg_plat, "PostgreSQL — Platform", "PostgreSQL 16, Patroni HA", "Sessions, RBAC, audit logs, quota policies, notification config")
 
@@ -97,7 +100,8 @@ C4Container
         Container(monitoring, "Monitoring", "MonaaS (metrics), EaaS (logs)", "Metrics collection and log aggregation. No distributed tracing.")
     }
 
-    Rel(user, ingress, "HTTPS")
+    Rel(user, apic, "HTTPS")
+    Rel(apic, ingress, "HTTPS")
     Rel(ingress, api, "HTTP")
 
     Rel(api, pg_plat, "SQL — sessions, RBAC, audit, quota")
@@ -112,7 +116,7 @@ C4Container
     Rel(drift_w, temporal, "gRPC — poll drift-detection queue, start child workflows")
     Rel(drift_w, crossplane, "K8s API — LIST MRs, PATCH managementPolicies")
     Rel(drift_w, pg_plat, "SQL — read notification config")
-    Rel(drift_w, notif, "HTTP — PagerDuty Events API, Slack webhook, SMTP")
+    Rel(drift_w, notif, "HTTP")
     Rel(keda, temporal, "gRPC — read queue depth")
     Rel(eso, vault, "K8s auth — sync secrets")
 
@@ -141,16 +145,17 @@ C4Container
 
     Person(user, "User", "Developer / Tenant Admin / Platform Admin")
 
+    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
     System_Ext(gcp, "Google Cloud Platform", "Cloud SQL, GKE, GCE, GCS")
     System_Ext(omnia, "OneCloud / Omnia", "Omnia DBaaS")
     System_Ext(horizon, "Horizon / Keycloak", "OIDC, tenant membership")
-    System_Ext(notif, "Notification Services", "PagerDuty, Slack, Email")
+    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
 
     Container_Boundary(plat, "Platform Cluster — GKE, multi-AZ") {
 
-        Container(ingress, "nginx Ingress", "nginx / K8s Ingress", "TLS termination, rate limiting, load balancing")
+        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, rate limiting, load balancing")
 
-        Container(api, "API Server", "Go 1.26 / Echo", "REST API. Handles auth, RBAC, quota checks, and workflow submission.")
+        Container(api, "API Server", "Go / Echo", "REST API. Handles auth, RBAC, quota checks, and workflow submission.")
 
         ContainerDb(pg_plat, "PostgreSQL — Platform", "PostgreSQL 16, Patroni HA", "Sessions, RBAC, audit logs, quota policies, notification config")
 
@@ -176,7 +181,8 @@ C4Container
         Container(keda, "KEDA", "KEDA", "Scales drift workers on Temporal queue depth.")
     }
 
-    Rel(user, ingress, "HTTPS")
+    Rel(user, apic, "HTTPS")
+    Rel(apic, ingress, "HTTPS")
     Rel(ingress, api, "HTTP")
 
     Rel(api, pg_plat, "SQL")
@@ -222,16 +228,17 @@ C4Container
 
     Person(user, "User", "Developer / Tenant Admin / Platform Admin")
 
+    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
     System_Ext(gcp, "Google Cloud Platform", "Cloud SQL, GKE, GCE, GCS")
     System_Ext(omnia, "OneCloud / Omnia", "Omnia DBaaS")
     System_Ext(horizon, "Horizon / Keycloak", "OIDC, tenant membership")
-    System_Ext(notif, "Notification Services", "PagerDuty, Slack, Email")
+    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
 
     Container_Boundary(plat, "Platform Cluster — GKE, multi-AZ") {
 
-        Container(ingress, "nginx Ingress", "nginx / K8s Ingress", "TLS termination, rate limiting")
+        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, rate limiting")
 
-        Container(api, "API Server", "Go 1.26 / Echo", "REST API. Handles auth, RBAC, quota checks, and workflow submission.")
+        Container(api, "API Server", "Go / Echo", "REST API. Handles auth, RBAC, quota checks, and workflow submission.")
 
         ContainerDb(pg_plat, "PostgreSQL — Platform", "PostgreSQL 16, Patroni HA", "Sessions, RBAC, audit logs, quota policies, notification config")
 
@@ -260,7 +267,8 @@ C4Container
         ContainerDb(pg_temp, "PostgreSQL — Temporal", "PostgreSQL 16, Patroni HA", "Temporal workflow state, history, and visibility store")
     }
 
-    Rel(user, ingress, "HTTPS")
+    Rel(user, apic, "HTTPS")
+    Rel(apic, ingress, "HTTPS")
     Rel(ingress, api, "HTTP")
 
     Rel(api, pg_plat, "SQL")
