@@ -158,62 +158,55 @@ Start here. Transition to Level 2 only when measured resource contention justifi
 > adds nodes under load. See [Architecture Foundations § Initial Cluster Spec](./architecture-foundations.md#initial-cluster-spec-estimated).
 
 ```mermaid
-C4Container
-    title C2 — Level 1: Single Cluster (0–500 tenants)
+graph TB
+    user(["User
+Developer · Tenant Admin · Platform Admin"])
 
-    Person(user, "User", "Developer / Tenant Admin / Platform Admin")
+    apic["API-C
+API Gateway"]
+    keycloak["Keycloak
+OIDC"]
+    coredata["Core Data API"]
+    notif["PagerDuty · Slack · Email"]
+    gcp["GCP
+Cloud SQL · GKE · GCE · GCS"]
+    roc["ROC / OneCloud
+Omnia DBaaS"]
+    secrets["Secret Manager
+TBD"]
 
-    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
-    System_Ext(gcp, "GCP", "Cloud SQL, GKE, GCE, GCS")
-    System_Ext(roc, "ROC / OneCloud", "Omnia DBaaS and other ROC services")
-    System_Ext(keycloak, "Keycloak", "OIDC authentication")
-    System_Ext(coredata, "Core Data API", "Tenant membership and role data")
-    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
+    subgraph cluster["K8s Cluster — multi-AZ"]
+        ingress["Ingress"]
+        api["API Server
+Go / Echo"]
+        platdb[("Platform DB
+PostgreSQL")]
+        temporal["Temporal Server
+Temporal OSS"]
+        tempdb[("Temporal DB
+PostgreSQL")]
+        prov_w["Provisioning Worker
+Go / Temporal SDK"]
+        drift_w["Drift Worker
+Go / Temporal SDK · KEDA"]
+        crossplane["Crossplane + Providers
+provider-gcp-* · provider-roc"]
+        eso["ESO"]
+        keda["KEDA"]
+    end
 
-    Container_Boundary(cluster, "K8s Cluster — multi-AZ") {
+    user --> apic --> ingress --> api
 
-        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, rate limiting, load balancing")
-        Container(api, "API Server", "Go / Echo", "REST API. Auth, RBAC, quota, workflow submission.")
+    api --> platdb & temporal & crossplane
+    api --> keycloak & coredata & secrets
 
-        ContainerDb(platdb, "Platform DB", "PostgreSQL", "Sessions, RBAC, audit logs, quota, notification config")
-        Container(secrets, "Secret Manager", "TBD", "Cloud provider credentials and platform secrets")
+    temporal --> tempdb
+    prov_w --> temporal & crossplane
+    drift_w --> temporal & crossplane & platdb & notif
+    keda --> temporal
+    eso --> secrets
 
-        Container(temporal, "Temporal Server", "Temporal OSS", "Workflow orchestration. Frontend, History, Matching — all HA.")
-        ContainerDb(tempdb, "Temporal DB", "PostgreSQL", "Workflow state, history, visibility store")
-
-        Container(prov_w, "Provisioning Worker", "Go / Temporal SDK", "Executes provisioning workflows.")
-        Container(drift_w, "Drift Worker", "Go / Temporal SDK, KEDA", "Executes drift scan and approval workflows. Scales 1–10 replicas.")
-
-        Container(crossplane, "Crossplane + Providers", "Crossplane, provider-gcp-*, provider-roc", "Reconciles XRs and MRs against cloud provider state.")
-        Container(eso, "ESO", "External Secrets Operator", "Syncs credentials from Secret Manager to K8s Secrets for Crossplane.")
-        Container(keda, "KEDA", "KEDA", "Scales drift workers on Temporal queue depth.")
-    }
-
-    Rel(user, apic, "HTTPS")
-    Rel(apic, ingress, "HTTPS")
-    Rel(ingress, api, "HTTP")
-
-    Rel(api, platdb, "SQL — sessions, RBAC, audit, quota")
-    Rel(api, secrets, "read credentials")
-    Rel(api, temporal, "gRPC — submit and query workflows")
-    Rel(api, crossplane, "K8s API — create, list, delete XRs")
-    Rel(api, keycloak, "OIDC — auth, token validation")
-    Rel(api, coredata, "REST — tenant sync at login")
-
-    Rel(temporal, tempdb, "SQL — workflow state")
-    Rel(prov_w, temporal, "gRPC — poll provisioning queue")
-    Rel(prov_w, crossplane, "K8s API — apply XR, poll XR status")
-    Rel(drift_w, temporal, "gRPC — poll drift queue")
-    Rel(drift_w, crossplane, "K8s API — LIST MRs, PATCH managementPolicies")
-    Rel(drift_w, platdb, "SQL — read notification config")
-    Rel(drift_w, notif, "HTTP")
-    Rel(keda, temporal, "gRPC — read queue depth")
-    Rel(eso, secrets, "read credentials")
-
-    Rel(crossplane, gcp, "REST APIs — provision and observe")
-    Rel(crossplane, roc, "REST API — provision and observe")
-
-    UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")
+    crossplane --> gcp & roc
 ```
 
 ---
@@ -231,64 +224,59 @@ server read latency, or provider pod memory pressure is consistently high.
 > Drift Worker → Platform DB (SQL), ESO → Secret Manager (HTTPS).
 
 ```mermaid
-C4Container
-    title C2 — Level 2: Platform + Ops Split (500–2,000 tenants)
+graph TB
+    user(["User
+Developer · Tenant Admin · Platform Admin"])
 
-    Person(user, "User", "Developer / Tenant Admin / Platform Admin")
+    apic["API-C
+API Gateway"]
+    keycloak["Keycloak
+OIDC"]
+    coredata["Core Data API"]
+    notif["PagerDuty · Slack · Email"]
+    gcp["GCP
+Cloud SQL · GKE · GCE · GCS"]
+    roc["ROC / OneCloud
+Omnia DBaaS"]
+    secrets["Secret Manager
+TBD"]
 
-    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
-    System_Ext(gcp, "GCP", "Cloud SQL, GKE, GCE, GCS")
-    System_Ext(roc, "ROC / OneCloud", "Omnia DBaaS and other ROC services")
-    System_Ext(keycloak, "Keycloak", "OIDC authentication")
-    System_Ext(coredata, "Core Data API", "Tenant membership and role data")
-    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
+    subgraph plat["Platform Cluster — multi-AZ"]
+        ingress["Ingress"]
+        api["API Server
+Go / Echo"]
+        platdb[("Platform DB
+PostgreSQL")]
+    end
 
-    Container_Boundary(plat, "Platform Cluster — multi-AZ") {
+    subgraph ops["Ops Cluster — multi-AZ"]
+        temporal["Temporal Server
+Temporal OSS"]
+        tempdb[("Temporal DB
+PostgreSQL")]
+        prov_w["Provisioning Worker
+Go / Temporal SDK"]
+        drift_w["Drift Worker
+Go / Temporal SDK · KEDA"]
+        crossplane["Crossplane + Providers
+provider-gcp-* · provider-roc"]
+        eso["ESO"]
+        keda["KEDA"]
+    end
 
-        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, rate limiting, load balancing")
-        Container(api, "API Server", "Go / Echo", "REST API. Auth, RBAC, quota, workflow submission.")
-        ContainerDb(platdb, "Platform DB", "PostgreSQL", "Sessions, RBAC, audit logs, quota, notification config")
-        Container(secrets, "Secret Manager", "TBD", "Cloud provider credentials and platform secrets")
-    }
+    user --> apic --> ingress --> api
 
-    Container_Boundary(ops, "Ops Cluster — multi-AZ") {
+    api --> platdb & secrets & keycloak & coredata
+    api -->|"cross-cluster"| temporal & crossplane
 
-        Container(temporal, "Temporal Server", "Temporal OSS", "Workflow orchestration. Frontend, History, Matching — all HA.")
-        ContainerDb(tempdb, "Temporal DB", "PostgreSQL", "Workflow state, history, visibility store")
+    temporal --> tempdb
+    prov_w --> temporal & crossplane
+    drift_w --> temporal & crossplane & notif
+    drift_w -->|"cross-cluster"| platdb
+    keda --> temporal
+    eso -->|"cross-cluster"| secrets
 
-        Container(prov_w, "Provisioning Worker", "Go / Temporal SDK", "Executes provisioning workflows.")
-        Container(drift_w, "Drift Worker", "Go / Temporal SDK, KEDA", "Executes drift scan and approval workflows.")
-
-        Container(crossplane, "Crossplane + Providers", "Crossplane, provider-gcp-*, provider-roc", "Reconciles XRs and MRs against cloud provider state.")
-        Container(eso, "ESO", "External Secrets Operator", "Syncs credentials from Secret Manager to K8s Secrets for Crossplane.")
-        Container(keda, "KEDA", "KEDA", "Scales drift workers on Temporal queue depth.")
-    }
-
-    Rel(user, apic, "HTTPS")
-    Rel(apic, ingress, "HTTPS")
-    Rel(ingress, api, "HTTP")
-
-    Rel(api, platdb, "SQL")
-    Rel(api, secrets, "read credentials")
-    Rel(api, temporal, "gRPC — cross-cluster via Internal LB")
-    Rel(api, crossplane, "K8s API — cross-cluster kubeconfig")
-    Rel(api, keycloak, "OIDC")
-    Rel(api, coredata, "REST")
-
-    Rel(temporal, tempdb, "SQL — in-cluster")
-    Rel(prov_w, temporal, "gRPC — in-cluster")
-    Rel(prov_w, crossplane, "K8s API — in-cluster")
-    Rel(drift_w, temporal, "gRPC — in-cluster")
-    Rel(drift_w, crossplane, "K8s API — in-cluster")
-    Rel(drift_w, platdb, "SQL — cross-cluster (notification config)")
-    Rel(drift_w, notif, "HTTP")
-    Rel(keda, temporal, "gRPC — in-cluster")
-    Rel(eso, secrets, "HTTPS — cross-cluster")
-
-    Rel(crossplane, gcp, "REST APIs")
-    Rel(crossplane, roc, "REST API")
-
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+    crossplane --> gcp & roc
 ```
 
 ---
@@ -308,77 +296,65 @@ becomes a measurable bottleneck at 2,000+ tenants.
 > mapping and migrating in-flight workflows.
 
 ```mermaid
-C4Container
-    title C2 — Level 3: Cluster Sharding (2,000+ tenants)
+graph TB
+    user(["User
+Developer · Tenant Admin · Platform Admin"])
 
-    Person(user, "User", "Developer / Tenant Admin / Platform Admin")
+    apic["API-C
+API Gateway"]
+    keycloak["Keycloak
+OIDC"]
+    coredata["Core Data API"]
+    notif["PagerDuty · Slack · Email"]
+    gcp["GCP
+Cloud SQL · GKE · GCE · GCS"]
+    roc["ROC / OneCloud
+Omnia DBaaS"]
+    secrets["Secret Manager
+TBD"]
 
-    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
-    System_Ext(gcp, "GCP", "Cloud SQL, GKE, GCE, GCS")
-    System_Ext(roc, "ROC / OneCloud", "Omnia DBaaS and other ROC services")
-    System_Ext(keycloak, "Keycloak", "OIDC authentication")
-    System_Ext(coredata, "Core Data API", "Tenant membership and role data")
-    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
+    subgraph plat["Platform Cluster — multi-AZ"]
+        ingress["Ingress"]
+        api["API Server + Shard Router
+Go / Echo"]
+        platdb[("Platform DB
+PostgreSQL")]
+    end
 
-    Container_Boundary(plat, "Platform Cluster — multi-AZ") {
+    subgraph shard_a["Ops Cluster — Shard A (tenants 1–N)"]
+        temporal_a["Temporal Server"]
+        tempdb_a[("Temporal DB")]
+        workers_a["Provisioning + Drift Workers
+Go / Temporal SDK · KEDA"]
+        crossplane_a["Crossplane + Providers"]
+        eso_keda_a["ESO + KEDA"]
+    end
 
-        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, rate limiting, load balancing")
-        Container(api, "API Server + Shard Router", "Go / Echo", "REST API. Routes tenant requests to the correct Ops shard via consistent hashing.")
-        ContainerDb(platdb, "Platform DB", "PostgreSQL", "Sessions, RBAC, audit logs, quota, notification config")
-        Container(secrets, "Secret Manager", "TBD", "Cloud provider credentials and platform secrets")
-    }
+    subgraph shard_b["Ops Cluster — Shard B (tenants N+1–M)"]
+        temporal_b["Temporal Server"]
+        tempdb_b[("Temporal DB")]
+        workers_b["Provisioning + Drift Workers
+Go / Temporal SDK · KEDA"]
+        crossplane_b["Crossplane + Providers"]
+        eso_keda_b["ESO + KEDA"]
+    end
 
-    Container_Boundary(shard_a, "Ops Cluster — Shard A (tenants 1–N)") {
+    user --> apic --> ingress --> api
+    api --> platdb & secrets & keycloak & coredata
+    api -->|"Shard A tenants"| temporal_a & crossplane_a
+    api -->|"Shard B tenants"| temporal_b & crossplane_b
 
-        Container(temporal_a, "Temporal Server", "Temporal OSS", "Shard A task queues.")
-        ContainerDb(tempdb_a, "Temporal DB", "PostgreSQL", "Shard A workflow state")
-        Container(workers_a, "Provisioning + Drift Workers", "Go / Temporal SDK, KEDA", "Poll Shard A task queues.")
-        Container(crossplane_a, "Crossplane + Providers", "Crossplane, provider-gcp-*, provider-roc", "Manages Shard A tenant resources.")
-        Container(eso_keda_a, "ESO + KEDA", "ESO, KEDA", "Secret sync and worker autoscaling for Shard A.")
-    }
+    temporal_a --> tempdb_a
+    workers_a --> temporal_a & crossplane_a & notif
+    workers_a -->|"cross-cluster"| platdb
+    eso_keda_a -->|"cross-cluster"| secrets
+    crossplane_a --> gcp & roc
 
-    Container_Boundary(shard_b, "Ops Cluster — Shard B (tenants N+1–M)") {
-
-        Container(temporal_b, "Temporal Server", "Temporal OSS", "Shard B task queues.")
-        ContainerDb(tempdb_b, "Temporal DB", "PostgreSQL", "Shard B workflow state")
-        Container(workers_b, "Provisioning + Drift Workers", "Go / Temporal SDK, KEDA", "Poll Shard B task queues.")
-        Container(crossplane_b, "Crossplane + Providers", "Crossplane, provider-gcp-*, provider-roc", "Manages Shard B tenant resources.")
-        Container(eso_keda_b, "ESO + KEDA", "ESO, KEDA", "Secret sync and worker autoscaling for Shard B.")
-    }
-
-    Rel(user, apic, "HTTPS")
-    Rel(apic, ingress, "HTTPS")
-    Rel(ingress, api, "HTTP")
-
-    Rel(api, platdb, "SQL")
-    Rel(api, secrets, "read credentials")
-    Rel(api, keycloak, "OIDC")
-    Rel(api, coredata, "REST")
-
-    Rel(api, temporal_a, "gRPC — Shard A tenants")
-    Rel(api, crossplane_a, "K8s API — Shard A tenants")
-    Rel(api, temporal_b, "gRPC — Shard B tenants")
-    Rel(api, crossplane_b, "K8s API — Shard B tenants")
-
-    Rel(temporal_a, tempdb_a, "SQL")
-    Rel(workers_a, temporal_a, "gRPC — in-cluster")
-    Rel(workers_a, crossplane_a, "K8s API — in-cluster")
-    Rel(workers_a, platdb, "SQL — cross-cluster (notification config)")
-    Rel(workers_a, notif, "HTTP")
-    Rel(eso_keda_a, secrets, "HTTPS — cross-cluster")
-    Rel(crossplane_a, gcp, "REST APIs")
-    Rel(crossplane_a, roc, "REST API")
-
-    Rel(temporal_b, tempdb_b, "SQL")
-    Rel(workers_b, temporal_b, "gRPC — in-cluster")
-    Rel(workers_b, crossplane_b, "K8s API — in-cluster")
-    Rel(workers_b, platdb, "SQL — cross-cluster (notification config)")
-    Rel(workers_b, notif, "HTTP")
-    Rel(eso_keda_b, secrets, "HTTPS — cross-cluster")
-    Rel(crossplane_b, gcp, "REST APIs")
-    Rel(crossplane_b, roc, "REST API")
-
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+    temporal_b --> tempdb_b
+    workers_b --> temporal_b & crossplane_b & notif
+    workers_b -->|"cross-cluster"| platdb
+    eso_keda_b -->|"cross-cluster"| secrets
+    crossplane_b --> gcp & roc
 ```
 
 ---
@@ -408,85 +384,68 @@ to Region B via DNS/load balancer failover and standby databases are promoted.
 > automated execution), or manual runbook. See [OQ#5]().
 
 ```mermaid
-C4Container
-    title Multi-Region Active-Passive (BCP Lv4)
+graph LR
+    user(["User"])
+    apic["API-C + Global LB
+Routes to Region A · Failover to Region B"]
+    keycloak["Keycloak · Core Data"]
+    notif["PagerDuty · Slack · Email"]
+    gcp["GCP"]
+    roc["ROC / OneCloud"]
+    secrets["Secret Manager
+TBD — see OQ#1 for replication model"]
 
-    Person(user, "User", "Developer / Tenant Admin / Platform Admin")
+    subgraph region_a["Region A — Primary (serves traffic)"]
+        ingress_a["Ingress"]
+        api_a["API Server"]
+        platdb_a[("Platform DB
+primary")]
+        temporal_a["Temporal Server"]
+        tempdb_a[("Temporal DB
+primary · inside cluster")]
+        workers_a["Provisioning + Drift Workers"]
+        crossplane_a["Crossplane + Providers
+idle on failover — reconstructs via Observe()"]
+        eso_keda_a["ESO + KEDA"]
+    end
 
-    System_Ext(apic, "API-C + Global LB", "API Gateway with global load balancer. Routes to Region A (primary). Redirects to Region B on failover.")
-    System_Ext(gcp, "GCP", "Cloud SQL, GKE, GCE, GCS")
-    System_Ext(roc, "ROC / OneCloud", "Omnia DBaaS and other ROC services")
-    System_Ext(keycloak, "Keycloak", "OIDC authentication")
-    System_Ext(coredata, "Core Data API", "Tenant membership and role data")
-    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
-    System_Ext(secrets, "Secret Manager", "TBD — global. No cross-region replication needed.")
+    subgraph region_b["Region B — Standby (not serving traffic)"]
+        ingress_b["Ingress"]
+        api_b["API Server
+idle until failover"]
+        platdb_b[("Platform DB
+standby replica")]
+        temporal_b["Temporal Server
+idle until failover"]
+        tempdb_b[("Temporal DB
+standby replica · inside cluster")]
+        workers_b["Provisioning + Drift Workers
+idle until failover"]
+        crossplane_b["Crossplane + Providers
+idle until failover"]
+        eso_keda_b["ESO + KEDA"]
+    end
 
-    Container_Boundary(region_a, "Region A — Primary (serves traffic)") {
+    user --> apic
+    apic -->|"normal"| ingress_a
+    apic -. "failover only" .-> ingress_b
 
-        Container_Boundary(cluster_a, "K8s Cluster — multi-AZ") {
-            Container(ingress_a, "Ingress", "K8s Ingress", "TLS termination, load balancing")
-            Container(api_a, "API Server", "Go / Echo", "REST API.")
-            ContainerDb(platdb_a, "Platform DB", "PostgreSQL — primary", "Sessions, RBAC, audit logs, quota, notification config")
-            Container(temporal_a, "Temporal Server", "Temporal OSS", "Workflow orchestration.")
-            ContainerDb(tempdb_a, "Temporal DB", "PostgreSQL — primary", "Workflow state, history, visibility store")
-            Container(workers_a, "Provisioning + Drift Workers", "Go / Temporal SDK, KEDA", "Executes workflows.")
-            Container(crossplane_a, "Crossplane + Providers", "Crossplane, provider-gcp-*, provider-roc", "Reconciles XRs and MRs.")
-            Container(eso_a, "ESO + KEDA", "ESO, KEDA", "Secret sync and worker autoscaling.")
-        }
-    }
+    ingress_a --> api_a
+    api_a --> platdb_a & temporal_a & crossplane_a & keycloak & secrets
+    temporal_a --> tempdb_a
+    workers_a --> temporal_a & crossplane_a & notif & platdb_a
+    eso_keda_a --> secrets
+    crossplane_a --> gcp & roc
 
-    Container_Boundary(region_b, "Region B — Standby (not serving traffic)") {
+    platdb_a -->|"streaming replication · RPO ~1–5s"| platdb_b
+    tempdb_a -->|"streaming replication · RPO ~1–5s"| tempdb_b
 
-        Container_Boundary(cluster_b, "K8s Cluster — multi-AZ") {
-            Container(ingress_b, "Ingress", "K8s Ingress", "TLS termination, load balancing")
-            Container(api_b, "API Server", "Go / Echo", "REST API — idle until failover.")
-            ContainerDb(platdb_b, "Platform DB", "PostgreSQL — standby", "Read-only replica. Promoted to primary on failover.")
-            Container(temporal_b, "Temporal Server", "Temporal OSS", "Workflow orchestration — idle until failover.")
-            ContainerDb(tempdb_b, "Temporal DB", "PostgreSQL — standby", "Read-only replica. Promoted to primary on failover.")
-            Container(workers_b, "Provisioning + Drift Workers", "Go / Temporal SDK, KEDA", "Idle until failover.")
-            Container(crossplane_b, "Crossplane + Providers", "Crossplane, provider-gcp-*, provider-roc", "Idle until failover. Reconstructs XR/MR state via Observe() after failover.")
-            Container(eso_b, "ESO + KEDA", "ESO, KEDA", "Secret sync and worker autoscaling.")
-        }
-    }
-
-    Rel(user, apic, "HTTPS")
-    Rel(apic, ingress_a, "HTTPS — normal operation")
-    Rel(apic, ingress_b, "HTTPS — failover only")
-
-    Rel(ingress_a, api_a, "HTTP")
-    Rel(api_a, platdb_a, "SQL")
-    Rel(api_a, secrets, "read credentials")
-    Rel(api_a, temporal_a, "gRPC")
-    Rel(api_a, crossplane_a, "K8s API")
-    Rel(api_a, keycloak, "OIDC")
-    Rel(api_a, coredata, "REST")
-    Rel(temporal_a, tempdb_a, "SQL")
-    Rel(workers_a, temporal_a, "gRPC")
-    Rel(workers_a, crossplane_a, "K8s API")
-    Rel(workers_a, notif, "HTTP")
-    Rel(eso_a, secrets, "read credentials")
-    Rel(crossplane_a, gcp, "REST APIs")
-    Rel(crossplane_a, roc, "REST API")
-
-    Rel(platdb_a, platdb_b, "PostgreSQL streaming replication — RPO ~1–5s")
-    Rel(tempdb_a, tempdb_b, "PostgreSQL streaming replication — RPO ~1–5s")
-
-    Rel(ingress_b, api_b, "HTTP — failover only")
-    Rel(api_b, platdb_b, "SQL — failover only")
-    Rel(api_b, secrets, "read credentials")
-    Rel(api_b, temporal_b, "gRPC — failover only")
-    Rel(api_b, crossplane_b, "K8s API — failover only")
-    Rel(api_b, keycloak, "OIDC")
-    Rel(api_b, coredata, "REST")
-    Rel(temporal_b, tempdb_b, "SQL — failover only")
-    Rel(workers_b, temporal_b, "gRPC — failover only")
-    Rel(workers_b, crossplane_b, "K8s API — failover only")
-    Rel(workers_b, notif, "HTTP — failover only")
-    Rel(eso_b, secrets, "read credentials")
-    Rel(crossplane_b, gcp, "REST APIs — failover only")
-    Rel(crossplane_b, roc, "REST API — failover only")
-
-    UpdateLayoutConfig($c4ShapeInRow="2", $c4BoundaryInRow="1")
+    ingress_b --> api_b
+    api_b --> platdb_b & temporal_b & crossplane_b & keycloak & secrets
+    temporal_b --> tempdb_b
+    workers_b --> temporal_b & crossplane_b & notif & platdb_b
+    eso_keda_b --> secrets
+    crossplane_b --> gcp & roc
 ```
 
 ---
@@ -502,64 +461,60 @@ benefit. Documented here for reference only.
 > cannot be resolved by vertical scaling within the Ops cluster.
 
 ```mermaid
-C4Container
-    title Alternative — Three-Cluster Separation
+graph TB
+    user(["User
+Developer · Tenant Admin · Platform Admin"])
 
-    Person(user, "User", "Developer / Tenant Admin / Platform Admin")
+    apic["API-C
+API Gateway"]
+    keycloak["Keycloak
+OIDC"]
+    coredata["Core Data API"]
+    notif["PagerDuty · Slack · Email"]
+    gcp["GCP
+Cloud SQL · GKE · GCE · GCS"]
+    roc["ROC / OneCloud
+Omnia DBaaS"]
+    secrets["Secret Manager
+TBD"]
 
-    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
-    System_Ext(gcp, "GCP", "Cloud SQL, GKE, GCE, GCS")
-    System_Ext(roc, "ROC / OneCloud", "Omnia DBaaS and other ROC services")
-    System_Ext(keycloak, "Keycloak", "OIDC authentication")
-    System_Ext(coredata, "Core Data API", "Tenant membership and role data")
-    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
+    subgraph plat["Platform Cluster — multi-AZ"]
+        ingress["Ingress"]
+        api["API Server
+Go / Echo"]
+        platdb[("Platform DB
+PostgreSQL")]
+    end
 
-    Container_Boundary(plat, "Platform Cluster — multi-AZ") {
+    subgraph cp["Crossplane Cluster — multi-AZ"]
+        crossplane["Crossplane + Providers
+provider-gcp-* · provider-roc"]
+        prov_w["Provisioning Worker
+Go / Temporal SDK"]
+        drift_w["Drift Worker
+Go / Temporal SDK · KEDA"]
+        eso["ESO"]
+        keda["KEDA"]
+    end
 
-        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, rate limiting")
-        Container(api, "API Server", "Go / Echo", "REST API. Auth, RBAC, quota, workflow submission.")
-        ContainerDb(pg_plat, "Platform DB", "PostgreSQL", "Sessions, RBAC, audit logs, quota policies, notification config")
-        Container(secrets, "Secret Manager", "TBD", "Cloud provider credentials and platform secrets.")
-    }
+    subgraph tc["Temporal Cluster — multi-AZ"]
+        temporal["Temporal Server
+Temporal OSS"]
+        tempdb[("Temporal DB
+PostgreSQL")]
+    end
 
-    Container_Boundary(cp, "Crossplane Cluster — multi-AZ") {
+    user --> apic --> ingress --> api
+    api --> platdb & secrets & keycloak & coredata
+    api -->|"cross-cluster"| temporal & crossplane
 
-        Container(crossplane, "Crossplane + Providers", "Crossplane, provider-gcp-*, provider-roc", "Reconciles XRs and MRs against cloud provider state.")
-        Container(prov_w, "Provisioning Worker", "Go / Temporal SDK", "Executes provisioning workflows. In-cluster K8s API access. Connects to Temporal Server cross-cluster.")
-        Container(drift_w, "Drift Worker", "Go / Temporal SDK, KEDA", "Executes drift scan and approval workflows. In-cluster K8s API access. Connects to Temporal Server cross-cluster.")
-        Container(eso, "ESO", "External Secrets Operator", "Syncs credentials from Secret Manager to K8s Secrets for Crossplane.")
-        Container(keda, "KEDA", "KEDA", "Scales drift workers on Temporal queue depth. Reads Temporal queue metrics cross-cluster.")
-    }
+    temporal --> tempdb
+    prov_w -->|"cross-cluster"| temporal
+    prov_w --> crossplane
+    drift_w -->|"cross-cluster"| temporal & platdb
+    drift_w --> crossplane & notif
+    keda -->|"cross-cluster"| temporal
+    eso -->|"cross-cluster"| secrets
 
-    Container_Boundary(tc, "Temporal Cluster — multi-AZ") {
-
-        Container(temporal, "Temporal Server", "Temporal OSS", "Workflow orchestration. Frontend, History, Matching — all HA.")
-        ContainerDb(pg_temp, "Temporal DB", "PostgreSQL", "Temporal workflow state, history, and visibility store")
-    }
-
-    Rel(user, apic, "HTTPS")
-    Rel(apic, ingress, "HTTPS")
-    Rel(ingress, api, "HTTP")
-
-    Rel(api, pg_plat, "SQL")
-    Rel(api, secrets, "read credentials")
-    Rel(api, temporal, "gRPC — cross-cluster via Internal LB")
-    Rel(api, crossplane, "K8s API — cross-cluster kubeconfig")
-    Rel(api, keycloak, "OIDC")
-    Rel(api, coredata, "REST")
-
-    Rel(temporal, pg_temp, "SQL — in-cluster")
-    Rel(prov_w, temporal, "gRPC — cross-cluster")
-    Rel(prov_w, crossplane, "K8s API — in-cluster")
-    Rel(drift_w, temporal, "gRPC — cross-cluster")
-    Rel(drift_w, crossplane, "K8s API — in-cluster")
-    Rel(drift_w, pg_plat, "SQL — cross-cluster")
-    Rel(drift_w, notif, "HTTP")
-    Rel(keda, temporal, "gRPC — cross-cluster")
-    Rel(eso, secrets, "HTTPS — cross-cluster")
-
-    Rel(crossplane, gcp, "REST APIs")
-    Rel(crossplane, roc, "REST API")
-
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+    crossplane --> gcp & roc
 ```
