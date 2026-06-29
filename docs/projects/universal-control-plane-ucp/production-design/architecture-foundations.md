@@ -88,7 +88,7 @@ queued. The user retries after the dependency (Horizon, PostgreSQL) recovers.
 | Tenant registry | Platform DB | Indefinite |
 | Temporal workflow state | Temporal DB | TBD |
 | XR / MR objects (desired + observed state) | Kubernetes etcd (Ops crossplane cluster) | Lifecycle of the resource |
-| Managed resource (metadata only — name, ID, tenant, type) | Platform DB | Lifecycle of the resource | Read-optimized copy for fast queries. Full desired state lives in etcd (XR/MR). |
+| Managed resource (metadata only — name, ID, tenant, type) | Platform DB | Lifecycle of the resource | Read-optimized copy for fast queries. Full desired state lives in etcd (XR/MR). Also serves as the source for XR re-application on multi-region failover. |
 | Blueprint run instance | Platform DB | Lifecycle of the resource | related to managed resource
 | Provisioning history (Single resource or blueprint) | Platform DB | TBD (3 years ?) |
 | Audit logs | Platform DB | TBD (3 years ?) | Might need partition |
@@ -457,24 +457,31 @@ provide forensic trail. Rotation invalidates all exposed credentials.
 | Message broker (NATS/Kafka) | Temporal already provides durable async execution for all current use cases. No external consumer of UCP events in MVP. | When external systems need to subscribe to UCP events in real time |
 | Cluster sharding | Not needed until Crossplane provider memory pressure is measured in practice | When provider pod memory exceeds 80% of node allocatable consistently |
 | Platform + Ops cluster split | Single cluster is sufficient for MVP. Split adds cross-cluster ops overhead and results in ~8% utilization on the Platform cluster — wasteful without a confirmed need. | Only when API server latency degradation is confirmed to be caused by Crossplane write volume, and vertical/horizontal node scaling has already been exhausted. |
-| Multi-region active-active | Temporal OSS does not support cross-region workflow replication. Single region with Lv2 redundancy satisfies the current assumption. | If UCP is classified as an emergency prioritized operation or regulatory requirements mandate multi-region |
+| Multi-region active-passive (BCP Lv4) | Not required now but possible future path. Active-active is not viable with Temporal OSS (no cross-region workflow replication). Active-passive requires two clusters + DB replication. etcd does not need to be replicated — XR state is reconstructed from Platform DB + Crossplane Observe() on failover. Current single-region Lv3 satisfies the working assumption. | If BCP Lv4 is mandated by management or compliance. Failover automation level (fully automated vs semi-automated vs manual runbook) must be decided at that point. |
 
 ### Decide now — decision is hard or expensive to reverse later
 
 | Item | Status | Why decide now |
 |---|---|---|
-| K8s runtime — CaaS vs GKE | Open (OQ#3) | CRD support is a hard blocker for Crossplane. Must confirm before any infrastructure is provisioned. |
-| Secret manager selection | Open (OQ#2) | ESO configuration and credential migration depend on this. Changing it later requires migrating all tenant credentials. |
+| K8s runtime — CaaS vs GKE | Open (OQ#2) | CRD support is a hard blocker for Crossplane. Must confirm before any infrastructure is provisioned. CaaS shared cluster is ruled out for Crossplane (namespace-scoped, cannot install CRDs). CaaS dedicated cluster or GKE are the viable options. |
+| Secret manager selection | Open (OQ#1) | ESO configuration and credential migration depend on this. Changing it later requires migrating all tenant credentials. |
 | PostgreSQL HA deployment model | Proposed (RFC-005) | Cloud SQL vs CloudNativePG — choice affects backup strategy, failover time, and operational model. Low cost to decide early, high cost to migrate a live database later. |
 | API-C as the inbound gateway | Open | Affects auth model, rate limiting design, and onboarding process. Locking in now means all client tooling (CLI, open API docs) uses the API-C URL pattern. |
-| Cloud provider authentication model | Open (OQ#4) | Affects credential storage, ESO usage, and tenant onboarding flow. WIF (GCP) is the target direction — pending validation. |
+| Cloud provider authentication model | Open (OQ#3) | Affects credential storage, ESO usage, and tenant onboarding flow. WIF (GCP) is the target direction — pending validation. |
+| Desired state storage model for multi-region failover | Open (OQ#5) | Affects provisioning workflow architecture. Two options: (1) GitOps — XR specs in Git, applied by ArgoCD/Flux, failover = re-apply from Git; (2) DB-backed — full XR spec stored in Platform DB, UCP exposes a semi-automated failover API (platform-admin only, break-glass credential, audit logged). Current model is direct-apply (no Git, no DB-backed spec). Changing this later requires migrating all provisioning tooling. |
 
 ## Open Questions
 
 1. **Secret manager** — which secret manager to use? Affects ESO configuration and credential storage model.
-2. **Deployment target** — where to deploy UCP? OneCloud? GCP? Hybrid? Determines K8s runtime (CaaS vs GKE), database HA option (RFC-005), and network topology.
+2. **Deployment target** — where to deploy UCP? OneCloud? GCP? Hybrid? Determines K8s runtime (CaaS dedicated cluster vs GKE), database HA option (RFC-005), and network topology. CaaS shared cluster is ruled out for Crossplane — requires dedicated cluster with cluster-admin access or GKE.
 3. **Cloud provider authentication** — long-lived service account keys are not allowed by the security team. WIF (Workload Identity Federation) is the target direction for GCP — pending hands-on validation. ROC authentication model TBD separately.
 4. **Reliability targets** — SLA (99.9%), RTO, RPO, and IT service redundancy level (Lv2/Lv3) are working assumptions. Must be formally confirmed with management before production deployment.
+5. **Desired state storage model for multi-region failover** — two options under consideration:
+   - **GitOps**: XR desired state stored in Git, applied by ArgoCD/Flux. Failover = re-point GitOps controller at Region B cluster. Adds Git + ArgoCD/Flux as operational dependencies in provisioning path.
+   - **DB-backed**: Full XR spec stored in Platform DB (already replicated to Region B). UCP exposes a semi-automated failover API — platform-admin only, protected by break-glass credential, every invocation audit logged. Failover = single API call that re-applies all XR specs to Region B cluster, Crossplane reconciles via Observe().
+   - **Current model**: Direct-apply (provisioning worker applies XR YAML directly to K8s). No failover automation. Changing to either option later requires migrating provisioning tooling.
+   - **In both options**: etcd does NOT need to be replicated cross-region. XR objects are reconstructed from Platform DB + Crossplane Observe() against actual cloud state on failover. In-flight Temporal workflows at time of failure are lost and must be re-submitted — acceptable at UCP's workflow volume (~4–5 active at any moment).
+   - **Failover automation level TBD**: fully automated (detect + promote automatically) vs semi-automated (human decision, automated execution) vs manual runbook. Semi-automated is the recommended starting point for an internal platform.
 
 ### Reliability targets (unconfirmed — requires management alignment)
 
