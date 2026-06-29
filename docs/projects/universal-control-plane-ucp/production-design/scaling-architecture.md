@@ -28,15 +28,16 @@ C4Container
 
     Person(user, "User", "Developer / Tenant Admin / Platform Admin")
 
+    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
     System_Ext(gcp, "GCP", "Cloud SQL, GKE, GCE, GCS")
     System_Ext(roc, "ROC / OneCloud", "Omnia DBaaS and other ROC services")
     System_Ext(keycloak, "Keycloak", "OIDC authentication")
     System_Ext(coredata, "Core Data API", "Tenant membership and role data")
-    System_Ext(notif, "Notification Services", "PagerDuty, Slack, Email")
+    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
 
     Container_Boundary(cluster, "K8s Cluster — multi-AZ") {
 
-        Container(ingress, "Ingress", "nginx", "TLS termination, rate limiting, load balancing")
+        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, load balancing")
         Container(api, "API Server", "Go / Echo", "REST API. Auth, RBAC, quota, workflow submission.")
 
         ContainerDb(platdb, "Platform DB", "PostgreSQL", "Sessions, RBAC, audit logs, quota, notification config")
@@ -53,7 +54,8 @@ C4Container
         Container(keda, "KEDA", "KEDA", "Scales drift workers on Temporal queue depth.")
     }
 
-    Rel(user, ingress, "HTTPS")
+    Rel(user, apic, "HTTPS")
+    Rel(apic, ingress, "HTTPS")
     Rel(ingress, api, "HTTP")
 
     Rel(api, platdb, "SQL — sessions, RBAC, audit, quota")
@@ -69,7 +71,7 @@ C4Container
     Rel(drift_w, temporal, "gRPC — poll drift queue")
     Rel(drift_w, crossplane, "K8s API — LIST MRs, PATCH managementPolicies")
     Rel(drift_w, platdb, "SQL — read notification config")
-    Rel(drift_w, notif, "HTTP — PagerDuty, Slack, SMTP")
+    Rel(drift_w, notif, "HTTP")
     Rel(keda, temporal, "gRPC — read queue depth")
     Rel(eso, secrets, "read credentials")
 
@@ -99,15 +101,16 @@ C4Container
 
     Person(user, "User", "Developer / Tenant Admin / Platform Admin")
 
+    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
     System_Ext(gcp, "GCP", "Cloud SQL, GKE, GCE, GCS")
     System_Ext(roc, "ROC / OneCloud", "Omnia DBaaS and other ROC services")
     System_Ext(keycloak, "Keycloak", "OIDC authentication")
     System_Ext(coredata, "Core Data API", "Tenant membership and role data")
-    System_Ext(notif, "Notification Services", "PagerDuty, Slack, Email")
+    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
 
     Container_Boundary(plat, "Platform Cluster — multi-AZ") {
 
-        Container(ingress, "Ingress", "nginx", "TLS termination, rate limiting, load balancing")
+        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, load balancing")
         Container(api, "API Server", "Go / Echo", "REST API. Auth, RBAC, quota, workflow submission.")
         ContainerDb(platdb, "Platform DB", "PostgreSQL", "Sessions, RBAC, audit logs, quota, notification config")
         Container(secrets, "Secret Manager", "TBD", "Cloud provider credentials and platform secrets")
@@ -126,7 +129,8 @@ C4Container
         Container(keda, "KEDA", "KEDA", "Scales drift workers on Temporal queue depth.")
     }
 
-    Rel(user, ingress, "HTTPS")
+    Rel(user, apic, "HTTPS")
+    Rel(apic, ingress, "HTTPS")
     Rel(ingress, api, "HTTP")
 
     Rel(api, platdb, "SQL")
@@ -174,15 +178,16 @@ C4Container
 
     Person(user, "User", "Developer / Tenant Admin / Platform Admin")
 
+    System_Ext(apic, "API-C", "API Gateway. Inbound routing, rate limiting, correlation ID.")
     System_Ext(gcp, "GCP", "Cloud SQL, GKE, GCE, GCS")
     System_Ext(roc, "ROC / OneCloud", "Omnia DBaaS and other ROC services")
     System_Ext(keycloak, "Keycloak", "OIDC authentication")
     System_Ext(coredata, "Core Data API", "Tenant membership and role data")
-    System_Ext(notif, "Notification Services", "PagerDuty, Slack, Email")
+    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
 
     Container_Boundary(plat, "Platform Cluster — multi-AZ") {
 
-        Container(ingress, "Ingress", "nginx", "TLS termination, rate limiting, load balancing")
+        Container(ingress, "Ingress", "K8s Ingress", "TLS termination, load balancing")
         Container(api, "API Server + Shard Router", "Go / Echo", "REST API. Routes tenant requests to the correct Ops shard via consistent hashing.")
         ContainerDb(platdb, "Platform DB", "PostgreSQL", "Sessions, RBAC, audit logs, quota, notification config")
         Container(secrets, "Secret Manager", "TBD", "Cloud provider credentials and platform secrets")
@@ -206,7 +211,8 @@ C4Container
         Container(eso_keda_b, "ESO + KEDA", "ESO, KEDA", "Secret sync and worker autoscaling for Shard B.")
     }
 
-    Rel(user, ingress, "HTTPS")
+    Rel(user, apic, "HTTPS")
+    Rel(apic, ingress, "HTTPS")
     Rel(ingress, api, "HTTP")
 
     Rel(api, platdb, "SQL")
