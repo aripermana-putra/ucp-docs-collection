@@ -294,20 +294,60 @@ providers.
 
 ### First bottleneck as system grows
 
-Crossplane provider informer cache. Each provider holds an in-memory cache of
-all MR objects it manages. At the target ceiling of ~500 tenants × 100 resources
-= 50,000 resources, provider memory is estimated at 4–6GB combined — still within
-the 3-node spec. The actual threshold should be measured in practice; vertical
-scaling of provider pods is the first mitigation before any cluster split.
+Crossplane provider informer cache. Each provider pod holds an in-memory cache
+of all MR objects it manages. At the target ceiling of ~500 tenants × 100
+resources = 50,000 resources, provider memory is estimated at 4–6GB combined —
+still within the 3-node spec.
+
+**etcd is not a realistic bottleneck at UCP's scale.** At 50,000 MRs reconciling
+every 60s with ~3 writes per reconcile, the estimated write rate is ~2,500
+writes/second — far below etcd's capacity. On GKE, etcd runs on Google's managed
+control plane and is scaled automatically independent of worker node spec. The
+actual concern is write burst contention under high Crossplane reconcile load
+causing API server latency spikes — validate this with load testing rather than
+relying on theoretical thresholds.
 
 ### Scaling strategy
 
-- **0–500 tenants**: single cluster, KEDA autoscaling for drift workers,
-  vertical pod scaling for providers, GKE Cluster Autoscaler for nodes
-- **500–2,000 tenants**: evaluate provider pod memory pressure; split into
-  Platform + Ops clusters if Crossplane write churn affects API latency
-- **2,000+ tenants**: cluster sharding by tenant, shard router in API server,
-  per-shard Temporal task queues
+The strategy is **measure first, act second**. Tenant count thresholds below are
+indicative only — do not split clusters based on tenant count alone.
+
+**Response order when pressure is observed:**
+
+1. **Provider pod hitting memory limit** → increase `DeploymentRuntimeConfig`
+   memory limit for the specific provider under pressure. Each sub-provider is
+   independent — bumping one does not affect others.
+
+2. **Pod needs more memory than available on its node** → add more nodes
+   (horizontal) or switch to larger nodes (vertical). GKE Cluster Autoscaler
+   handles this automatically when pod scheduling pressure is detected. Note:
+   adding nodes does not affect etcd on GKE — etcd lives on Google's managed
+   control plane, not on worker nodes.
+
+3. **API server latency degrading despite healthy provider pods** → investigate
+   root cause before acting. Likely causes: reconcile storm from a buggy provider
+   (fix the provider), or genuine etcd write contention (open GCP support ticket —
+   etcd is Google's responsibility on GKE). Validate with `apiserver_request_duration_seconds`
+   metrics in Cloud Monitoring.
+
+4. **Root cause is confirmed Crossplane write volume saturating the single cluster**
+   → only then consider splitting into Platform + Ops clusters. Note: the Platform
+   cluster would run ~3–4GB of workloads on 3 × 16GB nodes (~8% utilization) —
+   this is wasteful and only justified if there is measured evidence that the split
+   resolves the latency issue.
+
+5. **Single Ops cluster cannot handle tenant volume** → cluster sharding by tenant.
+   Realistically requires ~800,000+ MRs (8,000+ tenants at 100 resources each)
+   before etcd write rate approaches any realistic ceiling. Document for completeness,
+   not expected at UCP's foreseeable scale.
+
+**Indicative tenant ranges:**
+
+| Range | Primary action |
+|---|---|
+| 0–500 tenants | Single cluster. Tune provider memory limits as needed. |
+| 500–2,000 tenants | Evaluate provider memory pressure. Add nodes if needed. Split only if API server latency is measurably caused by Crossplane. |
+| 2,000+ tenants | Cluster sharding by tenant if single Ops cluster is a confirmed bottleneck. |
 
 ---
 
@@ -416,7 +456,7 @@ provide forensic trail. Rotation invalidates all exposed credentials.
 | Redis (quota cache, session cache) | PostgreSQL reads are fast enough at 100 tenants. Adding Redis adds ops overhead with no measurable benefit. | When quota check latency consistently approaches 200ms (likely at 500+ active tenants) |
 | Message broker (NATS/Kafka) | Temporal already provides durable async execution for all current use cases. No external consumer of UCP events in MVP. | When external systems need to subscribe to UCP events in real time |
 | Cluster sharding | Not needed until Crossplane provider memory pressure is measured in practice | When provider pod memory exceeds 80% of node allocatable consistently |
-| Platform + Ops cluster split | Single cluster is sufficient for MVP. Split adds cross-cluster ops overhead without measurable benefit at 100 tenants. | When Crossplane MR write churn starts showing correlation with API server read latency |
+| Platform + Ops cluster split | Single cluster is sufficient for MVP. Split adds cross-cluster ops overhead and results in ~8% utilization on the Platform cluster — wasteful without a confirmed need. | Only when API server latency degradation is confirmed to be caused by Crossplane write volume, and vertical/horizontal node scaling has already been exhausted. |
 | Multi-region active-active | Temporal OSS does not support cross-region workflow replication. Single region with Lv2 redundancy satisfies the current assumption. | If UCP is classified as an emergency prioritized operation or regulatory requirements mandate multi-region |
 
 ### Decide now — decision is hard or expensive to reverse later
