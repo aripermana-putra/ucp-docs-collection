@@ -10,7 +10,7 @@ C1 (System Context) and C2 (Container) diagrams for the UCP production architect
 
 The C1 diagram applies to all topology options. The C2 diagrams follow the scaling
 journey — start at Level 1 and grow into the next level only when measured thresholds
-are crossed. See [Architecture Foundations § Scaling Strategy](./architecture-foundations.md#scaling-strategy)
+are crossed. See [Architecture Foundations § Scaling Strategy]()
 for transition thresholds.
 
 ---
@@ -284,6 +284,114 @@ C4Container
     Rel(crossplane_b, roc, "REST API")
 
     UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+```
+
+---
+
+## Multi-Region Active-Passive (BCP Lv4 — future path)
+
+Two clusters across two regions. Region A is the primary and serves all traffic.
+Region B is a warm standby — all components deployed and running, databases
+replicated, but not serving requests. On Region A failure, traffic is redirected
+to Region B via DNS/load balancer failover and standby databases are promoted.
+
+> **What replicates:**
+> - Platform DB — PostgreSQL streaming replication, Region A → Region B. RPO ~1–5s.
+> - Temporal DB — PostgreSQL streaming replication, Region A → Region B. RPO ~1–5s.
+> - Secret Manager — global service, no replication needed.
+>
+> **What does NOT replicate:**
+> - etcd (K8s state) — XR/MR objects are NOT replicated cross-region. On failover,
+>   XR desired state is re-applied to Region B cluster and Crossplane reconstructs
+>   MR state via Observe() against actual cloud resources. Mechanism TBD — see
+>   [OQ#5](./architecture-foundations.md#open-questions).
+>
+> **In-flight Temporal workflows** at time of failure are lost and must be
+> re-submitted after failover. Acceptable at UCP's workflow volume (~4–5 active at any moment).
+>
+> **Failover automation level TBD** — fully automated, semi-automated (human triggers,
+> automated execution), or manual runbook. See [OQ#5](./architecture-foundations.md#open-questions).
+
+```mermaid
+C4Container
+    title Multi-Region Active-Passive (BCP Lv4)
+
+    Person(user, "User", "Developer / Tenant Admin / Platform Admin")
+
+    System_Ext(apic, "API-C + Global LB", "API Gateway with global load balancer. Routes to Region A (primary). Redirects to Region B on failover.")
+    System_Ext(gcp, "GCP", "Cloud SQL, GKE, GCE, GCS")
+    System_Ext(roc, "ROC / OneCloud", "Omnia DBaaS and other ROC services")
+    System_Ext(keycloak, "Keycloak", "OIDC authentication")
+    System_Ext(coredata, "Core Data API", "Tenant membership and role data")
+    System_Ext(notif, "PagerDuty / Slack / Email", "Notification channels for UCP events")
+    System_Ext(secrets, "Secret Manager", "TBD — global. No cross-region replication needed.")
+
+    Container_Boundary(region_a, "Region A — Primary (serves traffic)") {
+
+        Container_Boundary(cluster_a, "K8s Cluster — multi-AZ") {
+            Container(ingress_a, "Ingress", "K8s Ingress", "TLS termination, load balancing")
+            Container(api_a, "API Server", "Go / Echo", "REST API.")
+            ContainerDb(platdb_a, "Platform DB", "PostgreSQL — primary", "Sessions, RBAC, audit logs, quota, notification config")
+            Container(temporal_a, "Temporal Server", "Temporal OSS", "Workflow orchestration.")
+            ContainerDb(tempdb_a, "Temporal DB", "PostgreSQL — primary", "Workflow state, history, visibility store")
+            Container(workers_a, "Provisioning + Drift Workers", "Go / Temporal SDK, KEDA", "Executes workflows.")
+            Container(crossplane_a, "Crossplane + Providers", "Crossplane, provider-gcp-*, provider-roc", "Reconciles XRs and MRs.")
+            Container(eso_a, "ESO + KEDA", "ESO, KEDA", "Secret sync and worker autoscaling.")
+        }
+    }
+
+    Container_Boundary(region_b, "Region B — Standby (not serving traffic)") {
+
+        Container_Boundary(cluster_b, "K8s Cluster — multi-AZ") {
+            Container(ingress_b, "Ingress", "K8s Ingress", "TLS termination, load balancing")
+            Container(api_b, "API Server", "Go / Echo", "REST API — idle until failover.")
+            ContainerDb(platdb_b, "Platform DB", "PostgreSQL — standby", "Read-only replica. Promoted to primary on failover.")
+            Container(temporal_b, "Temporal Server", "Temporal OSS", "Workflow orchestration — idle until failover.")
+            ContainerDb(tempdb_b, "Temporal DB", "PostgreSQL — standby", "Read-only replica. Promoted to primary on failover.")
+            Container(workers_b, "Provisioning + Drift Workers", "Go / Temporal SDK, KEDA", "Idle until failover.")
+            Container(crossplane_b, "Crossplane + Providers", "Crossplane, provider-gcp-*, provider-roc", "Idle until failover. Reconstructs XR/MR state via Observe() after failover.")
+            Container(eso_b, "ESO + KEDA", "ESO, KEDA", "Secret sync and worker autoscaling.")
+        }
+    }
+
+    Rel(user, apic, "HTTPS")
+    Rel(apic, ingress_a, "HTTPS — normal operation")
+    Rel(apic, ingress_b, "HTTPS — failover only")
+
+    Rel(ingress_a, api_a, "HTTP")
+    Rel(api_a, platdb_a, "SQL")
+    Rel(api_a, secrets, "read credentials")
+    Rel(api_a, temporal_a, "gRPC")
+    Rel(api_a, crossplane_a, "K8s API")
+    Rel(api_a, keycloak, "OIDC")
+    Rel(api_a, coredata, "REST")
+    Rel(temporal_a, tempdb_a, "SQL")
+    Rel(workers_a, temporal_a, "gRPC")
+    Rel(workers_a, crossplane_a, "K8s API")
+    Rel(workers_a, notif, "HTTP")
+    Rel(eso_a, secrets, "read credentials")
+    Rel(crossplane_a, gcp, "REST APIs")
+    Rel(crossplane_a, roc, "REST API")
+
+    Rel(platdb_a, platdb_b, "PostgreSQL streaming replication — RPO ~1–5s")
+    Rel(tempdb_a, tempdb_b, "PostgreSQL streaming replication — RPO ~1–5s")
+
+    Rel(ingress_b, api_b, "HTTP — failover only")
+    Rel(api_b, platdb_b, "SQL — failover only")
+    Rel(api_b, secrets, "read credentials")
+    Rel(api_b, temporal_b, "gRPC — failover only")
+    Rel(api_b, crossplane_b, "K8s API — failover only")
+    Rel(api_b, keycloak, "OIDC")
+    Rel(api_b, coredata, "REST")
+    Rel(temporal_b, tempdb_b, "SQL — failover only")
+    Rel(workers_b, temporal_b, "gRPC — failover only")
+    Rel(workers_b, crossplane_b, "K8s API — failover only")
+    Rel(workers_b, notif, "HTTP — failover only")
+    Rel(eso_b, secrets, "read credentials")
+    Rel(crossplane_b, gcp, "REST APIs — failover only")
+    Rel(crossplane_b, roc, "REST API — failover only")
+
+    UpdateLayoutConfig($c4ShapeInRow="2", $c4BoundaryInRow="1")
 ```
 
 ---
