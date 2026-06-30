@@ -10,7 +10,7 @@ C1 (System Context) and C2 (Container) diagrams for the UCP production architect
 
 The C1 diagram applies to all topology options. The C2 diagrams follow the scaling
 journey — start at Level 1 and grow into the next level only when measured thresholds
-are crossed. See [Architecture Foundations § Scaling Strategy]()
+are crossed. See [Architecture Foundations § Scaling Strategy](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6740191853/Architecture+Foundations#ArchitectureFoundations-Scalingstrategy)
 for transition thresholds.
 
 ---
@@ -65,7 +65,7 @@ its own region. Databases replicate from Region A to Region B. Region B is a
 warm standby — cluster running, databases up to date, not serving traffic.
 
 etcd is NOT replicated cross-region. XR desired state is reconstructed on
-failover — mechanism TBD (OQ#5).
+failover — mechanism TBD [OQ#5](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6740191853/Architecture+Foundations#ArchitectureFoundations-OpenQuestions).
 
 ```mermaid
 graph LR
@@ -375,13 +375,13 @@ to Region B via DNS/load balancer failover and standby databases are promoted.
 > - etcd (K8s state) — XR/MR objects are NOT replicated cross-region. On failover,
 >   XR desired state is re-applied to Region B cluster and Crossplane reconstructs
 >   MR state via Observe() against actual cloud resources. Mechanism TBD — see
->   [OQ#5]).
+>   [OQ#5](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6740191853/Architecture+Foundations#ArchitectureFoundations-OpenQuestions)).
 >
 > **In-flight Temporal workflows** at time of failure are lost and must be
 > re-submitted after failover. Acceptable at UCP's workflow volume (~4–5 active at any moment).
 >
 > **Failover automation level TBD** — fully automated, semi-automated (human triggers,
-> automated execution), or manual runbook. See [OQ#5]().
+> automated execution), or manual runbook. See [OQ#5](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6740191853/Architecture+Foundations#ArchitectureFoundations-OpenQuestions).
 
 ```mermaid
 graph LR
