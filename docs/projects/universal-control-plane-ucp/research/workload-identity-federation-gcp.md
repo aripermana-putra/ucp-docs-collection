@@ -11,7 +11,7 @@ parent_page_id: "../research.md"
 | **Author** | aripermana.putra |
 | **Date** | 2026-07-02 |
 | **Ticket** | MCUCP-217 |
-| **Related** | [Cloud Provider Authorization — Service Account Strategy](./cloud-provider-authz-model.md) |
+| **Related** | |
 
 ---
 
@@ -231,7 +231,7 @@ Only after these two are resolved should the PoC (MCUCP-217) proceed to verify:
 
 ## Related PoCs
 
-- [WIF — GCP Workload Identity Federation with Crossplane](../pocs/wif-gcp.md) — `Secret` + `external_account` works end-to-end on a self-hosted non-GKE cluster. Production blocked by GP 106 — requires CCoE to add UCP's issuer URL to the allowed list. (MCUCP-217)
+- [WIF — GCP Workload Identity Federation with Crossplane](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6759410618) — `Secret` + `external_account` works end-to-end on a self-hosted non-GKE cluster. Production blocked by GP 106 — requires CCoE to add UCP's issuer URL to the allowed list. (MCUCP-217)
 
 ---
 

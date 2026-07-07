@@ -11,7 +11,7 @@ Human review document. Read this before the PoC starts executing.
 | | |
 |---|---|
 | **Ticket** | MCUCP-217 |
-| **Parent research** | [Workload Identity Federation — Feasibility for UCP](../../research/workload-identity-federation-gcp.md) |
+| **Parent research** | [Workload Identity Federation — Feasibility for UCP](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6761359577) |
 
 ---
 

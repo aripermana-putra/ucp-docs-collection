@@ -22,7 +22,7 @@ parent_page_id: "../wif-gcp.md"
 
 ## What This PoC Answers
 
-The [parent research doc](../../research/workload-identity-federation-gcp.md) identified WIF as a potential replacement for long-lived SA keys in UCP's Crossplane-based provisioning model. Before committing to that path, the following must be confirmed by hands-on proof:
+The [parent research doc](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6761359577) identified WIF as a potential replacement for long-lived SA keys in UCP's Crossplane-based provisioning model. Before committing to that path, the following must be confirmed by hands-on proof:
 
 - Whether WIF is technically feasible for UCP's Crossplane-based provisioning on a self-hosted cluster
 - Whether the OIDC issuer reachability problem is solvable without GKE

@@ -6,7 +6,7 @@ parent_page_id: "../wif-gcp.md"
 
 # WIF PoC — Concepts
 
-Background context for the WIF PoC. For the full investigation, see the [parent research doc](../../research/workload-identity-federation-gcp.md).
+Background context for the WIF PoC. For the full investigation, see the [parent research doc](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6761359577).
 
 ---
 
