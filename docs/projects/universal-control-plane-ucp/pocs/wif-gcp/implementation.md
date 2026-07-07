@@ -274,34 +274,11 @@ Expected: `SYNCED=True, READY=True`
 
 ---
 
-## Step 5 — Test Approach B: `Upbound` with `Federation`
-
-```yaml
-apiVersion: gcp.upbound.io/v1beta1
-kind: ProviderConfig
-metadata:
-  name: wif-poc-upbound-providerconfig
-spec:
-  projectID: <PROJECT_ID>
-  credentials:
-    source: Upbound
-    upbound:
-      federation:
-        providerID: projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/<POOL_ID>/providers/<PROVIDER_ID>
-        serviceAccount: <SA_EMAIL>
-```
-
-Observe provider pod behavior — check if it attempts to exchange tokens or errors immediately.
-
----
-
 ## Test Results
 
-| Approach | Credential Source | Result | Notes |
-|----------|------------------|--------|-------|
-| A | `Secret` + `external_account` JSON | ✅ **Working** | GCS bucket provisioned — `SYNCED=True, READY=True` |
-| B | `Upbound` + `Federation` | Not tested | Approach A succeeded; B not needed for PoC verdict |
-| C | `InjectedIdentity` (GKE only) | N/A | Local cluster — not applicable |
+| Credential Source | Result | Notes |
+|------------------|--------|-------|
+| `Secret` + `external_account` JSON | ✅ **Working** | GCS bucket provisioned — `SYNCED=True, READY=True` |
 
 ---
 
