@@ -17,17 +17,17 @@ Human review document. Read this before the PoC starts executing.
 
 ## Research Question
 
-> Which credential source in `provider-upjet-gcp` works for Workload Identity Federation on a self-hosted, non-GKE Kubernetes cluster?
+> Can WIF replace long-lived SA keys as UCP's GCP credential model?
 
 ---
 
 ## Hypothesis
 
-`Secret` with `external_account` JSON is the most likely approach to work. It relies purely on the GCP SDK's Application Default Credentials support — not on provider-specific infrastructure — meaning it should work on any cluster where the provider pod can read a file and reach GCP STS over the internet.
+WIF is technically feasible for UCP. The `Secret` + `external_account` credential source is the most likely approach to work — it relies purely on the GCP SDK's Application Default Credentials support, not on provider-specific infrastructure, meaning it should work on any cluster where the provider pod can read a file and reach GCP STS over the internet.
 
-`Upbound` + `Federation` may also work but is suspected to have a dependency on Upbound's managed control plane. This needs to be tested to confirm or rule out.
+The main risks are OIDC issuer reachability on a local cluster and the GP 106 org policy constraint — both expected to be solvable without GKE.
 
-`InjectedIdentity` is GKE-only and is not applicable to this PoC.
+`InjectedIdentity` is GKE-only and is not applicable to this PoC. `Upbound` + `Federation` is a fallback if Approach A fails.
 
 ---
 
