@@ -47,6 +47,15 @@ Human review document. Read this before the PoC starts executing.
 
 ## Approach
 
+```mermaid
+flowchart TD
+    P1[Phase 1\nUnblock OIDC issuer] --> P2[Phase 2\nConfigure GCP side]
+    P2 --> P3[Phase 3\nTest Approach A\nSecret + external_account]
+    P3 --> P4[Phase 4\nTest Approach B\nUpbound + Federation]
+    P3 -->|Pass| Done[✅ PoC complete]
+    P4 -->|Pass| Done
+```
+
 ### Phase 1 — Unblock the OIDC issuer problem
 
 Local clusters use `kubernetes.default.svc.cluster.local` as the OIDC issuer — unreachable by GCP STS. The workaround is to host the cluster's public JWKS on a publicly reachable URL (e.g GCS bucket) and configure the cluster to use that URL as its issuer.

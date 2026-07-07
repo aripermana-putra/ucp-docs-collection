@@ -74,8 +74,24 @@ The remaining production gap is GP 106: the dummy issuer workaround is not accep
 1. **Raise with CCoE** to add UCP's production OIDC issuer URL to `constraints/iam.workloadIdentityPoolProviders`, citing the AKS cluster entry as precedent. If UCP runs on GKE, use the GKE-managed OIDC issuer — no self-hosted JWKS hosting needed.
 2. **Stable SA names** must be set via `serviceAccountTemplate` in `DeploymentRuntimeConfig` for every GCP provider before any tenant onboarding happens — the stable name is part of the principal string UCP hands to tenants.
 3. **Fixed audience** `ucp-platform` must be the audience tenants configure in their WIF provider. UCP must document this as a required onboarding instruction.
-4. **Tenant onboarding** is a set of manual steps the tenant performs in their GCP project after authenticating with `gcloud auth login`. UCP must provide clear step-by-step instructions covering: creating the WIF pool and provider, creating a GCP SA, and granting `workloadIdentityUser` to UCP's stable provider SA(s).
-5. **Connection verification** — UCP's CLI or UI should have a mechanism to verify the WIF setup is correct before the tenant submits their SA email and project ID. This prevents silent failures where provisioning breaks because the tenant misconfigured the WIF pool or IAM binding.
+4. **Tenant onboarding** is a set of manual steps the tenant performs in their GCP project after authenticating with `gcloud auth login`. UCP must provide clear step-by-step instructions.
+5. **Connection verification** — UCP's CLI or UI should verify the WIF setup is correct before the tenant submits their SA email and project ID.
+
+### Tenant onboarding flow
+
+```mermaid
+flowchart TD
+    Start([Tenant authenticates\ngcloud auth login]) --> Pool[Create WIF pool\nin tenant GCP project]
+    Pool --> Provider[Create WIF provider\nissuer = UCP OIDC issuer\naudience = ucp-platform]
+    Provider --> SA[Create GCP SA\nwith required permissions]
+    SA --> Bind[Grant workloadIdentityUser\nto UCP provider SA\nvia GCP Console]
+    Bind --> Submit[Submit SA email\n+ project ID to UCP]
+    Submit --> UCPGen[UCP generates\ncredential config + ProviderConfig]
+    UCPGen --> Verify[UCP CLI/UI verifies\nconnection]
+    Verify -->|Pass| Done([✅ Tenant can provision])
+    Verify -->|Fail| Fix[Fix misconfigured\npool or IAM binding]
+    Fix --> Verify
+```
 
 ---
 

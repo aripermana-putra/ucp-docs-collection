@@ -21,7 +21,7 @@ UCP currently authenticates to GCP using long-lived Service Account keys uploade
 
 This document evaluates how WIF works, whether it is a viable replacement for long-lived SA keys in UCP's Crossplane-based provisioning model, and what the impact on tenant onboarding would be.
 
-**Verdict:** WIF is technically feasible for UCP but has a hard prerequisite — UCP's Kubernetes cluster OIDC issuer must be publicly reachable by GCP STS, or UCP must run on GKE with native Workload Identity. Neither condition is confirmed as met today. A PoC is needed before committing to WIF as the credential model.
+**Verdict:** WIF is technically viable for UCP. The PoC (MCUCP-217) confirmed that `provider-upjet-gcp` v2.6.0 works end-to-end using `Secret` + `external_account` credentials on a self-hosted non-GKE cluster. The remaining production blocker is GP 106 — CCoE must add UCP's OIDC issuer URL to the `constraints/iam.workloadIdentityPoolProviders` allowed list before tenants can register WIF providers in their GCP projects.
 
 ---
 
@@ -53,30 +53,23 @@ WIF replaces a key file with a trust relationship. Instead of "here is a private
 
 ### Core flow
 
-```
-Workload (e.g. Crossplane pod)
-  │
-  │ 1. Acquires a short-lived token from its own identity source
-  │    (Kubernetes ServiceAccount JWT, in UCP's case)
-  │
-  ▼
-GCP Security Token Service (STS)
-  │
-  │ 2. Verifies the token: fetches JWKS from the K8s OIDC issuer URL
-  │    and validates the JWT signature + claims
-  │
-  │ 3. Returns a short-lived federated access token (~1 hour)
-  │
-  ▼
-GCP IAM Credentials API
-  │
-  │ 4. Workload uses the federated token to impersonate a GCP Service Account
-  │    (requires roles/iam.workloadIdentityUser binding on the target SA)
-  │
-  │ 5. Returns a short-lived GCP SA access token (~1 hour, auto-refreshed by SDK)
-  │
-  ▼
-GCP APIs (Cloud SQL, GKE, GCS, etc.)
+```mermaid
+sequenceDiagram
+    participant Pod as Crossplane provider pod
+    participant STS as GCP STS
+    participant IAM as GCP IAM Credentials API
+    participant API as GCP Cloud APIs
+
+    Pod->>Pod: Read K8s ServiceAccount JWT<br/>from /var/run/secrets/tokens/gcp-token
+    Pod->>STS: POST /token (JWT + WIF pool audience)
+    STS->>STS: Fetch JWKS from OIDC issuer URL
+    STS->>STS: Verify JWT signature + claims
+    STS-->>Pod: Short-lived federated token (~1h)
+    Pod->>IAM: generateAccessToken (federated token + SA email)
+    IAM->>IAM: Check workloadIdentityUser binding
+    IAM-->>Pod: Short-lived SA access token (~1h)
+    Pod->>API: API call with SA access token
+    API-->>Pod: Resource created ✅
 ```
 
 No private key is ever created or stored. The GCP SDK handles token exchange automatically when given a **credential configuration file** (not a key file):
@@ -128,27 +121,33 @@ GP 106 applies to **L1 Compliant Systems**. Whether tenant projects are classifi
 
 ### Current flow (SA key)
 
-1. Tenant admin creates a GCP Service Account in their project
-2. Tenant admin generates a JSON key and downloads it
-3. Tenant admin uploads the key to UCP via CLI/API
-4. UCP stores the key as a K8s Secret and creates a Crossplane `ProviderConfig`
+```mermaid
+flowchart LR
+    A[Tenant creates GCP SA] --> B[Generate + download key JSON]
+    B --> C[Upload key to UCP]
+    C --> D[UCP stores Secret + creates ProviderConfig]
+    style C fill:#f66,color:#fff
+    style D fill:#aaa,color:#fff
+```
 
-**Steps by tenant:** 3 (create SA, generate key, upload to UCP)
-**Secret material shared with UCP:** yes — full SA key JSON
+Secret material shared with UCP: **yes — full SA key JSON**
 
 ### Proposed flow (WIF)
 
-1. Tenant admin creates a Workload Identity Pool in their GCP project
-2. Tenant admin creates a WIF provider in the pool, pointing to UCP's K8s OIDC issuer URL
-3. Tenant admin creates a GCP Service Account with required permissions
-4. Tenant admin grants UCP's K8s ServiceAccount `roles/iam.workloadIdentityUser` on the GCP SA
-5. Tenant admin provides UCP with the GCP SA email and project number (no key material)
-6. UCP generates the credential config file and creates a `ProviderConfig`
+```mermaid
+flowchart LR
+    A[Tenant creates WIF pool] --> B[Create WIF provider\nissuer=UCP OIDC, aud=ucp-platform]
+    B --> C[Create GCP SA\nwith required permissions]
+    C --> D[Grant workloadIdentityUser\nto UCP provider SA]
+    D --> E[Give UCP: SA email + project ID]
+    E --> F[UCP generates credential config\n+ creates ProviderConfig]
+    style E fill:#4a4,color:#fff
+    style F fill:#aaa,color:#fff
+```
 
-**Steps by tenant:** 4–5 (more steps, but no secret material shared)
-**Secret material shared with UCP:** none
+Secret material shared with UCP: **none**
 
-The increased onboarding complexity can be partially automated. UCP could provide a Terraform module or `gcloud` command sequence that the tenant runs once, reducing the manual surface to a single command.
+More steps than the SA key flow, but all tenant-side steps are GCP Console or `gcloud` operations. UCP provides the exact principal string and step-by-step instructions to the tenant.
 
 ---
 
@@ -171,7 +170,7 @@ spec:
       key: credentials.json  # external_account JSON — contains no private key
 ```
 
-The provider pod also needs a **projected ServiceAccount token volume** mounted at the path referenced in the credential config. This is not part of the default Crossplane deployment and requires a change to how provider pods are deployed — either via a DeploymentRuntimeConfig or a custom provider deployment. This is an unverified implementation detail that the PoC must confirm.
+The provider pod also needs a **projected ServiceAccount token volume** mounted at the path referenced in the credential config. This is configured via `DeploymentRuntimeConfig` — confirmed working in the PoC. The projected volume audience must be set to a fixed value (`ucp-platform`) that all tenants configure in their WIF providers, enabling multi-tenant use from a single shared provider pod.
 
 ---
 
@@ -228,10 +227,7 @@ Only after these two are resolved should the PoC (MCUCP-217) proceed to verify:
 
 - Is UCP's production control plane intended to run on GKE? This determines whether Option B or C is the right path.
 - Can UCP's K8s API server be reconfigured with a public OIDC issuer URL, and who owns that infrastructure change?
-- **Are tenant GCP projects classified as L1 Compliant Systems?** If yes, GP 106 applies and the WIF provider URI must be on CCoE's approved list.
-- **Can CCoE add UCP's K8s OIDC issuer URL (or GKE's issuer) to the `constraints/iam.workloadIdentityPoolProviders` allowed list?** This is a prerequisite for WIF to work in tenant projects under GP 106.
-- Does `provider-upjet-gcp` support WIF credentials without modification to the provider pod spec?
-- Can the tenant WIF onboarding steps be fully automated via a UCP-provided Terraform module or `gcloud` script?
+- **Can CCoE add UCP's K8s OIDC issuer URL (or GKE's issuer) to the `constraints/iam.workloadIdentityPoolProviders` allowed list?** The sandbox project (`sub-gcp-ucp-clsd-sandbox`) is L1 and GP 106 is enforced. The allowed list already contains an AKS cluster OIDC issuer as precedent.
 - What is the migration path for existing tenants with SA keys if UCP moves to WIF?
 
 ---
