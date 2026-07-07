@@ -12,9 +12,9 @@ Externally sourced facts, provider source code findings, and references. For wha
 
 ## Provider Source Code Findings
 
-### Supported credential sources (`provider-upjet-gcp-beta` — `apis/cluster/v1beta1/types.go`)
+### Supported credential sources (`crossplane-contrib/provider-upjet-gcp` v2.6.0 — `apis/cluster/v1beta1/types.go`)
 
-Source: [upbound/provider-upjet-gcp-beta — apis/cluster/v1beta1/types.go](https://github.com/upbound/provider-upjet-gcp-beta/blob/main/apis/cluster/v1beta1/types.go)
+Source: [crossplane-contrib/provider-upjet-gcp v2.6.0 — apis/cluster/v1beta1/types.go](https://github.com/crossplane-contrib/provider-upjet-gcp/blob/v2.6.0/apis/cluster/v1beta1/types.go)
 
 The `ProviderCredentials` struct defines:
 
@@ -111,7 +111,8 @@ Source: [GKE Workload Identity — official guide](https://cloud.google.com/kube
 
 ## References
 
-- [upbound/provider-upjet-gcp-beta — types.go](https://github.com/upbound/provider-upjet-gcp-beta/blob/main/apis/cluster/v1beta1/types.go)
+- [crossplane-contrib/provider-upjet-gcp v2.6.0 — types.go](https://github.com/crossplane-contrib/provider-upjet-gcp/blob/v2.6.0/apis/cluster/v1beta1/types.go)
+- [crossplane-contrib/provider-upjet-gcp v2.6.0 — clients/gcp.go (per-reconcile client, TODO comment)](https://github.com/crossplane-contrib/provider-upjet-gcp/blob/v2.6.0/internal/clients/gcp.go#L101)
 - [GCP Workload Identity Federation — overview](https://cloud.google.com/iam/docs/workload-identity-federation)
 - [GCP WIF with Kubernetes — official guide](https://cloud.google.com/iam/docs/workload-identity-federation-with-kubernetes)
 - [GKE Workload Identity — official guide](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity)

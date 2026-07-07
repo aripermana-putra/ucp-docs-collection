@@ -142,6 +142,46 @@ A Crossplane resource that tells the GCP provider which credentials to use when 
 
 ---
 
+## Token Refresh and Reconcile Concurrency
+
+> **Needs more in-depth investigation before production adoption.**
+
+### Concurrency model
+
+From the provider source (`cmd/provider/monolith/zz_main.go`), the default configuration is:
+
+```
+MaxConcurrentReconciles: 100   (per resource type)
+GlobalRateLimiter:       100/s (across all resource types)
+```
+
+100 goroutines run reconcile loops concurrently per resource type. With hundreds of MRs, reconciliation is fully parallel — not sequential.
+
+### Token refresh is not single-flight
+
+The `TerraformSetupBuilder` (`internal/clients/gcp-beta.go`) is called **per reconcile, per MR**. Each call creates a fresh copy of the Terraform GCP provider and a fresh `oauth2.TokenSource`:
+
+```go
+// NOTE in source: "this will have a performance impact. We need to quantify this."
+configureNoForkGCPClient(ctx, &ps, *tfProvider)  // *tfProvider = passed by value = fresh copy
+```
+
+Source: [crossplane-contrib/provider-upjet-gcp v2.6.0 — internal/clients/gcp.go L101, L148, L152](https://github.com/crossplane-contrib/provider-upjet-gcp/blob/v2.6.0/internal/clients/gcp.go#L101)
+
+This means:
+- No shared GCP client or token source across reconciles
+- Each of the 100 concurrent workers independently holds its own token
+- When a token expires, up to 100 goroutines can hit GCP STS simultaneously — each independently re-reading the K8s JWT file and exchanging it
+- The `oauth2.ReuseTokenSource` mutex only protects within a single reconcile's own client instance
+
+This is not a correctness problem — GCP STS handles concurrent requests. But it is a potential performance concern at scale (STS burst at token expiry), and the provider source itself has a TODO acknowledging the performance impact of creating a new client per reconcile.
+
+### K8s JWT file refresh
+
+The projected ServiceAccount token file at `/var/run/secrets/tokens/gcp-token` is managed by the kubelet independently of reconcile cycles. The kubelet proactively rotates it at ~80% of `expirationSeconds` (every ~48 minutes for a 1-hour token). The file is updated in-place. All reconcile goroutines reading the file at any point get the current valid token.
+
+---
+
 ## Onboarding Transaction
 
 The credential config and ProviderConfig are always created together, in the same step, the moment the tenant completes onboarding:
