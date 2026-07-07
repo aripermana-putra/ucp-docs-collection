@@ -40,7 +40,7 @@ Human review document. Read this before the PoC starts executing.
 | `provider-family-gcp` v2.6.0 | ✅ | |
 | Cloud SQL provisioning as verification target | ✅ | |
 | Full tenant onboarding automation | | ✅ — post-PoC |
-| GP 106 CCoE allowlist approval | | ✅ — use L0 sandbox only |
+| GP 106 CCoE allowlist approval | | ✅ — worked around via dummy issuer + JWK upload (sandbox is L1) |
 | Migration path for existing SA key tenants | | ✅ — post-PoC |
 
 ---
@@ -102,19 +102,16 @@ Steps:
 
 ## Risks
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-| GP 106 blocks WIF pool creation in sandbox project | Low (likely L0) | High | Confirm project classification first; use L0 sandbox |
-| `Upbound` source requires Upbound managed platform | Medium | Low — Approach A still available | Test and document; fall back to Approach A |
-| Projected token volume not supported on self-hosted provider pod | Medium | High for Approach A | Check `DeploymentRuntimeConfig` support in v2.6.0 |
-| JWKS key rotation breaks WIF after cluster recreation | Certain on recreation | Low for PoC | Note in docs; re-upload JWKS after cluster recreate |
-| Provider types differ between `provider-upjet-gcp-beta` v1.x and `provider-family-gcp` v2.6.0 | Low | High | Inspect the running CRD schema early in Phase 3 |
+| Risk | Outcome |
+|------|---------|
+| GP 106 blocks WIF pool creation in sandbox project | **Occurred** — sandbox is L1. Worked around via dummy issuer URI + manual JWK upload. Not acceptable for production. |
+| `Upbound` source requires Upbound managed platform | Not tested — Approach A succeeded, Phase 4 skipped. |
+| Projected token volume not supported on self-hosted provider pod | **Did not occur** — `DeploymentRuntimeConfig` works in v2.6.0. |
+| JWKS key rotation breaks WIF after cluster recreation | **Occurred** — re-uploaded JWKS after each cluster recreate. |
+| Provider types differ between `provider-upjet-gcp-beta` v1.x and `provider-family-gcp` v2.6.0 | **Did not occur** — credential sources are the same. |
 
 ---
 
 ## Open Questions
 
-- Does `provider-family-gcp` v2.6.0 have the same `Upbound`/`Federation` credential source as `provider-upjet-gcp-beta` v1.x?
-- Does `DeploymentRuntimeConfig` in v2.6.0 support adding projected volume mounts to provider pods?
-- Is the sandbox GCP project classified as L0 or L1? (determines whether GP 106 applies)
-- Does the `Upbound` credential source work without Upbound's managed control plane?
+All pre-PoC questions were answered during execution. See [poc-report.md](./poc-report.md) for the full verdict.
