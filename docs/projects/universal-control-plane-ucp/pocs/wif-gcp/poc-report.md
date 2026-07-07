@@ -10,7 +10,7 @@ parent_page_id: "../wif-gcp.md"
 |---|---|
 | **Ticket** | MCUCP-217 |
 | **Status** | Complete |
-| **Research question** | Which credential source in `provider-upjet-gcp` works for WIF on a self-hosted, non-GKE cluster? |
+| **Research question** | Can WIF replace long-lived SA keys as UCP's GCP credential model? |
 
 ---
 
