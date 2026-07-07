@@ -39,6 +39,12 @@ A GCP resource the tenant creates in their own project. It is a container that g
 
 ### 4. WIF Provider
 
+> **Name conflict — "provider" means two different things here:**
+> - **Crossplane Provider** — a Crossplane package (e.g. `provider-gcp-storage`) that runs as a pod and knows how to manage GCP resources. This is a K8s/Crossplane concept.
+> - **WIF Provider** — a GCP IAM resource inside a Workload Identity Pool that registers a trusted external identity issuer. This is a GCP concept.
+>
+> They are completely unrelated. The naming collision is unfortunate. In this doc, "WIF provider" always means the GCP IAM resource.
+
 A GCP resource inside the pool that registers a specific trusted issuer. The tenant creates it during onboarding with:
 
 - **Issuer URI** — UCP's cluster OIDC issuer URL
