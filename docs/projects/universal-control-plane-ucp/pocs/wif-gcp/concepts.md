@@ -54,6 +54,12 @@ When GCP STS receives a token claiming to be from UCP's cluster with audience `u
 
 A short-lived JWT automatically generated and mounted by Kubernetes inside the provider pod at `/var/run/secrets/tokens/gcp-token`. Auto-rotated every hour. Never touched manually.
 
+> **K8s ServiceAccount vs GCP Service Account** — these are two completely different things that share the same name. A **Kubernetes ServiceAccount** is a K8s resource that represents the identity of a pod inside the cluster. A **GCP Service Account** is a GCP resource with IAM permissions to call GCP APIs. The token here belongs to the K8s one, not the GCP one.
+
+The K8s ServiceAccount the token belongs to is **created automatically by Crossplane** when it installs the provider — not by us. We only control its name via `serviceAccountTemplate` in `DeploymentRuntimeConfig` (component 6).
+
+If the provider has multiple pod replicas, all replicas share the same K8s ServiceAccount name — it is set at the Deployment level. Each replica gets its own token file, but all tokens have the same `sub` claim and are therefore identical from GCP's perspective.
+
 Configured via a projected volume in `DeploymentRuntimeConfig`. Token payload:
 
 ```json
@@ -71,11 +77,13 @@ This token is **the same for all tenants** — one token, one K8s SA, one fixed 
 
 ### 6. DeploymentRuntimeConfig
 
-A Crossplane resource that injects configuration into provider pod deployments. Created by UCP as part of cluster setup. One config applied to all GCP providers.
+When Crossplane installs a provider, it automatically creates and manages the provider pod Deployment. You cannot edit that Deployment directly — Crossplane would overwrite your changes. `DeploymentRuntimeConfig` is the Crossplane-provided way to inject extra configuration into provider Deployments without fighting Crossplane's reconciler.
+
+Created by UCP as part of cluster setup. One config applied to all GCP providers via `runtimeConfigRef` on each Provider resource.
 
 Configures two things:
 
-- **`serviceAccountTemplate.metadata.name: ucp-provider-gcp-storage`** — stable, predictable K8s SA name that never changes across provider upgrades. Required so the principal string UCP hands to tenants is permanent.
+- **`serviceAccountTemplate.metadata.name: ucp-provider-gcp-storage`** — tells Crossplane to create the provider's K8s SA with this stable name instead of the auto-generated hash. Required so the principal string UCP hands to tenants never changes across provider upgrades.
 - **Projected volume** — mounts the JWT file at `/var/run/secrets/tokens/gcp-token` with audience `ucp-platform`.
 
 ---
