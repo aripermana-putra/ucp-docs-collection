@@ -102,6 +102,7 @@ Possible remediations:
 1. **Reconfigure the K8s API server** with a public OIDC issuer URL (`--service-account-issuer`) and host the JWKS at a publicly accessible endpoint. Requires cluster admin coordination and an infrastructure change.
 2. **Run UCP on GKE** — GKE Workload Identity does not require a public OIDC endpoint. GKE handles OIDC discovery internally through Google's infrastructure. Cleanest path if GKE is the intended production environment.
 3. **Self-hosted JWKS endpoint** — host the cluster's public signing keys at a URL GCP can reach, without exposing the API server itself. More complex but avoids a full cluster reconfiguration.
+4. **Upload JWKS directly to the WIF provider** — when creating the WIF provider in GCP, the JWKS file can be uploaded directly instead of letting GCP fetch it from the issuer URL. GCP then uses the uploaded keys for token verification, bypassing the reachability requirement entirely. **Not recommended for production** — the JWKS must be manually re-uploaded every time the cluster is recreated (new key pair), creating an operational risk. Used as a PoC workaround only.
 
 ### Critical prerequisite 2: GP 106 — WIF provider allowlist
 
@@ -109,11 +110,9 @@ GP 106 (`constraints/iam.workloadIdentityPoolProviders`) is **not a blanket ban 
 
 This has a direct impact on UCP: when a tenant configures a WIF pool provider pointing to UCP's K8s OIDC issuer URL, that issuer URL must be on CCoE's approved list. If it is not, GCP will block the WIF provider creation at the org policy level — and WIF becomes unusable for UCP regardless of whether the OIDC endpoint is reachable.
 
-GP 106 applies to **L1 Compliant Systems**. Whether tenant projects are classified as L1 needs to be confirmed. If they are L0-only, GP 106 does not apply and this concern does not block WIF.
+GP 106 applies to **L1 Compliant Systems**. The PoC confirmed that `sub-gcp-ucp-clsd-sandbox` is L1 — GP 106 is enforced and blocked WIF provider creation with our issuer URL. The allowed list on that project contains six approved URIs including one AKS cluster OIDC issuer, which is a direct precedent for requesting UCP's cluster issuer to be added.
 
-**This needs a direct answer from CCoE** before WIF can be treated as a viable path:
-- Is UCP's K8s OIDC issuer URL (or GKE's internal issuer) on the approved list, or can it be added?
-- Are tenant GCP projects classified as L1?
+CCoE must add UCP's production OIDC issuer URL to the allowed list before tenants can use WIF in their GCP projects.
 
 ---
 
@@ -225,10 +224,9 @@ Only after these two are resolved should the PoC (MCUCP-217) proceed to verify:
 
 ## Open Questions
 
-- Is UCP's production control plane intended to run on GKE? This determines whether Option B or C is the right path.
-- Can UCP's K8s API server be reconfigured with a public OIDC issuer URL, and who owns that infrastructure change?
-- **Can CCoE add UCP's K8s OIDC issuer URL (or GKE's issuer) to the `constraints/iam.workloadIdentityPoolProviders` allowed list?** The sandbox project (`sub-gcp-ucp-clsd-sandbox`) is L1 and GP 106 is enforced. The allowed list already contains an AKS cluster OIDC issuer as precedent.
-- What is the migration path for existing tenants with SA keys if UCP moves to WIF?
+- Is UCP's production control plane intended to run on GKE? This determines whether Option B (public OIDC issuer) or Option C (GKE-managed OIDC) is the right path.
+- Can CCoE add UCP's OIDC issuer URL to `constraints/iam.workloadIdentityPoolProviders`? The AKS cluster entry in the allowed list is a direct precedent.
+- What is the migration path for existing tenants with SA keys when UCP moves to WIF?
 
 ---
 
