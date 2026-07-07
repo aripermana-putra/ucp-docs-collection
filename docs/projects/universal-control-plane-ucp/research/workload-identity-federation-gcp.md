@@ -30,7 +30,7 @@ This document evaluates how WIF works, whether it is a viable replacement for lo
 UCP uses long-lived GCP Service Account keys as the credential for all Crossplane provisioning operations per tenant. These keys:
 
 - Never expire unless explicitly revoked or rotated
-- Are stored as Kubernetes Secrets (plaintext in etcd unless encryption at rest is configured)
+- Are stored as Kubernetes Secrets (plaintext in etcd unless encryption at rest is configured) — **this vulnerability is present in the PoC only**; for MVP, credentials will be stored in a dedicated secret manager (specific solution TBD)
 - Are shared in bulk by tenant admins — UCP has no insight into when the tenant last rotated them
 - Are automatically disabled by GCP (GP 291) if publicly exposed — this would silently break all provisioning for a tenant with no prior warning in UCP
 
@@ -209,7 +209,7 @@ UCP's infrastructure-level GCP access (org policy checks, project verification) 
 
 ## Recommendation
 
-**Short term (MVP):** Option A — keep SA keys, add operational controls. This unblocks MVP without infrastructure dependencies.
+**Short term (MVP):** Option A — keep SA keys, add operational controls. This unblocks MVP without infrastructure dependencies (**With permission from CSDD and CCoE**)
 
 **Medium term:** pursue Option C if GKE is the intended production cluster, Option B otherwise. But before any WIF work proceeds, two blockers must be resolved outside the PoC:
 
@@ -225,8 +225,7 @@ Only after these two are resolved should the PoC (MCUCP-217) proceed to verify:
 ## Open Questions
 
 - Is UCP's production control plane intended to run on GKE? This determines whether Option B (public OIDC issuer) or Option C (GKE-managed OIDC) is the right path.
-- Can CCoE add UCP's OIDC issuer URL to `constraints/iam.workloadIdentityPoolProviders`? The AKS cluster entry in the allowed list is a direct precedent.
-- What is the migration path for existing tenants with SA keys when UCP moves to WIF?
+- Can CCoE add UCP's OIDC issuer URL to `constraints/iam.workloadIdentityPoolProviders`? The AKS cluster entry in the allowed list is a direct precedent (Although it looks like it's owned by CCoE).
 
 ---
 
@@ -246,5 +245,6 @@ Only after these two are resolved should the PoC (MCUCP-217) proceed to verify:
 - [Crossplane GCP ProviderConfig — credential sources](https://docs.crossplane.io/latest/concepts/providers/)
 - [GCP external_account credential type (ADC)](https://google.aip.dev/auth/4117)
 - [Cloud Provider Authorization — Service Account Strategy](./cloud-provider-authz-model.md)
+- [CCoE Public Cloud Infrastructure Guardrails v1 — GP 291](https://confluence.rakuten-it.com/confluence/spaces/CLOUDSOL/pages/4969649985/PCI+Guardrails+Version+1+-+H1.2024#PCIGuardrailsVersion1H1.2024-GP291%5BGCP%5DServiceaccountkeyexposureresponse)
 - [CCoE Public Cloud Infrastructure Guardrails v2 — GP 106, GP 125](https://confluence.rakuten-it.com/confluence/spaces/CLOUDSOL/pages/5411030282/Public+Cloud+Infrastructure+Guardrails+Version+2)
 - [UCP Policy Enforcement — GP 291, guardrail coverage](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6671968824/Policy+enforcement)
