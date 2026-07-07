@@ -23,11 +23,9 @@ Human review document. Read this before the PoC starts executing.
 
 ## Hypothesis
 
-WIF is technically feasible for UCP. The `Secret` + `external_account` credential source is the most likely approach to work — it relies purely on the GCP SDK's Application Default Credentials support, not on provider-specific infrastructure, meaning it should work on any cluster where the provider pod can read a file and reach GCP STS over the internet.
+WIF is technically feasible for UCP. The `Secret` + `external_account` credential source is the correct approach — it relies purely on the GCP SDK's Application Default Credentials support, not on provider-specific infrastructure, and supports UCP's multi-tenant model. It works on any cluster where the provider pod can read a file and reach GCP STS over the internet.
 
 The main risks are OIDC issuer reachability on a local cluster and the GP 106 org policy constraint — both expected to be solvable without GKE.
-
-`InjectedIdentity` is GKE-only and is not applicable to this PoC. `Upbound` + `Federation` is a fallback if Approach A fails.
 
 ---
 
@@ -50,10 +48,9 @@ The main risks are OIDC issuer reachability on a local cluster and the GP 106 or
 ```mermaid
 flowchart TD
     P1[Phase 1\nUnblock OIDC issuer] --> P2[Phase 2\nConfigure GCP side]
-    P2 --> P3[Phase 3\nTest Approach A\nSecret + external_account]
-    P3 --> P4[Phase 4\nTest Approach B\nUpbound + Federation]
+    P2 --> P3[Phase 3\nTest Secret + external_account]
     P3 -->|Pass| Done[✅ PoC complete]
-    P4 -->|Pass| Done
+    P3 -->|Fail| Investigate[Investigate root cause]
 ```
 
 ### Phase 1 — Unblock the OIDC issuer problem
@@ -80,12 +77,6 @@ Steps:
 4. Add a `DeploymentRuntimeConfig` to mount a projected ServiceAccount token volume on the provider pod
 5. Provision a Cloud SQL instance through Crossplane and confirm success
 
-### Phase 4 — Test Approach B (`Upbound` + `Federation`)
-
-1. Create a `ProviderConfig` with `source: Upbound` and the `federation` block
-2. Observe provider pod behavior — check if it exchanges tokens or errors immediately
-3. Determine whether `Upbound` source requires Upbound managed platform infrastructure
-
 ---
 
 ## Success Criteria
@@ -94,8 +85,7 @@ Steps:
 |-----------|---------------|
 | OIDC issuer workaround works | GCP STS successfully verifies a K8s ServiceAccount JWT signed by the local cluster |
 | At least one credential source works end-to-end | Crossplane successfully provisions a Cloud SQL instance without a SA key file |
-| Approach A verdict | Confirmed working or confirmed broken with root cause |
-| Approach B verdict | Confirmed working, or confirmed limited to Upbound managed platform |
+| `Secret` + `external_account` verdict | Confirmed working or confirmed broken with root cause |
 | Tenant setup steps documented | Clear list of what the tenant must configure in their GCP project |
 
 ---
@@ -105,7 +95,7 @@ Steps:
 | Risk | Outcome |
 |------|---------|
 | GP 106 blocks WIF pool creation in sandbox project | **Occurred** — sandbox is L1. Worked around via dummy issuer URI + manual JWK upload. Not acceptable for production. |
-| `Upbound` source requires Upbound managed platform | Not tested — Approach A succeeded, Phase 4 skipped. |
+| `Upbound` source requires Upbound managed platform | Confirmed — not applicable to UCP. Removed from scope. |
 | Projected token volume not supported on self-hosted provider pod | **Did not occur** — `DeploymentRuntimeConfig` works in v2.6.0. |
 | JWKS key rotation breaks WIF after cluster recreation | **Occurred** — re-uploaded JWKS after each cluster recreate. |
 | Provider types differ between `provider-upjet-gcp-beta` v1.x and `provider-family-gcp` v2.6.0 | **Did not occur** — credential sources are the same. |

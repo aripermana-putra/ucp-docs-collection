@@ -230,19 +230,13 @@ provider-gcp-storage pod
 
 ---
 
-## Credential Source Options in `provider-upjet-gcp`
+## Credential Source in `provider-upjet-gcp`
 
-From provider source code (`apis/cluster/v1beta1/types.go`):
+The provider supports multiple credential sources (`Secret`, `InjectedIdentity`, `Upbound`, etc.) but only `Secret` + `external_account` is viable for UCP's multi-tenant model:
 
-```
-None | Secret | AccessToken | ImpersonateServiceAccount | InjectedIdentity | Environment | Filesystem | Upbound
-```
-
-| Source | Status | Notes |
-|--------|--------|-------|
-| `Secret` + `external_account` JSON | ✅ **Confirmed working** | Proven in this PoC |
-| `InjectedIdentity` | N/A | GKE only — not applicable to local cluster |
-| `Upbound` + `Federation` | Not tested | May be tied to Upbound managed platform |
+- **`InjectedIdentity`** — GKE Workload Identity. Links the provider pod to a GCP SA in **UCP's own GCP project** via GKE's metadata server. Accessing tenant GCP projects still requires cross-project IAM grants or SA impersonation — the tenant onboarding burden is identical to the `Secret` approach. Not simpler.
+- **`Upbound` + `Federation`** — Upbound's SaaS platform feature. Requires Upbound's managed control plane to inject the token. Has no token source on self-hosted Crossplane. Not a real option.
+- **`Secret` + `external_account`** ✅ — works on any cluster, portable across cloud providers, supports multi-tenant via per-tenant credential config. **This is the correct choice for UCP.**
 
 ---
 

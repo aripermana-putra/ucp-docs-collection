@@ -46,8 +46,6 @@ The [parent research doc](../../research/workload-identity-federation-gcp.md) id
 
 ## What Was Not Proved
 
-- `Upbound` + `Federation` credential source — not tested; Approach A succeeded so this was not needed
-- `InjectedIdentity` — GKE only, not applicable to local cluster
 - End-to-end with a real (non-dummy) UCP-owned OIDC issuer URI — blocked by GP 106 on the sandbox project
 
 ---
