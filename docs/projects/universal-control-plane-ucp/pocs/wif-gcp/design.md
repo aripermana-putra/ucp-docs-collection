@@ -104,4 +104,4 @@ Steps:
 
 ## Open Questions
 
-All pre-PoC questions were answered during execution. See [poc-report.md](./poc-report.md) for the full verdict.
+All pre-PoC questions were answered during execution. See [poc-report.md](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6761359552) for the full verdict.
