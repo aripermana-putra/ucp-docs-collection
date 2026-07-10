@@ -12,15 +12,18 @@ Does Keycloak provide a working token revocation endpoint, and can UCP reliably 
 
 Keycloak exposes two token invalidation endpoints — `/logout` (end-session) and `/revoke` (RFC 7009) — both of which accept a refresh token and invalidate it server-side. After a successful call to either endpoint, the refresh token can no longer be used to obtain new access tokens.
 
+For offline tokens (issued with `offline_access` scope), `/logout` also invalidates the token — offline tokens are not exempt from explicit revocation.
+
 ---
 
 ## Scope
 
 **In scope:**
 - Login via PKCE flow against OneCloud Keycloak (QA realm)
-- Calling `/logout` with a refresh token and verifying revocation
-- Calling `/revoke` (RFC 7009) with a refresh token and verifying revocation
-- Comparing behavior of both endpoints
+- Calling `/logout` with a regular refresh token and verifying revocation
+- Calling `/revoke` (RFC 7009) with a regular refresh token and verifying revocation
+- Calling `/logout` with an offline token (`offline_access` scope) and verifying revocation
+- Comparing behavior of all three scenarios
 - Verifying that the access token expires naturally (no active revocation)
 
 **Out of scope:**
@@ -37,7 +40,7 @@ A minimal standalone Go script in the kitchen-sink repo exercises the full login
 
 ### Flow
 
-The script runs two independent flows — one per revocation endpoint — each starting from a fresh login.
+The script runs three independent flows — each starting from a fresh login.
 
 ```mermaid
 sequenceDiagram
@@ -45,35 +48,35 @@ sequenceDiagram
     participant Browser
     participant Keycloak as OneCloud Keycloak (QA)
 
-    Note over Script,Keycloak: Flow A — /logout endpoint
+    Note over Script,Keycloak: Flow A — /logout endpoint (regular refresh token)
 
-    Script->>Script: Generate PKCE
-    Script->>Browser: Open /authorize
+    Script->>Browser: Open /authorize (scope: openid email profile)
     Browser->>Keycloak: User authenticates
-    Keycloak->>Script: Redirect with code
-    Script->>Keycloak: POST /token (code + verifier)
-    Keycloak-->>Script: access_token + refresh_token A
-
+    Keycloak->>Script: access_token + refresh_token A
     Script->>Keycloak: POST /logout (refresh_token A)
     Keycloak-->>Script: 204 No Content
-
     Script->>Keycloak: POST /token (refresh_token A)
     Keycloak-->>Script: 400 invalid_grant
 
     Note over Script,Keycloak: Flow B — /revoke endpoint (RFC 7009)
 
-    Script->>Script: Generate PKCE
-    Script->>Browser: Open /authorize
+    Script->>Browser: Open /authorize (scope: openid email profile)
     Browser->>Keycloak: User authenticates
-    Keycloak->>Script: Redirect with code
-    Script->>Keycloak: POST /token (code + verifier)
-    Keycloak-->>Script: access_token + refresh_token B
-
-    Script->>Keycloak: POST /revoke (token=refresh_token B, token_type_hint=refresh_token)
+    Keycloak->>Script: access_token + refresh_token B
+    Script->>Keycloak: POST /revoke (token=refresh_token B)
     Keycloak-->>Script: 200 OK
-
     Script->>Keycloak: POST /token (refresh_token B)
     Keycloak-->>Script: 400 invalid_grant
+
+    Note over Script,Keycloak: Flow C — /logout endpoint (offline token)
+
+    Script->>Browser: Open /authorize (scope: openid email profile offline_access)
+    Browser->>Keycloak: User authenticates
+    Keycloak->>Script: access_token + offline_token C
+    Script->>Keycloak: POST /logout (offline_token C)
+    Keycloak-->>Script: 204 No Content
+    Script->>Keycloak: POST /token (offline_token C)
+    Keycloak-->>Script: 400 invalid_grant (expected)
 ```
 
 ### Keycloak endpoints used
@@ -98,6 +101,7 @@ sequenceDiagram
 | `/revoke` call succeeds | Keycloak returns `200 OK` |
 | Refresh token revoked after `/logout` | Subsequent refresh returns `400 invalid_grant` |
 | Refresh token revoked after `/revoke` | Subsequent refresh returns `400 invalid_grant` |
+| Offline token revoked after `/logout` | Subsequent refresh returns `400 invalid_grant` |
 | Access token TTL recorded | `iat` and `exp` from the access token are printed; TTL = `exp - iat` |
 | Access token behavior documented | Behavior after revocation observed and recorded |
 
@@ -107,15 +111,11 @@ sequenceDiagram
 
 1. Branch off `kitchen-sink` main
 2. Write a self-contained Go script: `keycloak-session-revoke/main.go`
-3. Script runs two flows: login → `/logout` → verify, then login → `/revoke` → verify
+3. Script runs three flows: A (`/logout`), B (`/revoke`), C (`/logout` with offline token)
 4. Record all HTTP responses in `implementation.md`
 
 ---
 
 ## Risks and Open Questions
 
-| Item | Note |
-|---|---|
-| UCP Keycloak client config | Client must allow `public` client type (no secret) for PKCE. Needs confirmation that the QA client is configured this way. |
-| `offline_access` scope | Login uses `offline_access` scope in current PoC codebase. Behavior of offline tokens on logout is separate from regular refresh tokens — may need separate test. |
-| `/revoke` response semantics | RFC 7009 requires servers to return `200 OK` even for unknown tokens. Confirm Keycloak follows this — the verify step (attempt refresh) is the actual proof of revocation. |
+All open questions were resolved during PoC execution. See `poc-report.md` for findings.

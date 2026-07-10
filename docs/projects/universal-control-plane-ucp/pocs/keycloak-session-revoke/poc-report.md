@@ -18,16 +18,30 @@ The residual risk window is **10 minutes** — the access token TTL configured i
 
 | Criterion | Result |
 |---|---|
-| `/logout` revokes the refresh token | PASS — `204`, subsequent refresh returns `400 invalid_grant` |
-| `/revoke` revokes the refresh token | PASS — `200`, subsequent refresh returns `400 invalid_grant` |
-| Access token TTL (QA) | **10 minutes** |
+| `/logout` revokes a regular refresh token | PASS — `204`, subsequent refresh returns `400 invalid_grant — Session not active` |
+| `/revoke` revokes a regular refresh token | PASS — `200`, subsequent refresh returns `400 invalid_grant — Session not active` |
+| `/logout` revokes an offline token | PASS — `204`, subsequent refresh returns `400 invalid_grant — Offline user session not found` |
+| Access token TTL (QA) | **10 minutes** (residual risk window after logout) |
+| Regular refresh token TTL (QA) | **1 hour** (session-bound) |
+| Offline token TTL | **No expiry** — `exp = 0` (Unix epoch); persists until explicitly revoked |
 | Both endpoints usable for UCP logout | Yes — for the single-session CLI flow, outcome is identical |
+
+**Offline tokens are stored separately in Keycloak** — confirmed by the distinct error message (`Offline user session not found` vs `Session not active`). Explicit `/logout` reaches into that store and removes the token.
+
+**Resolved open questions:**
+
+| Question | Finding |
+|---|---|
+| Is `rns:roc:portal` a public client (no secret required for PKCE)? | Yes — PKCE login succeeded without a client secret |
+| Does Keycloak follow RFC 7009 and return `200 OK` for `/revoke`? | Yes — `200 OK` returned; verify step confirms actual revocation |
+| Does `/logout` revoke offline tokens? | Yes — `204` returned; offline token returns `400 invalid_grant — Offline user session not found` |
 
 ## What This PoC Did Not Prove
 
 - Access token active revocation — not possible without token introspection on every request. The 10-minute residual window is an accepted trade-off.
 - Production environment behavior — only QA was tested.
 - Multi-client SSO behavior — `/logout` vs `/revoke` distinction only matters when multiple clients share a Keycloak session.
+- Offline token behavior when `/logout` is called **without** passing the offline token (e.g., session expiry only) — this PoC only tested explicit revocation.
 
 ---
 

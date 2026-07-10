@@ -49,6 +49,18 @@ To eliminate the window entirely, every API request would need to call Keycloak'
 
 The accepted trade-off: revoke the refresh token on logout to prevent new tokens from being issued, and rely on a short access token TTL to limit the residual window.
 
+## RFC 7009 — OAuth 2.0 Token Revocation
+
+RFC 7009 is the standard that defines how clients explicitly invalidate tokens at an authorization server.
+
+**Request:** `POST /revoke` with `token` and optionally `token_type_hint` (`access_token` or `refresh_token`)
+
+**Response:** Always `200 OK` — even if the token is unknown, already expired, or already revoked. The server never reveals whether the token actually existed. This prevents token existence probing by attackers.
+
+**Revoking a refresh token** should also invalidate access tokens derived from it (server-dependent behavior).
+
+Before RFC 7009 there was no standard for token revocation — every provider had its own approach. Keycloak implements RFC 7009 (`/revoke`) alongside its own session-level endpoint (`/logout`).
+
 ## PKCE Flow (Public Client)
 
 UCP uses Authorization Code + PKCE for CLI and browser login. PKCE eliminates the need for a client secret on public clients (CLI, SPAs). The `code_verifier` generated client-side proves ownership of the authorization code without a secret.
