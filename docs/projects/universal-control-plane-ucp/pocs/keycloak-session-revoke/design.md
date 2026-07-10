@@ -1,3 +1,9 @@
+---
+title: "Keycloak Session Revoke PoC — Design"
+space: UCP
+parent_page_id: "../keycloak-session-revoke.md"
+---
+
 # Design: Keycloak Session Revoke PoC
 
 ## Research Question

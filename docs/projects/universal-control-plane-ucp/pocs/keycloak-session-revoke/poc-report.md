@@ -1,3 +1,9 @@
+---
+title: "Keycloak Session Revoke PoC — Report"
+space: UCP
+parent_page_id: "../keycloak-session-revoke.md"
+---
+
 # PoC Report: Keycloak Session Revoke
 
 **Research question answered:** MCUCP-238 B01 — Does Keycloak provide a working revocation endpoint that UCP can rely on for logout?

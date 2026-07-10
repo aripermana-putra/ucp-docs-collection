@@ -1,3 +1,9 @@
+---
+title: "Keycloak Session Revoke PoC — Evidence"
+space: UCP
+parent_page_id: "../keycloak-session-revoke.md"
+---
+
 # Evidence: Keycloak Session Revoke
 
 ## Keycloak Official Documentation

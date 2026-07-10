@@ -1,3 +1,9 @@
+---
+title: "Keycloak Session Revoke PoC — Concepts"
+space: UCP
+parent_page_id: "../keycloak-session-revoke.md"
+---
+
 # Concepts: Keycloak Session Revoke
 
 ## Keycloak Token Types

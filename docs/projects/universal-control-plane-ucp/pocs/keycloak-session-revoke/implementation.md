@@ -1,3 +1,9 @@
+---
+title: "Keycloak Session Revoke PoC — Implementation"
+space: UCP
+parent_page_id: "../keycloak-session-revoke.md"
+---
+
 # Implementation: Keycloak Session Revoke PoC
 
 ## Repository

@@ -1,3 +1,9 @@
+---
+title: "Keycloak Session Revoke PoC"
+space: UCP
+parent_page_id: "../pocs.md"
+---
+
 # PoC: Keycloak Session Revoke
 
 **Research question:** Does Keycloak provide a working token revocation endpoint that UCP can rely on for logout?
@@ -12,8 +18,8 @@
 
 | Document | Purpose |
 |---|---|
-| [design.md](keycloak-session-revoke/design.md) | Scope, hypothesis, approach, and success criteria — read before implementation |
-| [concepts.md](keycloak-session-revoke/concepts.md) | Keycloak token lifecycle and revocation background |
-| [implementation.md](keycloak-session-revoke/implementation.md) | What was built and run |
-| [evidence.md](keycloak-session-revoke/evidence.md) | External references and Keycloak docs |
-| [poc-report.md](keycloak-session-revoke/poc-report.md) | Verdict and recommendation |
+| [design.md](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6768760118) | Scope, hypothesis, approach, and success criteria — read before implementation |
+| [concepts.md](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6768367629) | Keycloak token lifecycle and revocation background |
+| [implementation.md](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6768367641) | What was built and run |
+| [evidence.md](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6768367654) | External references and Keycloak docs |
+| [poc-report.md](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6766882872) | Verdict and recommendation |
