@@ -205,9 +205,16 @@ Use this only to **check your answers**. Keep it covered during all practice.
 
 **20 min**
 
-- [ ] **[7.5 min] Active recall — review A row**
+- [ ] **[7.5 min] Review — All learned kana: A row**
 
-  Cover reference table. Write hiragana for each:
+  Cover reference table.
+
+  **Step 1 — Write every learned kana once (random order):**
+  ```
+  o - i - a - e - u
+  ```
+
+  **Step 2 — Drill string:**
   ```
   a - i - u - e - o - o - e - u - i - a - e - a - o - u - i - i - u - a - o - e - a - o - i - u - e - u - i - e - a - o
   o - e - a - u - i - a - u - i - o - e - e - i - o - a - u - u - o - e - i - a - i - a - u - o - e - o - a - e - i - u
@@ -242,9 +249,16 @@ Use this only to **check your answers**. Keep it covered during all practice.
 
 **20 min**
 
-- [ ] **[7.5 min] Active recall — review K row**
+- [ ] **[7.5 min] Review — All learned kana: A + K rows**
 
-  Cover reference table. Write hiragana for each:
+  Cover reference table.
+
+  **Step 1 — Write every learned kana once (random order):**
+  ```
+  ko - a - ki - e - ka - i - ke - u - o - ku
+  ```
+
+  **Step 2 — Drill string:**
   ```
   ka - ki - ku - ke - ko - a - i - u - e - o - ko - ke - ku - ki - ka - o - e - u - i - a - ka - a - ki - i - ku - u - ke - e - ko - o
   a - ka - e - ki - i - ku - o - ke - u - ko - ka - o - ki - u - ku - e - ke - a - ko - i - ki - ka - ke - ko - ku - i - e - o - a - u
@@ -279,9 +293,16 @@ Use this only to **check your answers**. Keep it covered during all practice.
 
 **20 min**
 
-- [ ] **[7.5 min] Active recall — review S row**
+- [ ] **[7.5 min] Review — All learned kana: A + K + S rows**
 
-  Cover reference table. Write hiragana for each:
+  Cover reference table.
+
+  **Step 1 — Write every learned kana once (random order):**
+  ```
+  so - ka - i - shi - e - ko - sa - u - ki - se - a - su - ke - o - ku
+  ```
+
+  **Step 2 — Drill string:**
   ```
   sa - shi - su - se - so - ka - ki - ku - ke - ko - a - i - u - e - o - so - se - su - shi - sa - ko - ke - ku - ki - ka
   sa - ka - shi - ki - su - ku - se - ke - so - ko - a - sa - i - shi - u - su - e - se - o - so - sa - shi - su - se - so
@@ -316,13 +337,20 @@ Use this only to **check your answers**. Keep it covered during all practice.
 
 **20 min**
 
-- [ ] **[7.5 min] Active recall — review T row**
+- [ ] **[7.5 min] Review — All learned kana: A + K + S + T rows**
 
-  Cover reference table. Write hiragana for each:
+  Cover reference table.
+
+  **Step 1 — Write every learned kana once (random order):**
+  ```
+  to - ka - shi - a - te - ku - sa - chi - i - ke - tsu - so - ta - e - ki - su - o - ko - se - u
+  ```
+
+  **Step 2 — Drill string:**
   ```
   ta - chi - tsu - te - to - sa - shi - su - se - so - ka - ki - ku - ke - ko - a - i - u - e - o
   to - te - tsu - chi - ta - so - se - su - shi - sa - ko - ke - ku - ki - ka - o - e - u - i - a
-  ta - ka - sa - a - chi - ki - shi - i - tsu - ku - su - u - te - ke - se - e - to - ko - so - o - ta - chi - tsu - te - to
+  ta - ka - sa - a - chi - ki - shi - i - tsu - ku - su - u - te - ke - se - e - to - ko - so - o
   ```
   Uncover. Circle wrong. Write each 5×.
 
@@ -354,13 +382,20 @@ Use this only to **check your answers**. Keep it covered during all practice.
 
 **20 min**
 
-- [ ] **[7.5 min] Active recall — review N row**
+- [ ] **[7.5 min] Review — All learned kana: A + K + S + T + N rows**
 
-  Cover reference table. Write hiragana for each:
+  Cover reference table.
+
+  **Step 1 — Write every learned kana once (random order):**
+  ```
+  no - ka - shi - na - te - ku - a - chi - ni - ke - tsu - so - ta - ne - i - su - to - ko - se - nu - e - ki - sa - o - u
+  ```
+
+  **Step 2 — Drill string:**
   ```
   na - ni - nu - ne - no - ta - chi - tsu - te - to - sa - shi - su - se - so - ka - ki - ku - ke - ko - a - i - u - e - o
   no - ne - nu - ni - na - to - te - tsu - chi - ta - so - se - su - shi - sa - ko - ke - ku - ki - ka
-  na - ka - sa - ta - ni - ki - shi - chi - nu - ku - su - tsu - ne - ke - se - te - no - ko - so - to - na - ni - nu - ne - no
+  na - ka - sa - ta - ni - ki - shi - chi - nu - ku - su - tsu - ne - ke - se - te - no - ko - so - to
   ```
   Uncover. Circle wrong. Write each 5×.
 
@@ -392,9 +427,16 @@ Use this only to **check your answers**. Keep it covered during all practice.
 
 **20 min**
 
-- [ ] **[7.5 min] Active recall — review H row**
+- [ ] **[7.5 min] Review — All learned kana: A + K + S + T + N + H rows**
 
-  Cover reference table. Write hiragana for each:
+  Cover reference table.
+
+  **Step 1 — Write every learned kana once (random order):**
+  ```
+  ha - ki - na - tsu - he - a - so - chi - ko - ni - ho - sa - te - ku - no - fu - to - ka - shi - ne - ta - hi - su - o - nu - ke - se - e - i - u
+  ```
+
+  **Step 2 — Drill string:**
   ```
   ha - hi - fu - he - ho - na - ni - nu - ne - no - ta - chi - tsu - te - to - sa - shi - su - se - so - ka - ki - ku - ke - ko
   ho - he - fu - hi - ha - no - ne - nu - ni - na - to - te - tsu - chi - ta - so - se - su - shi - sa
@@ -430,13 +472,20 @@ Use this only to **check your answers**. Keep it covered during all practice.
 
 **20 min**
 
-- [ ] **[7.5 min] Active recall — review M row**
+- [ ] **[7.5 min] Review — All learned kana: A + K + S + T + N + H + M rows**
 
-  Cover reference table. Write hiragana for each:
+  Cover reference table.
+
+  **Step 1 — Write every learned kana once (random order):**
+  ```
+  ma - ki - na - tsu - he - a - so - chi - mo - ni - ho - sa - te - ku - no - fu - to - ka - mu - ne - ta - hi - su - o - nu - ke - me - mi - se - e - i - u - ha - ko - shi
+  ```
+
+  **Step 2 — Drill string:**
   ```
   ma - mi - mu - me - mo - ha - hi - fu - he - ho - na - ni - nu - ne - no - ta - chi - tsu - te - to - sa - shi - su - se - so - ka - ki - ku - ke - ko
   mo - me - mu - mi - ma - ho - he - fu - hi - ha - no - ne - nu - ni - na - to - te - tsu - chi - ta
-  ma - ha - na - ka - mi - hi - ni - ki - mu - fu - nu - ku - me - he - ne - ke - mo - ho - no - ko - ma - mi - mu - me - mo
+  ma - ha - na - ka - mi - hi - ni - ki - mu - fu - nu - ku - me - he - ne - ke - mo - ho - no - ko
   ```
   Uncover. Circle wrong. Write each 5×.
 
@@ -466,13 +515,20 @@ Use this only to **check your answers**. Keep it covered during all practice.
 
 **20 min**
 
-- [ ] **[7.5 min] Active recall — review Y row**
+- [ ] **[7.5 min] Review — All learned kana: A + K + S + T + N + H + M + Y rows**
 
-  Cover reference table. Write hiragana for each:
+  Cover reference table.
+
+  **Step 1 — Write every learned kana once (random order):**
+  ```
+  ya - ku - na - tsu - he - a - so - chi - mo - ni - ho - sa - yu - ke - no - fu - to - ka - mu - ne - ta - hi - su - o - nu - ko - me - mi - se - e - yo - i - ha - ki - shi - ma - u - te
+  ```
+
+  **Step 2 — Drill string:**
   ```
   ya - yu - yo - ma - mi - mu - me - mo - ha - hi - fu - he - ho - na - ni - nu - ne - no - ta - chi - tsu - te - to
   yo - yu - ya - mo - me - mu - mi - ma - ho - he - fu - hi - ha - no - ne - nu - ni - na
-  ya - ma - na - ha - ka - yu - mi - ni - hi - ki - yo - mu - nu - fu - ku - ya - me - ne - he - ke - yu - mo - no - ho - yo - ko - so - to
+  ya - ma - na - ha - ka - yu - mi - ni - hi - ki - yo - mu - nu - fu - ku - me - ne - he - ke - mo - no - ho - ko - so - to
   ```
   Uncover. Circle wrong. Write each 5×.
 
@@ -504,13 +560,20 @@ Use this only to **check your answers**. Keep it covered during all practice.
 
 **20 min**
 
-- [ ] **[7.5 min] Active recall — review R row**
+- [ ] **[7.5 min] Review — All learned kana: A + K + S + T + N + H + M + Y + R rows**
 
-  Cover reference table. Write hiragana for each:
+  Cover reference table.
+
+  **Step 1 — Write every learned kana once (random order):**
+  ```
+  ya - ku - na - tsu - he - a - ro - so - chi - mo - ni - ho - sa - yu - ke - no - fu - to - ka - mu - ne - ta - hi - su - o - nu - ko - me - ri - mi - se - e - yo - i - ha - ki - shi - ma - u - te - ra - ru - re
+  ```
+
+  **Step 2 — Drill string:**
   ```
   ra - ri - ru - re - ro - ya - yu - yo - ma - mi - mu - me - mo - ha - hi - fu - he - ho - na - ni - nu - ne - no
   ro - re - ru - ri - ra - yo - yu - ya - mo - me - mu - mi - ma - ho - he - fu - hi - ha - no - ne - nu - ni - na
-  ra - ya - ma - na - ha - ri - mi - ni - hi - ru - mu - nu - fu - re - me - ne - he - ro - mo - no - ho - ra - ri - ru - re - ro
+  ra - ya - ma - na - ha - ri - mi - ni - hi - ru - mu - nu - fu - re - me - ne - he - ro - mo - no - ho - ko - so - to
   ```
   Uncover. Circle wrong. Write each 5×.
 
