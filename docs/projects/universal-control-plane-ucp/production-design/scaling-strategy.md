@@ -27,20 +27,189 @@ resources. Tenant-based sharding produces uneven distribution by definition.
 
 ## Starting Topology
 
-UCP starts with **two clusters from day one** — Platform and Ops. 
+UCP starts with **two clusters from day one** — Platform and Ops.
 
 ```
-Platform Cluster
-  API server, Temporal Server, Platform DB, Secret Manager (TBD), Temporal workers, KEDA
-
-Ops Cluster
-  Crossplane core, Provider pods, ESO
+JPE Region
+┌─────────────────────────────┐
+│  Platform Cluster           │
+│  (multi-AZ/DC)              │
+│                             │
+│  ┌─────────────────────┐    │
+│  │     API Server      │    │
+│  └─────────────────────┘    │
+│  ┌─────────────────────┐    │
+│  │     Platform DB     │    │
+│  └─────────────────────┘    │
+│  ┌─────────────────────┐    │
+│  │   Temporal Server   │    │
+│  └─────────────────────┘    │         ┌─────────────────────────────┐
+│  ┌─────────────────────┐    │         │  Ops Cluster                │
+│  │    Temporal DB      │    │         │  (multi-AZ/DC)              │
+│  └─────────────────────┘    │         │                             │
+│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
+│  │  Temporal Workers   │─────────────→│  │     Crossplane      │    │
+│  └─────────────────────┘    │         │  └─────────────────────┘    │
+│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
+│  │       KEDA          │    │         │  │    Provider Pods    │────────→ Cloud Platform(s)
+│  └─────────────────────┘    │         │  └─────────────────────┘    │
+│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
+│  │  Redis (shared      │    │         │  │        ESO          │    │
+│  │  cache)             │    │         │  └─────────────────────┘    │
+│  └─────────────────────┘    │         └─────────────────────────────┘
+│  ┌─────────────────────┐    │
+│  │  Secret Manager     │    │
+│  │      (TBD)          │    │
+│  └─────────────────────┘    │
+└─────────────────────────────┘
 ```
 
 Temporal Server and Temporal workers both live on the Platform cluster. Ops cluster
 CPU and memory are reserved exclusively for Crossplane provider pods. Temporal
 workers call Ops cluster K8s APIs cross-cluster via kubeconfig — the same pattern
 the API server uses for XR operations.
+
+Redis serves as the shared cache for the ring, cluster memory state, and other
+runtime data — ensuring all API server pods see consistent state.
+
+---
+
+## Scaling Levels
+
+### Level 1 — Single Ops Cluster
+
+**Entry condition:** Initial deployment.
+
+**Configuration:**
+
+```
+JPE Region
+┌─────────────────────────────┐
+│  Platform Cluster           │
+│  (multi-AZ/DC)              │
+│                             │
+│  ┌─────────────────────┐    │
+│  │     API Server      │    │
+│  └─────────────────────┘    │
+│  ┌─────────────────────┐    │
+│  │     Platform DB     │    │
+│  └─────────────────────┘    │
+│  ┌─────────────────────┐    │
+│  │   Temporal Server   │    │
+│  └─────────────────────┘    │         ┌─────────────────────────────┐
+│  ┌─────────────────────┐    │         │  Ops Cluster                │
+│  │    Temporal DB      │    │         │  (multi-AZ/DC)              │
+│  └─────────────────────┘    │         │                             │
+│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
+│  │  Temporal Workers   │─────────────→│  │     Crossplane      │    │
+│  └─────────────────────┘    │         │  └─────────────────────┘    │
+│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
+│  │       KEDA          │    │         │  │    Provider Pods    │────────→ Cloud Platform(s)
+│  └─────────────────────┘    │         │  └─────────────────────┘    │
+│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
+│  │  Secret Manager     │    │         │  │        ESO          │    │
+│  │      (TBD)          │    │         │  └─────────────────────┘    │
+│  └─────────────────────┘    │         └─────────────────────────────┘
+└─────────────────────────────┘
+```
+
+**Within-level vertical scaling (exhausted in order before going horizontal):**
+
+| Step | Action | Limit |
+|---|---|---|
+| 1 | Increase provider pod memory limit via DeploymentRuntimeConfig | Node capacity |
+| 2 | Add larger nodes to Ops cluster | Available node sizes (CaaS physical limit or cost) |
+| 3 | Vertical scaling exhausted → move to Level 2 | — |
+
+Memory pressure at 70% on any provider pod is a **leading indicator** to start
+preparing Level 2 — not an immediate trigger to act.
+
+**Exit trigger:**
+
+> Provider pod memory limit cannot be increased further without exceeding available
+> node capacity, or node upgrade is not operationally viable.
+
+**Replication:**
+
+| Component | Strategy |
+|---|---|
+| Provider pods | 2 replicas, leader election — standby takes over in < 30s |
+| Crossplane core | 2 replicas, leader election |
+| Ops cluster nodes | Multi-AZ via PodAntiAffinity |
+| etcd | Managed control plane (GKE) or 3-node HA (CaaS) |
+
+**Failure scenarios:**
+
+| Failure | Impact | Recovery |
+|---|---|---|
+| Provider pod dies | Standby takes over, < 30s gap | Automatic |
+| Single node dies | Pods reschedule to healthy nodes | Automatic, minutes |
+| AZ goes down | Surviving AZs continue | Automatic |
+| Entire Ops cluster down | Management paused, cloud resources unaffected | Manual — re-apply from Platform DB desired state |
+
+---
+
+### Level 2 — Multiple Ops Clusters
+
+**Entry condition:** Level 1 exit trigger met — vertical scaling on the single Ops
+cluster is exhausted.
+
+**What changes:** A second Ops cluster is added. Resources are redistributed across
+both clusters using the even redistribution formula. Each subsequent Ops cluster
+addition follows the same pattern — triggered by the same exit condition, with
+migration scope determined by the current memory distribution, not a fixed fraction.
+
+**Configuration:**
+
+```
+JPE Region
+┌─────────────────────────────┐         ┌─────────────────────────────┐
+│  Platform Cluster           │    ┌───→│  Ops Cluster 1              │
+│  (multi-AZ/DC)              │    │    │  (multi-AZ/DC)              │
+│                             │    │    │                             │
+│  [ same as Level 1 ]        │    │    │  ┌─────────────────────┐    │
+│                             │    │    │  │     Crossplane      │    │
+│  ┌─────────────────────┐    │    │    │  └─────────────────────┘    │
+│  │  Temporal Workers   │─────────┤    │  ┌─────────────────────┐    │
+│  └─────────────────────┘    │    │    │  │    Provider Pods    │──────┐
+│                             │    │    │  └─────────────────────┘    │ │
+└─────────────────────────────┘    │    │  ┌─────────────────────┐    │ │
+                                   │    │  │        ESO          │    │ │
+                                   │    │  └─────────────────────┘    │ │
+                                   │    └─────────────────────────────┘ │
+                                   │    ┌─────────────────────────────┐ │
+                                   └───→│  Ops Cluster 2              │ ├──→ Cloud Platform(s)
+                                        │  (multi-AZ/DC)              │ │
+                                        │                             │ │
+                                        │  ┌─────────────────────┐    │ │
+                                        │  │     Crossplane      │    │ │
+                                        │  └─────────────────────┘    │ │
+                                        │  ┌─────────────────────┐    │ │
+                                        │  │    Provider Pods    │──────┘
+                                        │  └─────────────────────┘    │
+                                        │  ┌─────────────────────┐    │
+                                        │  │        ESO          │    │
+                                        │  └─────────────────────┘    │
+                                        └─────────────────────────────┘
+                                                    ... Ops Cluster N
+```
+
+**Exit trigger:** Same as Level 1 — any provider pod on any Ops cluster hitting
+memory pressure after vertical scaling is exhausted. Add another Ops cluster and
+repeat.
+
+**Replication:** Same per cluster as Level 1. Each Ops cluster is independent —
+failure on one does not affect the others.
+
+**Failure scenarios:**
+
+| Failure | Impact | Recovery |
+|---|---|---|
+| Provider pod dies on Cluster X | Standby takes over on Cluster X, < 30s | Automatic |
+| Single node dies on Cluster X | Pods reschedule within Cluster X | Automatic, minutes |
+| Entire Ops Cluster X goes down | Only resources on Cluster X affected — all other clusters continue normally | Re-apply from Platform DB desired state to replacement cluster |
+
+---
 
 ---
 
@@ -696,145 +865,6 @@ sequenceDiagram
 Cloud resources continue running throughout — they are not affected by UCP control
 plane failure. The failover restores management capability, not the cloud resources
 themselves.
-
----
-
-## Scaling Levels
-
-### Level 1 — Single Ops Cluster
-
-**Entry condition:** Initial deployment.
-
-**Configuration:**
-
-```
-JPE Region
-┌─────────────────────────────┐
-│  Platform Cluster           │
-│  (multi-AZ/DC)              │
-│                             │
-│  ┌─────────────────────┐    │
-│  │     API Server      │    │
-│  └─────────────────────┘    │
-│  ┌─────────────────────┐    │
-│  │     Platform DB     │    │
-│  └─────────────────────┘    │
-│  ┌─────────────────────┐    │
-│  │   Temporal Server   │    │
-│  └─────────────────────┘    │         ┌─────────────────────────────┐
-│  ┌─────────────────────┐    │         │  Ops Cluster                │
-│  │    Temporal DB      │    │         │  (multi-AZ/DC)              │
-│  └─────────────────────┘    │         │                             │
-│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
-│  │  Temporal Workers   │─────────────→│  │     Crossplane      │    │
-│  └─────────────────────┘    │         │  └─────────────────────┘    │
-│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
-│  │       KEDA          │    │         │  │    Provider Pods    │────────→ Cloud Platform(s)
-│  └─────────────────────┘    │         │  └─────────────────────┘    │
-│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
-│  │  Secret Manager     │    │         │  │        ESO          │    │
-│  │      (TBD)          │    │         │  └─────────────────────┘    │
-│  └─────────────────────┘    │         └─────────────────────────────┘
-└─────────────────────────────┘
-```
-
-**Within-level vertical scaling (exhausted in order before going horizontal):**
-
-| Step | Action | Limit |
-|---|---|---|
-| 1 | Increase provider pod memory limit via DeploymentRuntimeConfig | Node capacity |
-| 2 | Add larger nodes to Ops cluster | Available node sizes (CaaS physical limit or cost) |
-| 3 | Vertical scaling exhausted → move to Level 2 | — |
-
-Memory pressure at 70% on any provider pod is a **leading indicator** to start
-preparing Level 2 — not an immediate trigger to act.
-
-**Exit trigger:**
-
-> Provider pod memory limit cannot be increased further without exceeding available
-> node capacity, or node upgrade is not operationally viable.
-
-**Replication:**
-
-| Component | Strategy |
-|---|---|
-| Provider pods | 2 replicas, leader election — standby takes over in < 30s |
-| Crossplane core | 2 replicas, leader election |
-| Ops cluster nodes | Multi-AZ via PodAntiAffinity |
-| etcd | Managed control plane (GKE) or 3-node HA (CaaS) |
-
-**Failure scenarios:**
-
-| Failure | Impact | Recovery |
-|---|---|---|
-| Provider pod dies | Standby takes over, < 30s gap | Automatic |
-| Single node dies | Pods reschedule to healthy nodes | Automatic, minutes |
-| AZ goes down | Surviving AZs continue | Automatic |
-| Entire Ops cluster down | Management paused, cloud resources unaffected | Manual — re-apply from Platform DB desired state |
-
----
-
-### Level 2 — Multiple Ops Clusters
-
-**Entry condition:** Level 1 exit trigger met — vertical scaling on the single Ops
-cluster is exhausted.
-
-**What changes:** A second Ops cluster is added. Resources are redistributed across
-both clusters using the even redistribution formula. Each subsequent Ops cluster
-addition follows the same pattern — triggered by the same exit condition, with
-migration scope determined by the current memory distribution, not a fixed fraction.
-
-**Configuration:**
-
-```
-JPE Region
-┌─────────────────────────────┐         ┌─────────────────────────────┐
-│  Platform Cluster           │    ┌───→│  Ops Cluster 1              │
-│  (multi-AZ/DC)              │    │    │  (multi-AZ/DC)              │
-│                             │    │    │                             │
-│  [ same as Level 1 ]        │    │    │  ┌─────────────────────┐    │
-│                             │    │    │  │     Crossplane      │    │
-│  ┌─────────────────────┐    │    │    │  └─────────────────────┘    │
-│  │  Temporal Workers   │─────────┤    │  ┌─────────────────────┐    │
-│  └─────────────────────┘    │    │    │  │    Provider Pods    │──────┐
-│                             │    │    │  └─────────────────────┘    │ │
-└─────────────────────────────┘    │    │  ┌─────────────────────┐    │ │
-                                   │    │  │        ESO          │    │ │
-                                   │    │  └─────────────────────┘    │ │
-                                   │    └─────────────────────────────┘ │
-                                   │    ┌─────────────────────────────┐ │
-                                   └───→│  Ops Cluster 2              │ ├──→ Cloud Platform(s)
-                                        │  (multi-AZ/DC)              │ │
-                                        │                             │ │
-                                        │  ┌─────────────────────┐    │ │
-                                        │  │     Crossplane      │    │ │
-                                        │  └─────────────────────┘    │ │
-                                        │  ┌─────────────────────┐    │ │
-                                        │  │    Provider Pods    │──────┘
-                                        │  └─────────────────────┘    │
-                                        │  ┌─────────────────────┐    │
-                                        │  │        ESO          │    │
-                                        │  └─────────────────────┘    │
-                                        └─────────────────────────────┘
-                                                    ... Ops Cluster N
-```
-
-**Exit trigger:** Same as Level 1 — any provider pod on any Ops cluster hitting
-memory pressure after vertical scaling is exhausted. Add another Ops cluster and
-repeat.
-
-**Replication:** Same per cluster as Level 1. Each Ops cluster is independent —
-failure on one does not affect the others.
-
-**Failure scenarios:**
-
-| Failure | Impact | Recovery |
-|---|---|---|
-| Provider pod dies on Cluster X | Standby takes over on Cluster X, < 30s | Automatic |
-| Single node dies on Cluster X | Pods reschedule within Cluster X | Automatic, minutes |
-| Entire Ops Cluster X goes down | Only resources on Cluster X affected — all other clusters continue normally | Re-apply from Platform DB desired state to replacement cluster |
-
----
 
 ## Open Decisions
 
