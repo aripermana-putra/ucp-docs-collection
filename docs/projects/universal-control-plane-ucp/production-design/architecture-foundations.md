@@ -309,6 +309,9 @@ relying on theoretical thresholds.
 
 ### Scaling strategy
 
+See [Scaling Strategy](scaling-strategy.md) for the full multi-level scaling plan,
+sharding logic, and migration strategy.
+
 The strategy is **measure first, act second**. Tenant count thresholds below are
 indicative only — do not split clusters based on tenant count alone.
 
