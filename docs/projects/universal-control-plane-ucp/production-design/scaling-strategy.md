@@ -11,20 +11,6 @@ sharding logic, migration strategy, and per-level replication and failure handli
 
 ---
 
-## Why Resource Count, Not Tenant Count
-
-The correct scaling indicator is **total MR object count per provider pod**, because:
-
-- Provider pod memory is bounded by the informer cache — it holds all MR objects of
-  its type in memory
-- etcd write pressure scales with MR reconcile frequency × MR count
-- Drift scan load scales with GVR count × MR count
-
-Tenant count is a secondary metric. For example, based on observation, One tenant (CaaS) owns ~51% of all LBaaS
-resources. Tenant-based sharding produces uneven distribution by definition.
-
----
-
 ## Starting Topology
 
 UCP starts with **two clusters from day one** — Platform and Ops.
@@ -74,6 +60,20 @@ runtime data — ensuring all API server pods see consistent state.
 
 ---
 
+## Scaling Indicator
+
+The correct scaling indicator is **total MR object count per provider pod**, because:
+
+- Provider pod memory is bounded by the informer cache — it holds all MR objects of
+  its type in memory
+- etcd write pressure scales with MR reconcile frequency × MR count
+- Drift scan load scales with GVR count × MR count
+
+Tenant count is a secondary metric. For example, based on observation, One tenant (CaaS) owns ~51% of all LBaaS
+resources. Tenant-based sharding produces uneven distribution by definition.
+
+---
+
 ## Scaling Levels
 
 ### Level 1 — Single Ops Cluster
@@ -118,7 +118,7 @@ JPE Region
 | Step | Action | Limit |
 |---|---|---|
 | 1 | Increase provider pod memory limit via DeploymentRuntimeConfig | Node capacity |
-| 2 | Add larger nodes to Ops cluster | Available node sizes (CaaS physical limit or cost) |
+| 2 | Add larger nodes to Ops cluster | Available node sizes (e.g CaaS physical limit or cost) |
 | 3 | Vertical scaling exhausted → move to Level 2 | — |
 
 Memory pressure at 70% on any provider pod is a **leading indicator** to start
