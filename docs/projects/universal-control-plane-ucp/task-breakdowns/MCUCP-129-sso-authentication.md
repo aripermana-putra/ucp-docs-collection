@@ -11,7 +11,7 @@
 
 ## Subtask 1: JWT validation middleware + JIT user provisioning
 **Components:** API Server, Platform DB
-**Blocks:** Subtask 3, Subtask 5, Subtask 6
+**Blocks:** Subtask 2, Subtask 4
 
 ### API Contract
 No new endpoints. Introduces the shared OpenAPI components that all subsequent subtasks depend on.
@@ -25,44 +25,37 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-    sessionCookie:
-      type: apiKey
-      in: cookie
-      name: session
+      description: >
+        Keycloak-issued JWT. Supplied by the CLI after login or via the
+        UCP_TOKEN environment variable for CI/CD use.
 
   responses:
     Unauthorized:
-      description: Missing or invalid authentication
+      description: Missing or invalid authentication token
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     Forbidden:
-      description: Insufficient permissions
+      description: Authenticated but insufficient permissions for this operation
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     BadRequest:
-      description: Invalid request
+      description: Invalid request payload or parameters
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     NotFound:
-      description: Resource not found
+      description: Resource not found or not accessible to the caller
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     InternalError:
-      description: Internal server error
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ErrorResponse"
-    BadGateway:
-      description: Upstream service error
+      description: Unexpected server-side failure
       content:
         application/json:
           schema:
@@ -75,43 +68,59 @@ components:
       properties:
         code:
           type: string
+          description: Machine-readable error code.
           example: UNAUTHENTICATED
         message:
           type: string
+          description: Human-readable description safe to display to the caller.
           example: "No valid session token. Run 'ucp auth login'."
         requestId:
           type: string
           format: uuid
+          description: >
+            Unique identifier for this request. Include this value when
+            reporting an error — it correlates the response with the
+            corresponding server-side log entry.
 ```
 
 ### Implementation
 Implement in `api-server/internal/shared/middleware/`:
 
-- Implement JWT validation middleware for Echo: extract token from `Authorization: Bearer <token>` header or `UCP_TOKEN` env var (env var takes precedence), validate JWT signature against the JWKS endpoint of the matching `identity_providers` record with a 5-minute in-memory TTL cache, extract `sub`, `email`, `preferred_username`, `groups` claims, inject `Principal` into Echo context
-- On first request for a given user: insert a user record via `INSERT ... ON CONFLICT (idp_id, external_id) DO UPDATE` (JIT provisioning)
-- On missing, malformed, or expired token: return `DomainError` with code `UNAUTHENTICATED` and HTTP 401 — routed through Echo's global `HTTPErrorHandler`
-- Implement TLS config at startup: per-endpoint boolean flags (`TLS_SKIP_VERIFY_KEYCLOAK`, `TLS_SKIP_VERIFY_HORIZON`, `TLS_SKIP_VERIFY_OMNIA`) read from env, default `false`. Passed as constructor arguments in `cmd/api-server/main.go` wiring. Log a startup warning when any flag is `true`.
+**JWT validation middleware (Echo middleware, applied to all protected routes):**
+- Extract token from `Authorization: Bearer <token>` header or `UCP_TOKEN` env var (env var takes precedence, for CI/CD use)
+- Keycloak configuration (`KEYCLOAK_ISSUER_URL`, `KEYCLOAK_JWKS_URI`, `KEYCLOAK_CLIENT_ID`) is read from environment variables at startup and passed as constructor arguments — no DB table
+- Validate JWT signature against the configured JWKS URI with a 5-minute in-memory TTL cache
+- On valid token: extract `sub`, `email`, `preferred_username`, `groups` claims → run JIT provisioning → inject `Principal` into Echo context
+- On missing, malformed, or expired token: return `DomainError{Code: "UNAUTHENTICATED", Status: 401}` — routed through Echo's global `HTTPErrorHandler`
 
-> **Open question:** if the DB is unavailable during JIT provisioning, fail closed (HTTP 500) or fail open (proceed without a `Principal`)? Must be decided before MVP.
+**JIT user provisioning (runs on every validated request):**
+
+Every time a JWT is successfully validated, run an upsert to create or refresh the user record:
+
+```sql
+INSERT INTO users (external_id, email, username, display_name)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (external_id)
+DO UPDATE SET
+    email        = EXCLUDED.email,
+    display_name = EXCLUDED.display_name,
+    last_login_at = now(),
+    login_count  = users.login_count + 1,
+    updated_at   = now()
+RETURNING id
+```
+
+The returned `id` is the `user_id` carried in the `Principal` for the rest of the request. It is the foreign key used in every audit log entry — no `user_id` means no audit attribution.
+
+**DB unavailable during JIT provisioning:** fail closed — return `DomainError{Code: "INTERNAL_ERROR", Status: 500}`. Proceeding without a `user_id` would silently produce audit log entries with no attribution, which is a worse outcome than a temporary service interruption.
 
 ### DB Schema
 
 ```mermaid
 erDiagram
-    identity_providers {
-        UUID id PK
-        TEXT name
-        TEXT issuer_url UK
-        TEXT client_id
-        TEXT jwks_uri
-        TEXT env
-        BOOLEAN is_active
-        TIMESTAMPTZ created_at
-    }
     users {
         UUID id PK
-        UUID idp_id FK
-        TEXT external_id
+        TEXT external_id UK
         TEXT email
         TEXT username
         TEXT display_name
@@ -119,26 +128,14 @@ erDiagram
         TIMESTAMPTZ last_login_at
         INT login_count
         TIMESTAMPTZ created_at
+        TIMESTAMPTZ updated_at
+        TIMESTAMPTZ deleted_at
     }
-    identity_providers ||--o{ users : "idp_id"
 ```
 
 ```sql
-CREATE TABLE identity_providers (
-    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    name       TEXT        NOT NULL,
-    issuer_url TEXT        NOT NULL,
-    client_id  TEXT        NOT NULL,
-    jwks_uri   TEXT        NOT NULL,
-    env        TEXT        NOT NULL CHECK (env IN ('dev', 'stg', 'prod')),
-    is_active  BOOLEAN     NOT NULL DEFAULT true,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (issuer_url)
-);
-
 CREATE TABLE users (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    idp_id        UUID        NOT NULL REFERENCES identity_providers(id),
     external_id   TEXT        NOT NULL,
     email         TEXT        NOT NULL,
     username      TEXT        NOT NULL,
@@ -147,11 +144,16 @@ CREATE TABLE users (
     last_login_at TIMESTAMPTZ,
     login_count   INT         NOT NULL DEFAULT 0,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (idp_id, external_id)
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at    TIMESTAMPTZ,
+    UNIQUE (external_id)
 );
 
-CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_email      ON users(email);
+CREATE INDEX idx_users_active     ON users(id) WHERE deleted_at IS NULL;
 ```
+
+> `external_id` is the Keycloak `sub` claim — unique per user across the ROC realm. `status` and `deleted_at` are distinct: `suspended` means temporarily blocked with the record intact; `deleted_at IS NOT NULL` means the account is gone but the row is preserved for audit log attribution.
 
 ---
 
@@ -202,7 +204,7 @@ paths:
             type: string
       responses:
         "302":
-          description: Redirect to app root on success; sets AES-GCM encrypted session cookie (HttpOnly, SameSite=Strict, Secure)
+          description: Login succeeded — redirect to app root with session cookie set (HttpOnly, SameSite=Strict, Secure, AES-GCM encrypted)
           headers:
             Location:
               schema:
@@ -212,16 +214,20 @@ paths:
                 type: string
         "400":
           $ref: "#/components/responses/BadRequest"
-        "502":
-          $ref: "#/components/responses/BadGateway"
+        "503":
+          description: Keycloak is unreachable or failed to exchange the authorization code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 ```
 
 ### Implementation
 Implement in `api-server/internal/auth/`:
 
 - `initiateLogin`: generate PKCE code verifier + challenge, generate state, set HMAC-signed encrypted state cookie, redirect to Keycloak `/authorize`
-- `handleCallback`: validate state cookie, exchange code + PKCE verifier for tokens via Keycloak, validate ID token signature via JWKS, create session record with AES-GCM encrypted tokens, set `HttpOnly + SameSite=Strict + Secure` session cookie, redirect to app root. A new login does **not** invalidate existing sessions — concurrent sessions are allowed in MVP.
-- Session middleware (Echo middleware in `internal/shared/middleware/`): validate session cookie on each request, inject `Principal` into context. On invalid or expired session: return `DomainError` with `UNAUTHENTICATED`.
+- `handleCallback`: validate state cookie, exchange code + PKCE verifier for tokens via Keycloak, validate ID token signature via JWKS, run JIT provisioning (via the shared middleware's upsert), create session record with AES-GCM encrypted tokens, set `HttpOnly + SameSite=Strict + Secure` session cookie, redirect to app root. A new login does **not** invalidate existing sessions — concurrent sessions are allowed in MVP.
+- Session middleware (in `internal/shared/middleware/`): validate session cookie on each request, extract `sub` and `groups` claims from the stored access token, inject `Principal` into context. On invalid or expired session: return `DomainError{Code: "UNAUTHENTICATED", Status: 401}`.
 
 ### DB Schema
 
@@ -294,13 +300,11 @@ Flow: start local callback server on port 18080 → open system browser to Keycl
 **Blocked by:** Subtask 2
 
 ### Implementation
-No new endpoints. Implement audit write inside the `handleCallback` handler (session-based login) and inside the JWT middleware (bearer token first use).
-
-Implement a shared `AuditService` in `api-server/internal/shared/audit/` that writes to `audit_logs`. Inject it as a constructor dependency.
+No new endpoints. Implement a shared `AuditService` in `api-server/internal/shared/audit/` injected as a constructor dependency. Write an `auth.login` entry from inside the `handleCallback` handler (session-based login) and from the JWT middleware on first successful bearer token validation.
 
 | Field | Value |
 |---|---|
-| `user_id` | resolved UCP user UUID |
+| `user_id` | resolved UCP user UUID from JIT provisioning |
 | `action` | `auth.login` |
 | `session_id` | session ID for session-based login; `null` for bearer token |
 | `metadata` | `{}` (ip_address and failure tracking are Phase 2) |
@@ -397,6 +401,5 @@ CREATE INDEX idx_workflow_tokens_user_id ON workflow_offline_tokens(user_id);
 ---
 
 ## Open Questions
-1. **Fail-open vs fail-closed on DB unavailability during JIT provisioning** — must be decided before MVP.
-2. **Offline token `offline_access` scope** — requires ROC Auth team confirmation before Subtask 5 starts.
-3. **Multiple ROC roles for the same service in JWT `groups` claim** — define the correct resolution strategy (e.g. last-parsed, highest role) before MVP.
+1. **Offline token `offline_access` scope** — requires ROC Auth team confirmation before Subtask 5 starts.
+2. **Multiple ROC roles for the same service in JWT `groups` claim** — define the correct resolution strategy (e.g. last-parsed, highest role) before MVP.
