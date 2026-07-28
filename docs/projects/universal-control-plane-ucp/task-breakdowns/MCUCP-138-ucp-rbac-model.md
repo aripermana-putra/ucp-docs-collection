@@ -5,6 +5,8 @@
 
 **Business scope:** All UCP API endpoints enforce a 3-role permission model (`tenant-admin`, `developer`, `viewer`) per tenant. Roles are assigned via ROC Portal. UCP enforces permissions on every request and logs authorization failures. Users can inspect their own role and available operations on any of their tenants.
 
+**Codebase:** monorepo at `ucp-platform/`. Shared permission types and middleware in `api-server/internal/shared/`. Feature slice in `api-server/internal/auth/` for the whoami endpoint. API contract in `api-server/api/openapi.yaml`.
+
 ---
 
 ## Subtask 1: DB — RBAC schema
@@ -49,7 +51,9 @@ erDiagram
     users ||--o{ oc_roles               : "user_id"
 ```
 
-> Note: `oc_tenant_members` has no FK to `users` — it stores all Horizon tenant members regardless of whether they have a UCP account, so the member list works before first login.
+> `oc_tenant_members` has no FK to `users` — it stores all Horizon tenant members regardless of whether they have a UCP account, so the member list works before first login.
+
+> `tenant_rns = '*'` in `tenant_role_assignments` is the sentinel for `platform-admin` (cross-tenant role, never touched by sync).
 
 ```sql
 CREATE TABLE ucp_registered_tenants (
@@ -58,7 +62,6 @@ CREATE TABLE ucp_registered_tenants (
     registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- tenant_rns = '*' is the sentinel for platform-admin (cross-tenant, never touched by sync)
 CREATE TABLE tenant_role_assignments (
     user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     tenant_rns TEXT        NOT NULL,
@@ -70,7 +73,6 @@ CREATE TABLE tenant_role_assignments (
 CREATE INDEX idx_role_assignments_tenant ON tenant_role_assignments(tenant_rns);
 
 -- Populated by login-triggered OC sync (Subtask 4). Not used for access control.
--- Source of truth for OC tenant role and service roles per logged-in user.
 CREATE TABLE oc_roles (
     user_id          UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     tenant_rns       TEXT        NOT NULL,
@@ -80,7 +82,7 @@ CREATE TABLE oc_roles (
     PRIMARY KEY (user_id, tenant_rns)
 );
 
--- All Horizon members per tenant, regardless of UCP login status.
+-- All Horizon members per tenant regardless of UCP login status.
 -- Source for admin contact list in GET /api/v1/me/tenants.
 CREATE TABLE oc_tenant_members (
     tenant_rns   TEXT        NOT NULL,
@@ -97,13 +99,15 @@ CREATE INDEX idx_oc_members_email ON oc_tenant_members(email);
 
 ---
 
-## Subtask 2: `viewer` role + permission bitmask
+## Subtask 2: Permission types and role model
 **Components:** API Server
 **Blocked by:** Subtask 1
 **Blocks:** Subtask 3
 
-### Changes
-- Add `viewer` to `RolePermissions` map: `PermRead` only
+### Implementation
+Implement in `api-server/internal/shared/auth/`:
+
+- Implement permission bitmask types and role-to-permission map:
 
 ```
 viewer:       PermRead
@@ -111,9 +115,7 @@ developer:    PermRead | PermProvision
 tenant-admin: PermRead | PermProvision | PermApprove | PermManage
 ```
 
-- `viewer` passes all `PermRead` gates; returns 403 on `PermProvision`, `PermApprove`, `PermManage`
-- Confirm no existing code paths assume only two tenant-level roles (e.g. role type checks, switch statements)
-- `platform-admin` rows (sentinel `tenant_rns = '*'`) are preserved as-is — managed manually, never touched by any sync
+- `platform-admin` rows (sentinel `tenant_rns = '*'`) are preserved and assignable manually; never touched by any sync. `platform-admin` holds all permissions and passes every permission check regardless of tenant scope.
 
 **Full permission matrix:**
 
@@ -135,40 +137,43 @@ tenant-admin: PermRead | PermProvision | PermApprove | PermManage
 **Blocked by:** Subtask 1, Subtask 2
 **Blocks:** Subtask 5, MCUCP-130 Subtask 1
 
-### Changes
+### Implementation
+Implement in `api-server/internal/shared/middleware/`:
 
-**Role resolution on every request:**
+**Role resolution per request:**
 
-Per request, resolve the caller's UCP role for the target tenant. The source depends on the architectural decision (see Open Questions):
+The role source depends on the architectural decision (see Open Questions):
 
-- **JWT-based:** parse `rns:roc:ucp::{tenant-slug}:roles:{role}` from the JWT `groups` claim directly — no DB call for role lookup
-- **DB-backed:** query `tenant_role_assignments WHERE user_id = $1 AND tenant_rns IN ($tenant, '*')` — at most 2 rows; result cached in request context for the duration of the request
+- **JWT-based:** parse `rns:roc:ucp::{tenant-slug}:roles:{role}` from the JWT `groups` claim directly — no DB call for role lookup at request time
+- **DB-backed:** query `tenant_role_assignments WHERE user_id = $1 AND tenant_rns IN ($tenant, '*')` — at most 2 rows; cache result in request context for the duration of the request
 
 Tenant context is derived from `?tenantId=` query param (GET requests) or `{tenantSlug}` path segment resolved to RNS via DB (mutation requests).
 
-**`RequirePermission(perm)` middleware behavior:**
+**`RequirePermission(perm)` Echo middleware behavior:**
 
 1. Derive tenant from request
 2. Resolve role (JWT or DB per above)
-3. Map role → permission set via `RolePermissions`
-4. If `permissions.Has(perm)` → inject resolved role into request context, call next handler
-5. Else → write authz failure audit log entry → return 403
+3. Map role → permission set via the permission map
+4. If `permissions.Has(perm)` → store resolved role in context, call next handler
+5. Else → write authz failure audit log entry via `AuditService` → return `DomainError` with `FORBIDDEN`
 
-**403 responses:**
+**403 `DomainError` messages:**
 
 When user has no UCP role on the target tenant:
-```json
-{ "code": "FORBIDDEN", "message": "You do not have a UCP role on tenant 'coupon-team'. Contact your tenant-admin to get a role assigned in ROC Portal." }
+```
+code: FORBIDDEN
+message: "You do not have a UCP role on tenant 'coupon-team'. Contact your tenant-admin to get a role assigned in ROC Portal."
 ```
 
-When user has a role but it is insufficient for the operation:
-```json
-{ "code": "FORBIDDEN", "message": "You do not have permission to perform this operation on tenant 'coupon-team'." }
+When user has a role but insufficient permission:
+```
+code: FORBIDDEN
+message: "You do not have permission to perform this operation on tenant 'coupon-team'."
 ```
 
-Both responses are produced in the middleware layer — not per-handler. Audit any existing handlers for inline 403 responses that bypass this format.
+Both are routed through Echo's global `HTTPErrorHandler` — no per-handler error formatting.
 
-**Authz failure audit log entry (written on every 403 from this middleware):**
+**Authz failure audit entry (written on every 403 from this middleware):**
 
 | Field | Value |
 |---|---|
@@ -178,23 +183,22 @@ Both responses are produced in the middleware layer — not per-handler. Audit a
 | `metadata` | `{ "required_permission": "<perm name>" }` |
 | `created_at` | event timestamp |
 
-Uses the `audit_logs` table from MCUCP-129 Subtask 5 — no new table.
+Uses `audit_logs` from MCUCP-129 Subtask 4 — no new table.
 
 ---
 
 ## Subtask 4: Login-triggered OC role sync
 **Components:** API Server, Platform DB
 **Blocked by:** Subtask 1
-**Blocks:** Subtask 3 (DB must be populated for role checks to return correct results)
+**Blocks:** Subtask 3 (DB must be populated for role checks to return correct results if DB-backed approach is chosen)
 
-> **Conditional on DB-backed role resolution being chosen.** If JWT-based approach is adopted, this subtask is not needed for MVP.
+> **Conditional on DB-backed role resolution.** If the JWT-based approach is adopted, this subtask is not needed for MVP.
 
-### Changes
-On every successful OIDC login (in the callback handler), run the OC sync synchronously before the login redirect returns.
+### Implementation
+Implement in `api-server/internal/auth/` as part of the `handleCallback` handler — runs synchronously before the login redirect returns.
 
 **Sync flow:**
-
-1. Parse JWT `groups` claim → extract the logged-in user's own tenant list and OC tenant role (no Horizon call needed for own data)
+1. Parse JWT `groups` claim to extract the logged-in user's own tenant list and OC tenant role (no Horizon call for own data)
 2. For each tenant: `UPSERT oc_roles` with `oc_tenant_role` + `oc_service_roles` (JSONB from JWT service role entries)
 3. Auto-assign `tenant-admin` in `tenant_role_assignments` for OC Tenant Admins on registered tenants (upgrade only — never downgrade a manually-granted higher role)
 4. For each tenant where the logged-in user is an OC Tenant Admin: call `GET /v0/tenants/{rns}/members` (Horizon) to sync all other members into `oc_tenant_members` (required — other users' roles are not in the logged-in user's JWT)
@@ -218,65 +222,89 @@ On every successful OIDC login (in the callback handler), run the OC sync synchr
 **Blocked by:** Subtask 3
 
 ### API Contract
+Add to `api-server/api/openapi.yaml`:
 
-**`GET /api/v1/me/whoami`**
+```yaml
+paths:
+  /api/v1/me/whoami:
+    get:
+      operationId: whoami
+      summary: Return authenticated user's UCP role and permitted operations
+      tags: [auth]
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Tenant slug. If omitted, returns all tenants the user has a role in.
+      responses:
+        "200":
+          description: User role and permitted operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WhoamiResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
-Returns the authenticated user's UCP role and permitted operations. Accessible to any authenticated user regardless of role.
+components:
+  schemas:
+    WhoamiResponse:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        tenants:
+          type: array
+          nullable: true
+          description: Present when ?tenant is not specified
+          items:
+            $ref: "#/components/schemas/TenantRoleItem"
+        tenant:
+          type: string
+          nullable: true
+          description: Present when ?tenant is specified
+        ucpRole:
+          type: string
+          nullable: true
+          enum: [tenant-admin, developer, viewer]
+        permittedOperations:
+          type: array
+          nullable: true
+          items:
+            type: string
 
-| | |
-|---|---|
-| Auth required | Yes (Bearer token or session cookie) |
-| Query params | `tenant` (string, optional — tenant slug) |
-| Request body | None |
-
-**Response `200 OK` — without `?tenant`:**
-```json
-{
-  "email": "taro.rakuten@rakuten.com",
-  "tenants": [
-    {
-      "name": "coupon-team",
-      "rns": "rns:roc:iam::coupon-team",
-      "ucpRole": "developer",
-      "permittedOperations": [
-        "provision & delete resources",
-        "cancel in-progress workflow",
-        "view inventory & cost",
-        "view provisioning history & workflow status",
-        "view quota usage",
-        "view audit log",
-        "view registered GCP projects"
-      ]
-    }
-  ]
-}
+    TenantRoleItem:
+      type: object
+      required: [name, rns, ucpRole, permittedOperations]
+      properties:
+        name:
+          type: string
+        rns:
+          type: string
+        ucpRole:
+          type: string
+          enum: [tenant-admin, developer, viewer]
+        permittedOperations:
+          type: array
+          items:
+            type: string
 ```
 
-**Response `200 OK` — with `?tenant=coupon-team`:**
-```json
-{
-  "email": "taro.rakuten@rakuten.com",
-  "tenant": "coupon-team",
-  "ucpRole": "developer",
-  "permittedOperations": [
-    "provision & delete resources",
-    "cancel in-progress workflow",
-    "view inventory & cost",
-    "view provisioning history & workflow status",
-    "view quota usage",
-    "view audit log",
-    "view registered GCP projects"
-  ]
-}
-```
+### Implementation
+Implement in `api-server/internal/auth/`:
 
-`permittedOperations` is derived at runtime from `RolePermissions` — not hardcoded.
-
-| Status | Condition | Body |
-|---|---|---|
-| `200 OK` | Authenticated | Response above |
-| `404 Not Found` | `?tenant` specified but user has no role there | `{ "code": "NOT_FOUND", "message": "No UCP role found for tenant 'coupon-team'." }` |
-| `401 Unauthorized` | Not authenticated | Standard `UNAUTHENTICATED` body |
+- No permission gate — accessible to any authenticated user
+- `permittedOperations` derived at runtime from the permission map, not hardcoded
+- When `?tenant` is specified and the user has no role on that tenant: return `DomainError` with `NOT_FOUND` (avoids leaking tenant existence to users with no role)
 
 ---
 
@@ -285,18 +313,19 @@ Returns the authenticated user's UCP role and permitted operations. Accessible t
 **Blocked by:** Subtask 5
 
 ### CLI Definition
+Implement in `cli/`. Uses the generated client from `cli/gen/client.gen.go` to call `GET /api/v1/me/whoami`.
 
 ```
 ucp whoami [--tenant <slug>]
 
 FLAGS:
-  --tenant    Tenant slug (optional; if omitted, shows all tenants)
+  --tenant    Tenant slug (optional; if omitted shows all tenants)
 ```
 
 | Outcome | Output |
 |---|---|
-| Without `--tenant` | See table below |
-| With `--tenant`, role found | See detail view below |
+| Without `--tenant` | Table (see below) |
+| With `--tenant`, role found | Detail view (see below) |
 | With `--tenant`, no role | `Error: no UCP role found for tenant 'coupon-team'. Run 'ucp tenants list' to see your tenants.` |
 | Not authenticated | `Error: not authenticated. Run 'ucp auth login'.` |
 
@@ -327,7 +356,7 @@ Permitted operations:
 ---
 
 ## Open Questions
-1. **JWT vs DB role resolution** — most critical decision for this story; must be resolved before Subtask 3 starts. If JWT-based: UCP must be registered in ROC Core Data with `ucp` service roles defined, and Subtask 4 is not needed. If DB-backed: Subtask 4 is required and must complete before Subtask 3.
-2. **`viewer` role in ROC Core Data** — if JWT-based approach: `viewer` must be defined in ROC Core Data before it can be assigned via ROC Portal. Clarify timeline dependency with the ROC team.
-3. **Role staleness window (DB-backed)** — role changes between logins are reflected only at next login. Confirm this is acceptable for MVP or define whether a background sync is needed.
-4. **`platform-admin` in MVP scope** — existing `platform-admin` rows (sentinel `tenant_rns = '*'`) should be preserved and assignable manually. Confirm no MVP features need to actively use this role (Phase 2 platform-level roles are out of scope per PRD-003).
+1. **JWT vs DB role resolution** — most critical decision for this story. If JWT-based: UCP must be registered in ROC Core Data with `ucp` service roles defined, and Subtask 4 is not needed. If DB-backed: Subtask 4 is required and must complete before Subtask 3. Must be resolved before Subtask 3 starts.
+2. **`viewer` role in ROC Core Data** — if JWT-based approach: `viewer` must be defined in ROC Core Data before it can be assigned via ROC Portal. Confirm timeline with the ROC team.
+3. **Role staleness window (DB-backed)** — role changes between logins are reflected only at next login. Confirm this is acceptable for MVP or define whether a background sync is required.
+4. **`platform-admin` in MVP scope** — `platform-admin` rows are preserved and manually assignable. Confirm no MVP feature actively depends on this role (Phase 2 platform-level roles are out of scope per PRD-003).

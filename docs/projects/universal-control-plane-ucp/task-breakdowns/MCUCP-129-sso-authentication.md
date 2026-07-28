@@ -5,24 +5,92 @@
 
 **Business scope:** UCP users log in via ROC Keycloak SSO — no separate UCP account required. Both CLI (interactive PKCE flow) and direct API access (bearer token, for CI/CD) authenticate against the same identity provider. UCP creates a user record on first login for audit attribution, validates every request via JWKS, and logs authentication events.
 
+**Codebase:** monorepo at `ucp-platform/`. Feature slice implementation lives under `api-server/internal/<feature>/`. Shared cross-cutting code lives under `api-server/internal/shared/`. API contract is defined in `api-server/api/openapi.yaml` — server stubs (`api-server/gen/api.gen.go`) and CLI client (`cli/gen/client.gen.go`) are generated from it via `make generate`.
+
 ---
 
 ## Subtask 1: JWT validation middleware + JIT user provisioning
 **Components:** API Server, Platform DB
 **Blocks:** Subtask 3, Subtask 5, Subtask 6
 
-### Changes
-Middleware applied to all protected routes — not a new endpoint.
+### API Contract
+No new endpoints. Introduces the shared OpenAPI components that all subsequent subtasks depend on.
 
-- Extract token from `Authorization: Bearer <token>` header or `UCP_TOKEN` env var (env var takes precedence, for CI/CD use)
-- Validate JWT signature against the JWKS endpoint of the matching `identity_providers` record; cache JWKS with a 5-minute in-memory TTL
-- On valid token: extract `sub`, `email`, `preferred_username`, `groups` claims → inject `Principal` into request context → upsert user record (JIT provisioning via `INSERT ... ON CONFLICT (idp_id, external_id)`)
-- On missing, malformed, or expired token → return HTTP 401
+Add to `api-server/api/openapi.yaml`:
 
-**401 response (all protected routes):**
-```json
-{ "code": "UNAUTHENTICATED", "message": "No valid session token. Run 'ucp auth login'." }
+```yaml
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    BadGateway:
+      description: Upstream service error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [code, message, requestId]
+      properties:
+        code:
+          type: string
+          example: UNAUTHENTICATED
+        message:
+          type: string
+          example: "No valid session token. Run 'ucp auth login'."
+        requestId:
+          type: string
+          format: uuid
 ```
+
+### Implementation
+Implement in `api-server/internal/shared/middleware/`:
+
+- Implement JWT validation middleware for Echo: extract token from `Authorization: Bearer <token>` header or `UCP_TOKEN` env var (env var takes precedence), validate JWT signature against the JWKS endpoint of the matching `identity_providers` record with a 5-minute in-memory TTL cache, extract `sub`, `email`, `preferred_username`, `groups` claims, inject `Principal` into Echo context
+- On first request for a given user: insert a user record via `INSERT ... ON CONFLICT (idp_id, external_id) DO UPDATE` (JIT provisioning)
+- On missing, malformed, or expired token: return `DomainError` with code `UNAUTHENTICATED` and HTTP 401 — routed through Echo's global `HTTPErrorHandler`
+- Implement TLS config at startup: per-endpoint boolean flags (`TLS_SKIP_VERIFY_KEYCLOAK`, `TLS_SKIP_VERIFY_HORIZON`, `TLS_SKIP_VERIFY_OMNIA`) read from env, default `false`. Passed as constructor arguments in `cmd/api-server/main.go` wiring. Log a startup warning when any flag is `true`.
 
 > **Open question:** if the DB is unavailable during JIT provisioning, fail closed (HTTP 500) or fail open (proceed without a `Principal`)? Must be decided before MVP.
 
@@ -87,65 +155,73 @@ CREATE INDEX idx_users_email ON users(email);
 
 ---
 
-## Subtask 2: TLS per-endpoint verification configuration
-**Components:** API Server
-**Blocks:** Subtask 3
-
-### Changes
-- Remove all hardcoded `InsecureSkipVerify: true` across all files
-- Replace with per-endpoint deploy-time env vars (default `false` — verify):
-
-| Env var | Applies to |
-|---|---|
-| `TLS_SKIP_VERIFY_KEYCLOAK` | Keycloak OIDC + JWKS calls |
-| `TLS_SKIP_VERIFY_HORIZON` | Horizon Core Data API calls |
-| `TLS_SKIP_VERIFY_OMNIA` | Omnia service calls |
-
-- Production sets none. STG/QA sets the relevant flags explicitly.
-- Add a startup log warning when any `TLS_SKIP_VERIFY_*` is `true`
-
----
-
-## Subtask 3: API Server login flow (PKCE)
+## Subtask 2: API Server login flow (PKCE)
 **Components:** API Server, Platform DB
-**Blocked by:** Subtask 1, Subtask 2
-**Blocks:** Subtask 5, Subtask 6, MCUCP-220 Subtask 1
+**Blocked by:** Subtask 1
+**Blocks:** Subtask 3, Subtask 4, MCUCP-220 Subtask 1
 
 ### API Contract
+Add to `api-server/api/openapi.yaml`:
 
-**`GET /auth/login`**
+```yaml
+paths:
+  /auth/login:
+    get:
+      operationId: initiateLogin
+      summary: Initiate Keycloak PKCE login flow
+      tags: [auth]
+      responses:
+        "302":
+          description: Redirect to Keycloak authorize endpoint
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              description: HMAC-signed encrypted state cookie
+              schema:
+                type: string
+        "500":
+          $ref: "#/components/responses/InternalError"
 
-Initiates the PKCE flow — redirects the caller to Keycloak.
+  /auth/callback:
+    get:
+      operationId: handleCallback
+      summary: Keycloak OIDC redirect callback
+      tags: [auth]
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to app root on success; sets AES-GCM encrypted session cookie (HttpOnly, SameSite=Strict, Secure)
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+```
 
-| | |
-|---|---|
-| Auth required | No |
-| Response | `302 Found` — `Location: <keycloak-authorize-url>` |
+### Implementation
+Implement in `api-server/internal/auth/`:
 
-Sets an HMAC-signed encrypted state cookie before redirecting.
-
----
-
-**`GET /auth/callback`**
-
-Keycloak redirect target. Exchanges the authorization code for tokens, creates a session, and sets a session cookie.
-
-| | |
-|---|---|
-| Auth required | No |
-| Query params | `code` (string, required), `state` (string, required) |
-
-| Status | Condition | Body / Headers |
-|---|---|---|
-| `302 Found` | Success | `Location: /` — `Set-Cookie: session=<encrypted>; HttpOnly; SameSite=Strict; Secure` |
-| `400 Bad Request` | State cookie mismatch or missing | `{ "code": "BAD_REQUEST", "message": "Invalid or expired state parameter." }` |
-| `502 Bad Gateway` | Keycloak token exchange failure | `{ "code": "UPSTREAM_ERROR", "message": "Failed to exchange authorization code with identity provider." }` |
-
-Session cookie: AES-GCM encrypted tokens, `HttpOnly`, `SameSite=Strict`, `Secure`. A new login does **not** invalidate existing sessions on other devices — concurrent sessions are allowed in MVP.
-
-**Session middleware (applied to all protected routes)**
-
-Validates the session cookie on each request and injects `Principal` into context. On expired or invalid session → standard HTTP 401 response. Token TTL follows ROC Keycloak configuration; UCP does not extend it.
+- `initiateLogin`: generate PKCE code verifier + challenge, generate state, set HMAC-signed encrypted state cookie, redirect to Keycloak `/authorize`
+- `handleCallback`: validate state cookie, exchange code + PKCE verifier for tokens via Keycloak, validate ID token signature via JWKS, create session record with AES-GCM encrypted tokens, set `HttpOnly + SameSite=Strict + Secure` session cookie, redirect to app root. A new login does **not** invalidate existing sessions — concurrent sessions are allowed in MVP.
+- Session middleware (Echo middleware in `internal/shared/middleware/`): validate session cookie on each request, inject `Principal` into context. On invalid or expired session: return `DomainError` with `UNAUTHENTICATED`.
 
 ### DB Schema
 
@@ -187,11 +263,12 @@ CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
 ---
 
-## Subtask 4: CLI login flow
+## Subtask 3: CLI login flow
 **Components:** CLI
 **Blocked by:** Subtask 1
 
 ### CLI Definition
+Implement in `cli/`. This command talks directly to Keycloak — it does not go through the UCP API. No generated client is involved.
 
 ```
 ucp auth login [--server <url>]
@@ -200,7 +277,7 @@ FLAGS:
   --server    UCP server URL (defaults to configured server)
 ```
 
-Flow: starts a local callback server on port 18080 → opens system browser to Keycloak authorize URL → receives authorization code on callback redirect → exchanges code + PKCE verifier for tokens → stores tokens in OS keychain (macOS Keychain, Linux SecretService, Windows Credential Manager) with encrypted JSON fallback at `~/.ucp/credentials`, indexed by server URL.
+Flow: start local callback server on port 18080 → open system browser to Keycloak authorize URL → receive authorization code on redirect → exchange code + PKCE verifier for tokens → store tokens in OS keychain (macOS Keychain, Linux SecretService, Windows Credential Manager) with encrypted JSON fallback at `~/.ucp/credentials`, indexed by server URL.
 
 | Outcome | Output |
 |---|---|
@@ -212,18 +289,20 @@ Flow: starts a local callback server on port 18080 → opens system browser to K
 
 ---
 
-## Subtask 5: Auth login audit logging
+## Subtask 4: Auth login audit logging
 **Components:** API Server, Platform DB
-**Blocked by:** Subtask 1, Subtask 3
+**Blocked by:** Subtask 2
 
-### Changes
-Write an `auth.login` entry to `audit_logs` on every successful login across all authentication paths. Implement via shared helper — not per-handler — to guarantee consistent coverage.
+### Implementation
+No new endpoints. Implement audit write inside the `handleCallback` handler (session-based login) and inside the JWT middleware (bearer token first use).
+
+Implement a shared `AuditService` in `api-server/internal/shared/audit/` that writes to `audit_logs`. Inject it as a constructor dependency.
 
 | Field | Value |
 |---|---|
 | `user_id` | resolved UCP user UUID |
 | `action` | `auth.login` |
-| `session_id` | session ID if session-based; `null` for bearer token |
+| `session_id` | session ID for session-based login; `null` for bearer token |
 | `metadata` | `{}` (ip_address and failure tracking are Phase 2) |
 | `created_at` | event timestamp |
 
@@ -273,18 +352,16 @@ CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at DESC);
 
 ---
 
-## Subtask 6: Offline token flow for Temporal workflows
+## Subtask 5: Offline token flow for Temporal workflows
 **Components:** API Server, Platform DB
-**Blocked by:** Subtask 3
+**Blocked by:** Subtask 2
 
-> **External dependency:** confirm with the ROC Auth team that the UCP Keycloak client allows `offline_access` scope before this subtask starts. If not supported, fall back to storing a regular refresh token and document the accepted risk.
+> **External dependency:** confirm with the ROC Auth team that the UCP Keycloak client allows `offline_access` scope before this subtask starts. If not supported, fall back to a regular refresh token and document the accepted risk.
 
-### Changes
-Temporal provisioning workflows can pause at manual approval gates for hours or days, outliving the user's access token TTL.
+### Implementation
+No new endpoints. Implement inside the workflow submission handler (separate story) as an extension point. Defined here for the DB schema.
 
-- At workflow submission time: request an `offline_access` scoped token from Keycloak and store it in `workflow_offline_tokens` associated with the workflow ID
-- On workflow resume: exchange the offline token for a fresh access token; re-evaluate the user's `groups` claim at resume time. If the user no longer has a role on the tenant, the workflow fails with a clear error surfaced to the tenant-admin
-- On workflow completion or cancellation: revoke the offline token via Keycloak `/logout` and delete the `workflow_offline_tokens` row
+At workflow submission: request `offline_access` scoped token from Keycloak, persist in `workflow_offline_tokens` linked to the workflow ID. On workflow resume: exchange the offline token for a fresh access token and re-evaluate the user's `groups` claim. On workflow completion or cancellation: revoke the offline token via Keycloak `/logout` and delete the row.
 
 ### DB Schema
 
@@ -321,5 +398,5 @@ CREATE INDEX idx_workflow_tokens_user_id ON workflow_offline_tokens(user_id);
 
 ## Open Questions
 1. **Fail-open vs fail-closed on DB unavailability during JIT provisioning** — must be decided before MVP.
-2. **Offline token `offline_access` scope** — requires ROC Auth team confirmation before Subtask 6 starts.
-3. **Multiple ROC roles for the same service in JWT `groups` claim** — last-parsed-wins is the current behavior. Define the correct resolution strategy before MVP.
+2. **Offline token `offline_access` scope** — requires ROC Auth team confirmation before Subtask 5 starts.
+3. **Multiple ROC roles for the same service in JWT `groups` claim** — define the correct resolution strategy (e.g. last-parsed, highest role) before MVP.
