@@ -3,77 +3,94 @@
 **Story:** [MCUCP-220](https://jira.rakuten-it.com/jira/browse/MCUCP-220)
 **Parent task:** MCUCP-263
 
-**Business scope:** Users can log out of their current UCP session and check their current session status from the CLI. Logout invalidates the session server-side via Keycloak. Only the current session is affected — other active sessions on other devices are not invalidated.
+**Business scope:** Users can log out of their current UCP session and check their session status from the CLI. Logout invalidates the session server-side via Keycloak. Only the current session is affected — other active sessions on other devices are not invalidated.
 
 ---
 
-## API Gateway Logout
+## Subtask 1: API Server logout handler + logout audit logging
+**Components:** API Server, Platform DB
+**Blocked by:** MCUCP-129 Subtask 3 (sessions table + login flow), MCUCP-129 Subtask 5 (audit_logs table)
 
-### Logout handler
-Call the Keycloak `/logout` (end-session) endpoint with the current session's refresh token to revoke it server-side. On success: delete the session record from DB and clear both session and state cookies in the response. Return a confirmation message. Only the current session is revoked; other active sessions on other devices continue until their tokens expire naturally.
+### API Contract
 
-> **Note:** After logout, the access token remains valid until its natural expiry (Keycloak-configured TTL — ~10 min in QA). Active revocation of access tokens is not supported by Keycloak and is out of scope. This residual window is the accepted trade-off.
+**`POST /auth/logout`**
 
-### Standard logout response
-Returned to the caller after successful logout:
-```
-Logged out. Session token removed.
-```
-HTTP 200 with cleared cookies. If the session is already expired or not found, return the same response without error — idempotent behavior.
+Revokes the current session server-side and clears the session cookie.
 
----
+| | |
+|---|---|
+| Auth required | Yes (valid session cookie or Bearer token) |
+| Request body | None |
 
-## CLI Logout
+| Status | Condition | Body / Headers |
+|---|---|---|
+| `200 OK` | Session revoked successfully | `{ "message": "Logged out. Session token removed." }` — `Set-Cookie: session=; Max-Age=0` (cleared) |
+| `200 OK` | Session already expired or not found | Same response — idempotent, no error |
+| `401 Unauthorized` | No valid session | Standard `UNAUTHENTICATED` body |
 
-### `ucp auth logout` command
-1. Read stored credentials from OS keychain / `~/.ucp/credentials`
-2. Call Keycloak `/logout` endpoint with the stored refresh token to revoke the session server-side
-3. On success: remove all stored credentials for the current server from the OS keychain / credential file
-4. Print:
-   ```
-   Logged out. Session token removed.
-   ```
-5. If no stored credentials exist: print `Not logged in.` and exit cleanly (no error)
+Flow:
+1. Call Keycloak `/logout` (end-session) endpoint with the current session's refresh token to revoke it server-side
+2. Delete the session record from `sessions`
+3. Write `auth.logout` audit log entry (see below)
+4. Clear session and state cookies in the response
 
-The Keycloak `/logout` endpoint must be called **before** removing local credentials — this ensures the server-side session is revoked even if the credential cleanup fails midway.
+> **Note:** after logout, the access token remains valid until its Keycloak-configured TTL (~10 min in QA). Active access token revocation is not supported by Keycloak and is out of scope. This residual window is the accepted trade-off.
 
----
-
-## Session Status
-
-### `ucp auth status` command
-Read stored credentials from OS keychain / credential file without making any API call.
-
-When logged in:
-```
-Logged in as: taro.rakuten@rakuten.com
-Token expires: 2026-06-17T18:00:00Z (in 6h)
-```
-Display absolute timestamp + human-readable duration from now.
-
-When not logged in or token is expired:
-```
-Not logged in. Run 'ucp auth login' to authenticate.
-```
-Exit 0 in both cases (status check is not an error condition).
-
----
-
-## Audit Logging
-
-### Logout audit events
-Write an `auth.logout` audit log entry on every successful logout (both API Gateway and CLI paths):
+**Audit event written on successful logout:**
 
 | Field | Value |
 |---|---|
-| `user_id` | resolved UCP user ID |
+| `user_id` | resolved UCP user UUID |
 | `action` | `auth.logout` |
-| `timestamp` | event time |
-
-Reuse the same audit log writer/helper established in MCUCP-129 to ensure consistent format.
+| `session_id` | revoked session ID |
+| `created_at` | event timestamp |
 
 ---
 
-## Dependencies
-- Depends on session model and credential storage from **MCUCP-129**
-- Keycloak `/logout` endpoint behavior confirmed: revokes refresh tokens and offline tokens. `/revoke` (RFC 7009) is also valid but `/logout` is preferred as it ends the entire session.
+## Subtask 2: CLI logout command
+**Components:** CLI
+**Blocked by:** Subtask 1
+
+### CLI Definition
+
+```
+ucp auth logout [--server <url>]
+
+FLAGS:
+  --server    UCP server URL (defaults to configured server)
+```
+
+Flow:
+1. Read stored credentials from OS keychain / `~/.ucp/credentials`
+2. Call `POST /auth/logout` with the stored refresh token (Keycloak revocation must happen **before** local credential removal)
+3. Remove all stored credentials for the current server from the OS keychain / credential file
+
+| Outcome | Output |
+|---|---|
+| Success | `Logged out. Session token removed.` |
+| Not logged in (no stored credentials) | `Not logged in.` |
+| API Server unreachable | `Warning: could not reach server to invalidate session. Local credentials removed.`<br>(local credentials are still removed) |
+
+---
+
+## Subtask 3: `ucp auth status` command
+**Components:** CLI
+**Blocked by:** MCUCP-129 Subtask 4 (credential storage format)
+
+### CLI Definition
+
+```
+ucp auth status [--server <url>]
+
+FLAGS:
+  --server    UCP server URL (defaults to configured server)
+```
+
+Reads stored credentials from OS keychain / credential file without making any API call.
+
+| Outcome | Output |
+|---|---|
+| Logged in, token valid | `Logged in as: taro.rakuten@rakuten.com`<br>`Token expires: 2026-06-17T18:00:00Z (in 6h)` |
+| Not logged in or token expired | `Not logged in. Run 'ucp auth login' to authenticate.` |
+
+Exits 0 in both cases — status check is not an error condition. Expiry display shows both absolute ISO timestamp and human-readable duration from now.
