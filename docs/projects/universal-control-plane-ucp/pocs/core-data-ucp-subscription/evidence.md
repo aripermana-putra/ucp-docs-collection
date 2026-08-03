@@ -59,7 +59,9 @@ When UCP is subscribed, the expected entry:
 
 ## JWT `groups` claim
 
-Confirmed format from ROC Keycloak QA (`rns:roc:portal` client):
+Confirmed format from ROC Keycloak QA (`rns:roc:portal` client). Actual test data (raw JWT array, parsed table, Horizon response) is in [poc-report.md](poc-report.md).
+
+### Entry format
 
 ```
 rns:roc:{service}::{tenant-slug}:roles:{role}
@@ -67,10 +69,9 @@ rns:roc:{service}::{tenant-slug}:roles:{role}
 
 | Entry | Meaning |
 |---|---|
-| `rns:roc:iam::clsd-ucp:roles:admin` | Tenant Admin of clsd-ucp |
-| `rns:roc:iam::clsd-ucp:roles:member` | Tenant Member of clsd-ucp (unconfirmed for members) |
-| `rns:roc:dbaas::clsd-ucp:roles:admin` | DBaaS admin in clsd-ucp |
-| `rns:roc:ucp::clsd-ucp:roles:tenant-admin` | UCP tenant-admin in clsd-ucp (expected, not yet tested) |
-| `rns:roc:ucp:::roles:service-provider-admin` | UCP service-provider-admin (team-level role, not tenant-scoped) |
+| `rns:roc:iam::clsd-ucp:roles:admin` | Tenant Admin of clsd-ucp — confirmed present |
+| `rns:roc:iam::clsd-ucp:roles:member` | Tenant Member of clsd-ucp — format assumed, unconfirmed for Tenant Member accounts |
+| `rns:roc:ucp::clsd-ucp:roles:tenant-admin` | UCP tenant-admin in clsd-ucp — expected format, not yet tested (UCP not yet subscribed in test tenant) |
+| `rns:roc:ucp:::roles:service-provider-admin` | UCP service-provider-admin — team-level role, not tenant-scoped; confirmed present in test user's JWT |
 
-When a user has **no role** in a service, that service's entry is **absent** from `groups` — confirmed with DBaaS.
+When a user has **no role** in a service, that service's entry is **absent** from `groups` — confirmed: DBaaS is subscribed in clsd-ucp but absent from the test user's JWT after their DBaaS role was removed.

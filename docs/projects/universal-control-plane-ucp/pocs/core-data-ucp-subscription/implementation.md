@@ -11,6 +11,14 @@ parent_page_id: "../core-data-ucp-subscription.md"
 
 ---
 
+## Source Code
+
+- **Repository:** [aripermana-putra/kitchen-sink](https://github.com/aripermana-putra/kitchen-sink)
+- **File:** `keycloak-session-revoke/main.go` — function `flowUCPSubscriptionDiscovery`
+- **Commit:** `8705d57`
+
+---
+
 ## What Was Built
 
 A Go script in `kitchen-sink/keycloak-session-revoke/main.go` (`flowUCPSubscriptionDiscovery` function) that:

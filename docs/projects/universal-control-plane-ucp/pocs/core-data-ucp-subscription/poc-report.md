@@ -29,6 +29,54 @@ The `ucp_registered_tenants` DB table is not needed.
 | Horizon API accessible with user's Keycloak access token | **PASS** |
 | Subscription status is independent of user role | **PASS — confirmed** |
 
+### Actual JWT `groups` (test run 2026-08-03)
+
+User: `aripermana.putra@rakuten.com` — Tenant Admin of clsd-ucp, DBaaS role removed prior to test.
+
+```json
+[
+  "rns:roc:lbaas::clsd-ucp:roles:lbaas-viewer",
+  "rns:roc:caas::clsd-ucp:roles:admin",
+  "rns:roc:ucp:::roles:service-provider-admin",
+  "rns:roc:bmaas::clsd-ucp:roles:admin",
+  "rns:roc:lbaas::clsd-ucp:roles:lbaas-operator",
+  "rns:roc:iam::clsd-ucp:roles:admin",
+  "rns:roc:cicd-aas::clsd-ucp:roles:admin",
+  "rns:roc:registry-aas::clsd-ucp:roles:admin",
+  "rns:roc:computeapi::clsd-ucp:roles:admin",
+  "rns:roc:staas::clsd-ucp:roles:admin"
+]
+```
+
+No `rns:roc:dbaas::*` entry — DBaaS is subscribed in clsd-ucp but the user has no role. This directly proves that subscription status and user role are decoupled in the JWT.
+
+### Actual Horizon response (clsd-ucp subscriptions)
+
+```json
+{
+  "total_items": 1,
+  "items": [
+    {
+      "name": "clsd-ucp",
+      "rns": "rns:roc:iam::clsd-ucp",
+      "subscriptions": [
+        { "name": "computeapi" },
+        { "name": "caas" },
+        { "name": "lbaas" },
+        { "name": "staas" },
+        { "name": "cicd-aas" },
+        { "name": "billing" },
+        { "name": "dbaas" },
+        { "name": "registry-aas" },
+        { "name": "bmaas" }
+      ]
+    }
+  ]
+}
+```
+
+`dbaas` is in `subscriptions[]` ✓ — `ucp` is not yet subscribed in this tenant.
+
 ---
 
 ## What This PoC Did Not Prove
