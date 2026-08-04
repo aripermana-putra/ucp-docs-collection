@@ -28,6 +28,7 @@ The `ucp_registered_tenants` DB table is not needed.
 | DBaaS absent from JWT `groups` when user has no role | **PASS** (2026-08-03) |
 | UCP appears in `subscriptions[]` when tenant subscribes to UCP | **PASS** (2026-08-04) |
 | No tenant-scoped UCP role in JWT when no role assigned | **PASS** (2026-08-04) |
+| Multiple UCP roles for same tenant all appear as separate JWT entries | **PASS** (2026-08-04) |
 | Horizon API accessible with user's Keycloak access token | **PASS** |
 | Subscription status is independent of user role | **PASS — confirmed** |
 
@@ -51,6 +52,23 @@ User: `aripermana.putra@rakuten.com` — Tenant Admin of clsd-ucp, no UCP tenant
 ```
 
 No `rns:roc:ucp::clsd-ucp:roles:*` entry — clsd-ucp is subscribed to UCP but the user has no tenant-scoped UCP role assigned. `rns:roc:ucp:::roles:service-provider-admin` is the team-level UCP service role (empty tenant slug) — unrelated to tenant user roles.
+
+### JWT `groups` with all 3 UCP roles assigned (test run 2026-08-04)
+
+After assigning `viewer`, `developer`, and `tenant-admin` to the same user in OneCloud:
+
+```json
+[
+  "rns:roc:ucp:::roles:service-provider-admin",
+  "rns:roc:ucp::clsd-ucp:roles:viewer",
+  "rns:roc:ucp::clsd-ucp:roles:developer",
+  "rns:roc:ucp::clsd-ucp:roles:tenant-admin",
+  "rns:roc:iam::clsd-ucp:roles:admin",
+  ... (other services)
+]
+```
+
+All three tenant-scoped roles appear as **separate entries** in the JWT `groups` claim. OneCloud allows multiple roles per service per tenant. The `RequirePermission` middleware must scan **all** matching `rns:roc:ucp::clsd-ucp:roles:*` entries and OR their permission sets together to get the effective permission for the request.
 
 ### Actual Horizon response (clsd-ucp subscriptions, 2026-08-04)
 
