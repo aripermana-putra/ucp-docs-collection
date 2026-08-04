@@ -24,33 +24,35 @@ The `ucp_registered_tenants` DB table is not needed.
 
 | Criterion | Result |
 |---|---|
-| DBaaS appears in `subscriptions[]` when tenant is subscribed but user has no role | **PASS** |
-| DBaaS absent from JWT `groups` when user has no role | **PASS** |
+| DBaaS appears in `subscriptions[]` when tenant is subscribed but user has no role | **PASS** (2026-08-03) |
+| DBaaS absent from JWT `groups` when user has no role | **PASS** (2026-08-03) |
+| UCP appears in `subscriptions[]` when tenant subscribes to UCP | **PASS** (2026-08-04) |
+| No tenant-scoped UCP role in JWT when no role assigned | **PASS** (2026-08-04) |
 | Horizon API accessible with user's Keycloak access token | **PASS** |
 | Subscription status is independent of user role | **PASS — confirmed** |
 
-### Actual JWT `groups` (test run 2026-08-03)
+### Actual JWT `groups` (test run 2026-08-04)
 
-User: `aripermana.putra@rakuten.com` — Tenant Admin of clsd-ucp, DBaaS role removed prior to test.
+User: `aripermana.putra@rakuten.com` — Tenant Admin of clsd-ucp, no UCP tenant role assigned.
 
 ```json
 [
-  "rns:roc:lbaas::clsd-ucp:roles:lbaas-viewer",
-  "rns:roc:caas::clsd-ucp:roles:admin",
-  "rns:roc:ucp:::roles:service-provider-admin",
-  "rns:roc:bmaas::clsd-ucp:roles:admin",
   "rns:roc:lbaas::clsd-ucp:roles:lbaas-operator",
-  "rns:roc:iam::clsd-ucp:roles:admin",
   "rns:roc:cicd-aas::clsd-ucp:roles:admin",
   "rns:roc:registry-aas::clsd-ucp:roles:admin",
+  "rns:roc:lbaas::clsd-ucp:roles:lbaas-viewer",
+  "rns:roc:caas::clsd-ucp:roles:admin",
   "rns:roc:computeapi::clsd-ucp:roles:admin",
+  "rns:roc:ucp:::roles:service-provider-admin",
+  "rns:roc:bmaas::clsd-ucp:roles:admin",
+  "rns:roc:iam::clsd-ucp:roles:admin",
   "rns:roc:staas::clsd-ucp:roles:admin"
 ]
 ```
 
-No `rns:roc:dbaas::*` entry — DBaaS is subscribed in clsd-ucp but the user has no role. This directly proves that subscription status and user role are decoupled in the JWT.
+No `rns:roc:ucp::clsd-ucp:roles:*` entry — clsd-ucp is subscribed to UCP but the user has no tenant-scoped UCP role assigned. `rns:roc:ucp:::roles:service-provider-admin` is the team-level UCP service role (empty tenant slug) — unrelated to tenant user roles.
 
-### Actual Horizon response (clsd-ucp subscriptions)
+### Actual Horizon response (clsd-ucp subscriptions, 2026-08-04)
 
 ```json
 {
@@ -68,21 +70,21 @@ No `rns:roc:dbaas::*` entry — DBaaS is subscribed in clsd-ucp but the user has
         { "name": "billing" },
         { "name": "dbaas" },
         { "name": "registry-aas" },
-        { "name": "bmaas" }
+        { "name": "bmaas" },
+        { "name": "ucp" }
       ]
     }
   ]
 }
 ```
 
-`dbaas` is in `subscriptions[]` ✓ — `ucp` is not yet subscribed in this tenant.
+`ucp` is now in `subscriptions[]` ✓ — full end-to-end scenario confirmed: tenant subscribed to UCP, user has no tenant-scoped UCP role → `ucpRole = null`.
 
 ---
 
 ## What This PoC Did Not Prove
 
-- UCP subscription appearing in `subscriptions[]` — UCP is not yet subscribed in any test tenant. The DBaaS proxy test confirms the pattern but full end-to-end confirmation with `ucp` in the list requires the ROC team to subscribe a tenant to the UCP service.
-- Behavior for Tenant Members (non-admin users) — only tested with a Tenant Admin account.
+- Behavior for Tenant Members (non-admin users) — only tested with a Tenant Admin account. Whether a Tenant Member (not admin) has a `rns:roc:iam::{tenant}:roles:member` entry in their JWT `groups` claim remains unconfirmed.
 
 ---
 
@@ -101,4 +103,4 @@ Data model for the response:
 
 This is one Horizon call per `ucp tenants list` invocation — acceptable for a list command. Not suitable for per-request authorization (MCUCP-138 uses JWT-only for that).
 
-**Open item:** confirm with the ROC team when UCP will be subscribed in the test tenant so the end-to-end flow can be fully verified.
+**Open item:** confirm behavior for Tenant Member accounts — whether `rns:roc:iam::{tenant}:roles:member` appears in their JWT `groups` claim.

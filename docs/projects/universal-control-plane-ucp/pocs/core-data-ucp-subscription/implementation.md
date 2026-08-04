@@ -15,7 +15,7 @@ parent_page_id: "../core-data-ucp-subscription.md"
 
 - **Repository:** [aripermana-putra/kitchen-sink](https://github.com/aripermana-putra/kitchen-sink)
 - **File:** `keycloak-session-revoke/main.go` — function `flowUCPSubscriptionDiscovery`
-- **Commit:** `8705d57`
+- **Commit:** `6937439` (latest — includes UCP subscription re-check run 2026-08-04)
 
 ---
 
