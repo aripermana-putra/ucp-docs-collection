@@ -151,13 +151,36 @@ The range reflects provisioning configuration dependency: self-managed VMs
 
 Year 1 confirmed teams: CaaS, DBaaS, Coupon, RPay
 
+### CaaS resource breakdown (updated from Grafana)
+
+Data sourced from `daichi-prometheus` (BMaaS) and `cortex-caas-prod` (K8S nodes),
+collected 2026-08-12.
+
+| Resource | Count | UCP scope | Source |
+|---|---|---|---|
+| LBaaS instances | ~5,800 | ✓ | Grafana: ~14,539 listeners ÷ 2.5 |
+| VMaaS nodes | 7,017 | ✓ | Grafana: `count(kube_node_labels{label_machine_type="virtual"})` |
+| BMaaS nodes | 13,640 | ✗ Year 1 | Grafana: `count(bmaas_machine_status{status="running", tenant_name="caas"})` |
+| CaaS clusters (service provider) | 160 (130 prod + 30 dev) | ✓ | CaaS Futako DB dashboard |
+
+**CaaS as UCP tenant MR count: ~9,800–12,800 MRs**
+(LBaaS ~5,800 + VMaaS 7,017, with 50% phased import = ~6,400)
+
+> ⚠ **Disclaimer:** This estimate assumes (1) CaaS imports all existing resource
+> metadata into UCP, and (2) VMaaS API (Compute API provider) is working as intended.
+> VMaaS provider is currently WIP in the MVP feature list. Actual Year 1 MR count
+> from CaaS depends on import scope agreed with the CaaS team and VMaaS provider
+> readiness.
+
 | Team | Type | Estimated MRs | Basis |
 |---|---|---|---|
-| CaaS | Service provider | ~5,900 | LBaaS Grafana data: ~5,800 LB instances (50% phased import) + VMaaS estimate |
+| CaaS | Service provider | ~6,400 | LBaaS ~2,900 (50%) + VMaaS ~3,500 (50%) — see disclaimer above |
 | DBaaS | Service provider | ~823 | LBaaS data: ~223 LBs + ~600 VMs for tenant DB hosting |
 | Coupon | Large product team | ~225 | Architecture doc analysis, ~5.5× Budas sample |
 | RPay | Large product team | ~350 | Larger than Coupon, payment service = higher HA requirements, ~9× Budas |
-| **Year 1 Total** | | **~7,300 MRs** | |
+| **Year 1 Total** | | **~7,800 MRs** | |
+
+> If CaaS imports 100% of resources and VMaaS is fully operational: **~13,400 MRs** Year 1.
 
 ---
 
@@ -176,7 +199,7 @@ Year 1 confirmed teams: CaaS, DBaaS, Coupon, RPay
 ## Key Findings
 
 **Resource count is dominated by service provider teams, not user count.**
-CaaS (~5,900 MRs) is ~18× larger than Point team (~330 MRs), which is itself larger
+CaaS (~6,400–13,400 MRs depending on import scope) dominates Year 1. Point team (~330 MRs) is itself larger
 than Coupon (~225 MRs). Headcount is a weak proxy for resource footprint.
 
 **Provisioning throughput is not the bottleneck.**
