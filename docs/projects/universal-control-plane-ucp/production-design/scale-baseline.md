@@ -156,10 +156,14 @@ Year 1 confirmed teams: CaaS, DBaaS, Coupon, RPay
 Data sourced from `daichi-prometheus` (BMaaS) and `cortex-caas-prod` (K8S nodes),
 collected 2026-08-12.
 
+Dashboard references:
+- [CaaS Futako DB](https://monitor.rakuten-it.com/v2/d/SsdfsZofT9BHk/caas-futako-db?orgId=1&var-db=caas-futako-db-prod&var-Service_Segment_Name=All)
+- [CaaS # of Nodes](https://monitor.rakuten-it.com/v2/d/jpnKe4kVz/of-nodes?orgId=1)
+
 | Resource | Count | UCP scope | Source |
 |---|---|---|---|
 | LBaaS instances | ~5,800 | ✓ | Grafana: ~14,539 listeners ÷ 2.5 |
-| VMaaS nodes | 7,017 | ✓ | Grafana: `count(kube_node_labels{label_machine_type="virtual"})` |
+| VMaaS nodes | 7,017 | ✓ | Grafana: `count(kube_node_labels{label_machine_type="virtual"})` — CaaS # of Nodes dashboard |
 | BMaaS nodes | 13,640 | ✗ Year 1 | Grafana: `count(bmaas_machine_status{status="running", tenant_name="caas"})` |
 | CaaS clusters (service provider) | 160 (130 prod + 30 dev) | ✓ | CaaS Futako DB dashboard |
 
