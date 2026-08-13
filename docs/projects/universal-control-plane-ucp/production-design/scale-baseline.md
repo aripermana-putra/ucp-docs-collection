@@ -227,10 +227,11 @@ different times. Each operation involves at most 2 clusters and as few as 1-2 no
 generating ~50 UCP operations per event. Recurring maintenance is not a meaningful
 spike for component sizing.
 
-The real one-time spike is the **initial bulk import** when CaaS first onboards:
-~12,000+ operations (7,017 VMaaS + ~5,800 LBaaS) submitted together. This is a
-one-time event and can be rate-limited at import time. It drives Crossplane and
-Temporal sizing more than the API server.
+A potential one-time spike could occur if CaaS does a **bulk import** of existing
+resources at onboarding (~12,000+ operations). However this depends entirely on
+the onboarding strategy — CaaS may import incrementally, selectively, or not import
+existing resources at all and only manage new ones going forward. If bulk import
+happens, it can be rate-limited at import time.
 
 Note: spike analysis covers MVP scope only (create/delete/update operations).
 In-place operational tasks (stop/start/restart, patching) are out of MVP scope.
