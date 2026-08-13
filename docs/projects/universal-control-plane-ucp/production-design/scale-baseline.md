@@ -179,7 +179,7 @@ Dashboard references:
 | Team | Type | Estimated MRs | Basis |
 |---|---|---|---|
 | CaaS | Service provider | ~6,400 | LBaaS ~2,900 (50%) + VMaaS ~3,500 (50%) — see disclaimer above |
-| DBaaS | Service provider | ~823 | LBaaS data: ~223 LBs + ~600 VMs for tenant DB hosting |
+| DBaaS | Service provider | ~223–4,949 | LBaaS: ~223 LBs (confirmed). Nodes: 4,726 (confirmed via `count(node_uname_info)` on cortex-dbaas-prod) but compute type unknown (VMaaS / BMaaS / RIaaS) — pending DBaaS team confirmation |
 | Coupon | Large product team | ~225 | Architecture doc analysis, ~5.5× Budas sample |
 | RPay | Large product team | ~350 | Larger than Coupon, payment service = higher HA requirements, ~9× Budas |
 | **Year 1 Total** | | **~7,800 MRs** | |
