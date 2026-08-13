@@ -220,7 +220,24 @@ Point team runs across 4 clouds. Large product teams have resources on clouds ou
 UCP's Year 1 scope (OCI, Azure), which means some of their existing resources will
 not be under UCP management initially.
 
-**Year 1 total (~7,300 MRs) is stable across estimation approaches.**
+**Recurring maintenance spikes are small and well-spaced.**
+CaaS Slack announcement history (July 2026) shows 24 maintenance operations involving
+cluster/node provisioning in one month — ~0.8 ops/day average, peak 3 ops/day at
+different times. Each operation involves at most 2 clusters and as few as 1-2 nodes,
+generating ~50 UCP operations per event. Recurring maintenance is not a meaningful
+spike for component sizing.
+
+The real one-time spike is the **initial bulk import** when CaaS first onboards:
+~12,000+ operations (7,017 VMaaS + ~5,800 LBaaS) submitted together. This is a
+one-time event and can be rate-limited at import time. It drives Crossplane and
+Temporal sizing more than the API server.
+
+Note: spike analysis covers MVP scope only (create/delete/update operations).
+In-place operational tasks (stop/start/restart, patching) are out of MVP scope.
+As UCP adds operational capabilities in later phases, spike frequency and volume
+may increase.
+
+**Year 1 total (~7,800 MRs) is stable across estimation approaches.**
 Revising product team estimates up (Coupon 200→225, RPay 300→350) changes the total
 by less than 5% because CaaS and DBaaS dominate.
 
