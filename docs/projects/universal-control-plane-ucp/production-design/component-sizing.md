@@ -57,13 +57,64 @@ scaled out.
 
 ## Temporal Server
 
-*To be sized.*
+| Service | CPU request | CPU limit | Mem request | Mem limit | Replicas (Y1) | Replicas (Y5) |
+|---|---|---|---|---|---|---|
+| Frontend | 250m | 500m | 256Mi | 512Mi | 2 | 3 |
+| History | 500m | 1000m | 512Mi | 1Gi | 2 | 4 |
+| Matching | 250m | 500m | 256Mi | 512Mi | 2 | 3 |
+| Internal Worker | 250m | 500m | 256Mi | 512Mi | 2 | 2 |
+
+History shards: 4 Year 1 (2 per instance), 8 Year 5. History is the most memory-intensive
+service — caches active workflow states per shard. Scale by adding replicas (adding shards)
+when History CPU > 70% sustained.
 
 ---
 
 ## Temporal Workers
 
-*To be sized.*
+**Drift scan batch design:** MR list per (GVR, tenant) is chunked into parallel
+ScanTenantActivity tasks of `DRIFT_SCAN_BATCH_SIZE` (default: 100, configurable via
+env var). Prevents whale tenants from blocking concurrency slots for the full scan cycle.
+
+**Task count per scan cycle:**
+```
+Tasks = Σ(MRs per tenant per GVR) ÷ DRIFT_SCAN_BATCH_SIZE
+Year 1: ~500 tasks (CaaS LBaaS alone: 5,800 ÷ 100 = 58 chunks)
+Year 5: ~3,000–5,000 tasks
+```
+
+**Provisioning worker:**
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU request | 100m | 100m |
+| CPU limit | 250m | 500m |
+| Memory request | 256Mi | 256Mi |
+| Memory limit | 512Mi | 512Mi |
+| Replicas | 2 (static) | 5 (static) |
+
+Static replicas — always ready, no cold start. KEDA deferred until provisioning volume
+justifies it (Year 3+).
+
+**Drift worker:**
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU request | 250m | 250m |
+| CPU limit | 500m | 1000m |
+| Memory request | 256Mi | 512Mi |
+| Memory limit | 512Mi | 1Gi |
+| Replicas | 2 (static) | HPA/KEDA 2→20 |
+
+Year 1: 2 static replicas × 10 concurrent = 20 concurrent tasks.
+~500 tasks × ~1s each ÷ 20 concurrent = ~25 seconds per scan cycle. Comfortable within 60s.
+
+KEDA introduced when task count per scan grows beyond what static replicas can complete
+within 60 seconds — expected around Year 3–4 as tenant count and MR count grow.
+
+Worker concurrency config (both workers):
+- `MaxConcurrentWorkflowTaskExecutionSize: 10`
+- `MaxConcurrentActivityTaskExecutionSize: 10`
 
 ---
 

@@ -249,8 +249,7 @@ Sync Standby       (AZ-2)  — RPO < 1 min, automatic failover via Patroni
 Async Read Replica (AZ-3)  — audit log queries and reporting reads
 ```
 
-Patroni manages leader election and automatic failover. pgBouncer handles connection
-pooling. On GCP: Cloud SQL HA with read replica covers this natively with managed ops.
+Patroni manages leader election and automatic failover. On GCP: Cloud SQL HA with read replica covers this natively with managed ops.
 
 **Audit log partitioning:**
 
@@ -615,7 +614,12 @@ DriftScanWorkflow (drift-worker, Operations Cluster)
     dc.Resource(gvr).List(label: drift-protection=true)
     Returns [(tenant=coupon-team, mr=my-postgres)]
   │
-  Phase 2 — parallel per (GVR, tenant):
+  Phase 2 — parallel per (GVR, tenant) chunk:
+  MR list per (GVR, tenant) is split into chunks of DRIFT_SCAN_BATCH_SIZE (default: 100,
+  configurable via env var on drift-worker). Each chunk runs as a separate
+  ScanTenantActivity in parallel, preventing whale tenants (e.g. CaaS with 5,800 LBaaS
+  MRs) from blocking concurrency slots for the entire scan cycle.
+
   ScanTenantActivity(cloudsql, coupon-team, [my-postgres])
     isDrifted(mr): forProvider vs atProvider diff → DRIFTED
     ExecuteWorkflow("DriftApprovalWorkflow", mrFields + xrFields)
