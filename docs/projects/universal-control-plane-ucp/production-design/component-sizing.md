@@ -112,9 +112,37 @@ Year 1: 2 static replicas × 10 concurrent = 20 concurrent tasks.
 KEDA introduced when task count per scan grows beyond what static replicas can complete
 within 60 seconds — expected around Year 3–4 as tenant count and MR count grow.
 
-Worker concurrency config (both workers):
-- `MaxConcurrentWorkflowTaskExecutionSize: 10`
-- `MaxConcurrentActivityTaskExecutionSize: 10`
+**Worker concurrency config (both workers):**
+```go
+workerOptions := worker.Options{
+    MaxConcurrentActivityTaskExecutionSize: 10,
+    MaxConcurrentWorkflowTaskExecutionSize: 10,
+    MaxConcurrentActivityTaskPollers:       2,
+    MaxConcurrentWorkflowTaskPollers:       2,
+}
+```
+
+`MaxConcurrentActivityTaskExecutionSize` controls how many activity goroutines run
+simultaneously per pod. Since ScanTenantActivity is I/O-bound (K8s GET calls),
+goroutines spend most time waiting — higher concurrency does not significantly
+increase CPU.
+
+**Concurrency is the first scaling lever before KEDA:**
+
+| Concurrency per pod | Year 5 scan time (600 chunks, 2 pods, 2s/chunk) |
+|---|---|
+| 10 (default) | 600 ÷ 20 × 2s = **60s** ← borderline |
+| 20 | 600 ÷ 40 × 2s = **30s** ✓ |
+| 50 | 600 ÷ 100 × 2s = **12s** ✓ |
+
+Increase `MaxConcurrentActivityTaskExecutionSize` before reaching for KEDA. The
+trade-off: more concurrent activities = more simultaneous K8s API calls = more load
+on the Ops cluster kube-apiserver. Start at 10, tune up based on observed
+kube-apiserver performance.
+
+**KEDA trigger point:** when queue depth does not return to zero between scan cycles
+(i.e. tasks from scan N are still pending when scan N+1 fires). Expected around
+Year 4-5 depending on MR growth and concurrency tuning.
 
 ---
 
