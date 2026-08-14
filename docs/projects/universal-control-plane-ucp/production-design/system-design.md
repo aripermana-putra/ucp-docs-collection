@@ -494,11 +494,13 @@ approval UI or CLI when a drift event is acknowledged but not immediately action
 | Session cache | Not needed | 1,000 active sessions, indexed PostgreSQL lookup is sub-5ms. Redis adds operational overhead without measurable latency benefit at this scale. |
 | Quota data cache | Not needed | Quota Option D (lazy first-fetch + PostgreSQL, background Temporal refresh for active tenants) achieves <5ms quota reads after the first warm-up. At 100 tenants, a one-time <300ms cold-start is acceptable. |
 | Rate limiting | Not needed | nginx ingress rate limiting is sufficient for 1,000 users. In-memory token bucket in the API server handles burst shaping at this scale. |
+| Hash ring propagation | Not needed at MVP | Hash ring logic is present in code from Day 1 and handles N clusters correctly. At launch with a single Ops cluster, the ring state is static and trivial — API servers load it from Platform DB on startup. Cross-replica propagation is not a problem because the ring does not change until a second cluster is added (Year 3+). At that point, Platform DB polling (30s interval) is sufficient since cluster additions are planned operational events, not real-time changes. Redis is warranted only if propagation latency of polling becomes unacceptable. |
 
-Redis is introduced when tenant count exceeds ~500 active tenants, at which point quota
-check latency from PostgreSQL starts approaching the 200ms budget. At that point,
-introduce Redis as the Option E hot tier (Redis → PostgreSQL → cloud provider) as
-specified in the quota design document.
+Redis is introduced when either: (1) tenant count exceeds ~500 active tenants, at which
+point quota check latency from PostgreSQL starts approaching the 200ms budget — introduce
+Redis as the Option E hot tier (Redis → PostgreSQL → cloud provider) as specified in the
+quota design document; or (2) a second Ops cluster is added and hash ring propagation
+latency across API server replicas becomes a concern. Whichever comes first.
 
 ---
 

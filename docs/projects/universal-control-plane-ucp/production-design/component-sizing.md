@@ -23,7 +23,9 @@ See [Scaling Strategy](scaling-strategy.md) for the full scaling rationale.
 - ~5 peak concurrent users Year 1
 - QPS: negligible average, ~1–5 req/s at peak
 - Stateless, async — returns 202 immediately for provisioning
-- Maintenance spikes: ~50 UCP operations per CaaS event, well within capacity
+- Maintenance spikes: ~50 UCP API calls per CaaS event (unverified estimate — Slack data
+  gives cluster/node count but not nodes-per-cluster touched; see [Scale Baseline](scale-baseline.md));
+  sizing conclusion is insensitive to the exact value
 
 **Pod spec:**
 
@@ -38,7 +40,7 @@ See [Scaling Strategy](scaling-strategy.md) for the full scaling rationale.
 **HPA:**
 - Min: 2 (HA, never scale below)
 - Max: 8
-- Trigger: CPU > 70% or p99 latency > 500ms
+- Trigger: CPU > 70%
 
 **Connection pools per pod:**
 
@@ -46,7 +48,7 @@ See [Scaling Strategy](scaling-strategy.md) for the full scaling rationale.
 |---|---|---|
 | Platform DB (pgx) | 3–5 | Fast queries, low concurrency |
 | Temporal Frontend | 1 | Persistent gRPC, multiplexed |
-| Redis | 2–3 | Cache reads/writes |
+| Redis | — | Not in MVP — deferred until second Ops cluster or ~500 tenants |
 | Ops K8s API | 1 | Persistent, cross-cluster kubeconfig |
 
 **Scale trigger:** add replicas via HPA before touching pod spec. Only bump
@@ -146,7 +148,7 @@ Year 4-5 depending on MR growth and concurrency tuning.
 
 ---
 
-## Crossplane / Ops Cluster
+## Crossplane
 
 **What drives sizing:**
 - Provider pod memory — informer cache holds all MR objects of its type in memory
@@ -154,20 +156,40 @@ Year 4-5 depending on MR growth and concurrency tuning.
 - Crossplane Core — lightweight, manages compositions and functions
 - Function pods — stateless gRPC servers, called during composition pipeline
 
+**Leader election:** All provider pods (Crossplane Core and each sub-provider) run with
+2 replicas and use leader election — only 1 pod actively reconciles at a time. The
+standby holds the lease and is ready to take over immediately on leader failure.
+Both pods maintain the full informer cache, so memory sizing applies to both replicas.
+CPU sizing reflects the active leader's needs; the standby uses negligible CPU.
+
 **MR distribution across providers at Year 1:**
 
-| Provider | Resource types | Estimated MRs |
+| Provider | Resource type | Estimated MRs (Year 1) |
 |---|---|---|
-| provider-roc | LBaaS, VMaaS, DBaaS, STaaS, CaaS clusters | ~6,000–13,000 (50–100% import) |
+| provider-roc-lbaas | LBaaS | ~2,900–5,800 (50–100% CaaS import) + ~223 DBaaS |
+| provider-roc-vmaas | VMaaS | ~3,500–7,017 (50–100% CaaS import) |
+| provider-roc-dbaas | DBaaS | ~223–4,949 (compute type pending confirmation) |
+| provider-roc-staas | STaaS | unknown — assumed small |
+| provider-roc-caas | CaaS clusters | ~160 (130 prod + 30 dev) |
 | provider-upjet-gcp | Cloud SQL, GKE, GCS, GCE | ~100–200 (Coupon GCP only, Year 1) |
 
-**Memory calculation for provider-roc:**
+**Memory calculation per ROC sub-provider:**
+
+provider-roc follows the same sub-provider design as provider-upjet-gcp — one pod per
+resource type, no parent pod. Each sub-provider holds an informer cache only for its
+own resource type.
+
 ```
-6,000 MRs × 10KB = ~60MB informer cache (conservative 50% import)
-13,000 MRs × 10KB = ~130MB informer cache (full import)
-+ Go runtime + overhead = ~50–80MB
-Total: 110–210MB → 512Mi limit gives comfortable headroom
+provider-roc-lbaas:  ~6,000 MRs × 10KB + ~30MB overhead = ~90MB  → 256Mi limit
+provider-roc-vmaas:  ~7,017 MRs × 10KB + ~30MB overhead = ~100MB → 256Mi limit
+provider-roc-dbaas:  ~4,949 MRs × 10KB + ~30MB overhead = ~80MB  → 256Mi limit
+provider-roc-staas:  small (unknown count) + ~30MB        = ~40MB  → 128Mi limit
+provider-roc-caas:   ~160 clusters × 10KB + ~30MB        = ~32MB  → 128Mi limit
 ```
+
+Go runtime overhead applies per pod — total memory is higher than a single combined
+pod, but each sub-provider is independently scalable and isolated. A LBaaS
+reconciliation spike does not affect VMaaS.
 
 **Pod specs:**
 
@@ -181,17 +203,27 @@ Total: 110–210MB → 512Mi limit gives comfortable headroom
 | Memory limit | 512Mi | 1Gi |
 | Replicas | 2 | 2 |
 
-*provider-roc:*
+*ROC sub-providers — heavy (provider-roc-lbaas, provider-roc-vmaas, provider-roc-dbaas):*
 
 | | Year 1 | Year 5 |
 |---|---|---|
-| CPU request | 250m | 500m |
-| CPU limit | 500m | 1000m |
-| Memory request | 256Mi | 1Gi |
-| Memory limit | 512Mi | 2Gi |
+| CPU request | 100m | 250m |
+| CPU limit | 250m | 500m |
+| Memory request | 128Mi | 512Mi |
+| Memory limit | 256Mi | 1Gi |
 | Replicas | 2 | 2 |
 
-Memory limit grows Year 1→5 as MR count grows. Bump via DeploymentRuntimeConfig
+*ROC sub-providers — light (provider-roc-staas, provider-roc-caas):*
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU request | 50m | 100m |
+| CPU limit | 150m | 250m |
+| Memory request | 64Mi | 128Mi |
+| Memory limit | 128Mi | 256Mi |
+| Replicas | 2 | 2 |
+
+Memory limits grow Year 1→5 as MR count grows. Bump via DeploymentRuntimeConfig
 before considering a second Ops cluster.
 
 *GCP sub-providers (per sub-provider):*
@@ -214,32 +246,27 @@ before considering a second Ops cluster.
 | Memory limit | 128Mi | 256Mi |
 | Replicas | 1 | 2 |
 
-*ESO:*
-
-| | Year 1 |
-|---|---|
-| CPU request | 50m |
-| CPU limit | 200m |
-| Memory request | 64Mi |
-| Memory limit | 128Mi |
-| Replicas | 1 |
-
-**Total Ops cluster footprint Year 1:**
+**Total Crossplane footprint Year 1:**
 
 | Component | Pods | Memory (requests) |
 |---|---|---|
 | Crossplane Core | 2 | 512Mi |
-| provider-roc | 2 | 512Mi |
+| provider-roc-lbaas | 2 | 256Mi |
+| provider-roc-vmaas | 2 | 256Mi |
+| provider-roc-dbaas | 2 | 256Mi |
+| provider-roc-staas | 2 | 128Mi |
+| provider-roc-caas | 2 | 128Mi |
 | provider-upjet-gcp parent | 2 | 256Mi |
 | provider-gcp-sql | 2 | 256Mi |
 | provider-gcp-container | 2 | 256Mi |
 | provider-gcp-compute | 2 | 256Mi |
 | provider-gcp-storage | 2 | 256Mi |
 | Functions ×3 | 3 | 192Mi |
-| ESO | 1 | 64Mi |
-| **Total** | **20 pods** | **~2.5Gi** |
+| **Total** | **27 pods** | **~3.2Gi** |
 
-**Recommended Ops cluster node spec:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
+ESO runs on the same cluster but is a separate operator — see [ESO](#eso).
+
+**Recommended node spec for the Ops cluster:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
 
 **Scale trigger:** provider-roc memory > 70% sustained → increase memory limit via
 DeploymentRuntimeConfig. Only add a second Ops cluster when vertical scaling is
@@ -262,11 +289,15 @@ Active users on any given day: 5-10 of 22
 Average API calls per active user: ~3-5
 Total: ~25-50 calls/day
 
-CaaS maintenance (from July 2026 Slack history): ~40 operations/day burst
-Each operation = 1-2 API calls to submit
+Maintenance traffic per tenant (CaaS from Slack history; others estimated by scale):
+  CaaS  (service provider, large):  0.8 events/day × ~50 calls = ~40 calls/day avg
+  DBaaS (service provider, smaller): ~50% of CaaS cadence         = ~20 calls/day avg
+  Coupon (product team, ~225 MRs):  ~4 events/month               =  ~7 calls/day avg
+  RPay  (product team, ~350 MRs):   ~6 events/month               = ~10 calls/day avg
+  Total across all tenants:                                        = ~77 calls/day avg
 
-Peak: ~50-100 calls/hour during CaaS maintenance → ~0.01-0.03 req/s
-Absolute ceiling: ~1-2 req/s during simultaneous maintenance batches
+  ~50 calls/event is an unverified estimate (see scale-baseline.md)
+  Peak (2 tenants with heavy maintenance same day): ~200–300 calls/day → ~0.003 req/s
 ```
 
 API server is sized for **HA, not traffic.** 2 static pods is justified by fault
@@ -285,7 +316,7 @@ Both workers need Platform DB connections — included in connection pool totals
 
 ## Platform DB
 
-**What Platform DB actually stores (from PoC migrations + system design):**
+**What Platform DB stores (MVP implementation — PRD, TRD, and future plan):**
 
 | Table | Size estimate | Notes |
 |---|---|---|
@@ -299,10 +330,12 @@ Both workers need Platform DB connections — included in connection pool totals
 | `resource_cluster_assignments` | ~200 bytes/row | Resource routing (from scaling strategy design) |
 | `cluster_resource_memory` | ~100 bytes/row | N×T rows, for sharding |
 | Desired state (XR spec per resource) | ~5–10KB/row | Full spec.forProvider stored as JSONB |
+| Quota management tables | TBD | Schema not finalized — per-tenant quota definitions and usage tracking |
+| Policy tables | TBD | Schema not finalized — policy rules and assignments per tenant/resource |
 
-**Note:** No RBAC table exists at MVP. No general config table — not needed.
+**Note:** No RBAC table at MVP. Quota and policy storage estimates added once schema is finalized.
 
-Audit log row size derived from actual `audit_logs` table (PoC `db.go` migrations):
+Audit log row size derived from actual `audit_logs` table (MVP `db.go` migrations):
 `id` (UUID 16B) + `user_id` (UUID 16B) + `session_id` (TEXT ~36B) + `action` (TEXT ~25B) +
 `resource` (TEXT ~30B) + `metadata` (JSONB 0–500B) + `ip_address` (TEXT ~20B) +
 `user_agent` (TEXT ~80B) + `created_at` (TIMESTAMPTZ 8B) + PG row overhead (~23B)
@@ -317,17 +350,18 @@ Desired state:
 
 Audit logs (events/day basis):
   Year 1: ~400 events/day
-    - CaaS maintenance: 40 ops × 3 events = 120
-    - Other provisioning: 60 ops × 3 events = 180
+    - CaaS maintenance: ~40 ops/day avg × 3 events = 120
+    - DBaaS/Coupon/RPay maintenance: ~37 ops/day combined × 3 events = 111
     - API interactions: 50 calls × 1 event = 50
     - Drift approvals: ~50
+  (rounds to ~330; using 400 as a conservative ceiling)
   3-year retention: 400 × 365 × 3 × 500B = ~219MB
 
   Year 5: ~10,000 events/day (more teams, more operations)
   3-year retention: 10,000 × 365 × 3 × 500B = ~5.4GB
   With monthly partitioning + archival after 12 months: ~1.8GB active
 
-Other tables (sessions, RBAC, configs, assignments):
+Other tables (sessions, users, tenants, identity_providers, api_exposures, resource_cluster_assignments, cluster_resource_memory):
   ~50MB Year 1, ~200MB Year 5
 
 Total storage:
@@ -337,17 +371,24 @@ Total storage:
 
 **Connections:**
 ```
-API server:          2 pods × 5 connections = 10
-provisioning-worker: 2 pods × 3 connections = 6
-drift-worker:        2 pods × 3 connections = 6
-Total:               ~22 connections
+                     Year 1                      Year 5 (peak)
+API server:          2 pods × 5 = 10             3 pods × 5 = 15
+provisioning-worker: 2 pods × 3 =  6             5 pods × 3 = 15
+drift-worker:        2 pods × 3 =  6             20 pods × 3 = 60  (KEDA peak)
+Total:               ~22                          ~90
 ```
-Well within PostgreSQL default max_connections (100). No pgBouncer needed.
+
+Year 1 is well within PostgreSQL default `max_connections` (100). At Year 5 peak
+(KEDA-scaled drift-worker), raise `max_connections` to 200 — connection overhead is
+~5–10MB RAM per connection, well within the 8GB Year 5 spec. pgBouncer is not needed:
+all clients use pgx persistent connection pools (long-lived), so pgBouncer's benefit
+of amortizing short-lived connection cost does not apply. Revisit only if connection
+count grows beyond ~300.
 
 **Write patterns:**
 - Audit logs: heaviest writer, append-only sequential inserts
 - Desired state writes: on every provisioning (~100/day Year 1)
-- Peak writes: CaaS maintenance burst → ~150 inserts over 30 min = ~0.08 writes/s
+- Peak writes: all-tenant maintenance peak → ~330 audit events concentrated in 30 min = ~0.18 writes/s
 - Average writes: ~0.003 writes/s — extremely low IOPS requirement
 
 **Pod / instance spec:**
@@ -373,16 +414,341 @@ Monthly partition archival (already designed) keeps active table size bounded.
 
 ## Temporal DB
 
-*To be sized.*
+Two PostgreSQL databases on the same instance: `temporal` (default store — execution
+history, task queues, timers, shard membership) and `temporal_visibility` (searchable
+workflow metadata). Single namespace, 7-day retention.
+
+**Retention rationale:** Temporal workflow history is an operational debugging tool,
+not an audit trail. Platform DB audit_logs is the system of record for provisioning
+events. Debugging a failed workflow happens within hours to a few days of the failure —
+7 days covers weekend incidents and slow investigations without accumulating stale
+history. Archival to GCS is available if long-term storage of specific workflows is
+ever needed.
+
+**Storage drivers:**
+
+DriftScanWorkflow dominates. It runs every minute, spawns 500 scan chunk activities
+(Year 1), and each activity carries 100 MR names in its input payload (~2KB/activity).
+
+```
+Per DriftScanWorkflow execution:
+  500 scan activities × ~2.2KB = ~1.1MB
+  10 discovery activities × ~200B = ~2KB
+  Workflow overhead                = ~10KB
+  Total:                           ~1.1MB per execution
+
+7-day retention:
+  60 executions/hour × 24h × 7 days = 10,080 executions
+  10,080 × 1.1MB = ~11GB
+
+Provisioning workflows:
+  ~100/day × 7 days = 700 × ~25KB = ~17MB — negligible
+
+Drift approval workflows:
+  ~70 in 7-day window × ~30KB = ~2MB — negligible
+
+Visibility store:
+  ~10,850 workflow rows × ~2KB = ~22MB — negligible
+
+Total Year 1: ~11GB → provision 50GB
+Total Year 5: drift scan grows to ~5,000 chunks → ~11MB/execution
+  10,080 × 11MB = ~111GB → provision 200GB
+  Enable archival to GCS before Year 3 to contain storage growth.
+
+Note: PostgreSQL TOAST automatically compresses column values > 2KB (applies to
+Temporal history blobs). Actual on-disk size will be lower, but sizing is based on
+uncompressed estimates as the conservative baseline.
+```
+
+**Write rate:**
+```
+DriftScanWorkflow: ~1,532 events/execution × 1 execution/minute ≈ 25 writes/second
+Provisioning:      ~100/day                                      ≈ negligible
+Total:             ~25 writes/second sustained
+```
+
+Significantly more write-intensive than Platform DB (which peaks at ~0.08 writes/s).
+
+**Connections:**
+
+Temporal services connect to both stores. History is the most DB-intensive service.
+
+```
+Year 1 (2 replicas per service, 20 connections each — Temporal default):
+  Frontend ×2:        2 × 20 = 40
+  History ×2:         2 × 20 = 40
+  Matching ×2:        2 × 20 = 40
+  Internal Worker ×2: 2 × 20 = 40
+  Total:              160 connections
+```
+
+Set `max_connections=200` on Temporal DB instance (default 100 is insufficient).
+
+**Pod / instance spec:**
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU | 2 vCPU | 4 vCPU |
+| RAM | 4GB | 8GB |
+| Storage | 50GB SSD | 200GB SSD |
+| Replicas | Primary + Sync Standby | Primary + Sync Standby |
+
+RAM basis: shared_buffers at 1GB (Year 1) buffers active shard data and hot workflow
+history. History service reads workflow state on activity resume — buffer cache hit
+reduces latency on the resume path.
+
+**Scale trigger:** storage > 70% → enable archival to GCS before adding storage.
+At Year 5, drift scan chunk count grows with MR count — archival is the primary lever
+before vertical storage scaling.
 
 ---
 
 ## Redis
 
-*To be sized.*
+Not included in MVP. Hash ring logic is present in code from Day 1 and handles N
+clusters correctly. At launch with a single Ops cluster, the ring state is static —
+API servers load it from Platform DB on startup and no cross-replica propagation
+problem exists. Cluster additions are planned operational events (Year 3+), and
+Platform DB polling (30s interval) is sufficient to propagate ring changes at that
+cadence.
+
+Other proposed uses (session cache, rate limiting) are handled by Platform DB and
+nginx ingress at MVP scale.
+
+Redis is introduced when either:
+- Tenant count exceeds ~500 active tenants → quota cache hot tier
+- A second Ops cluster is added → hash ring propagation across API server replicas
+
+Whichever comes first. See [System Design](../system-design.md) for the full deferral rationale.
 
 ---
 
 ## Others (KEDA, ESO)
 
-*To be sized.*
+### KEDA
+
+KEDA is deferred to Year 3–4. At Year 1 load (~500 scan chunks, 2 static drift-worker
+pods, 10 concurrent activities each), the scan cycle completes in ~25 seconds — well
+within the 60-second budget. Static replicas are the right choice: no cold start,
+predictable behavior, simpler operations.
+
+KEDA is introduced when the task queue depth no longer returns to zero between scan
+cycles — the observable signal that static replicas can no longer keep up. See
+[Temporal Workers](#temporal-workers) for the full concurrency tuning rationale and
+KEDA trigger point.
+
+**When introduced (Year 3–4), installed on the Platform cluster:**
+
+Two components:
+
+| Component | CPU request | CPU limit | Mem request | Mem limit | Replicas |
+|---|---|---|---|---|---|
+| KEDA Operator | 50m | 250m | 64Mi | 256Mi | 2 |
+| KEDA Metrics API Server | 50m | 250m | 64Mi | 256Mi | 2 |
+
+KEDA Operator watches ScaledObjects and adjusts replica counts. Metrics API Server
+exposes Temporal task queue depth as a custom metric to the Kubernetes HPA.
+
+**ScaledObject config for drift-worker:**
+- Scaler: Temporal task queue depth
+- Min replicas: 2
+- Max replicas: 20
+- Target: queue depth per pod ≤ `MaxConcurrentActivityTaskExecutionSize` (10)
+
+---
+
+### ESO
+
+ESO runs on the Ops cluster as a separate operator alongside Crossplane. It watches
+`ExternalSecret` resources and syncs values from GCP Secret Manager into standard
+Kubernetes Secrets that Crossplane ProviderConfigs reference.
+
+**Pod spec:**
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU request | 50m | 50m |
+| CPU limit | 200m | 200m |
+| Memory request | 64Mi | 64Mi |
+| Memory limit | 128Mi | 128Mi |
+| Replicas | 1 | 1 |
+
+ESO is lightweight — it only syncs secrets on a configurable refresh interval (default
+1h). Memory and CPU are insensitive to MR count or tenant count at UCP's scale.
+
+**What ESO does on the Ops cluster:**
+
+ESO syncs secrets from GCP Secret Manager into K8s secrets that Crossplane
+ProviderConfigs reference. Two distinct credential types:
+
+| Provider | What is synced | Sensitivity |
+|---|---|---|
+| provider-roc-* (lbaas, vmaas, dbaas, staas, caas) | ROC/OneCloud API credentials (tokens, keys) | Sensitive — real credentials |
+| provider-upjet-gcp | Tenant GCP project ID + tenant SA email | Metadata — not sensitive credentials |
+
+For provider-upjet-gcp, UCP uses Workload Identity Federation: UCP's GCP Service
+Account impersonates the tenant's GSA at runtime. No SA key is ever stored or exported
+from the tenant's project. The tenant grants UCP's GSA `roles/iam.serviceAccountTokenCreator`
+on their SA — access is revocable by the tenant at any time.
+
+**How ESO authenticates to Secret Manager:**
+
+| Ops cluster deployment | ESO auth to Secret Manager |
+|---|---|
+| GKE | Workload Identity — ESO pod's KSA bound to a GSA with `roles/secretmanager.secretAccessor` |
+| CaaS | GCP Service Account key mounted as a K8s secret — requires key rotation management |
+
+GKE is the preferred deployment target for the Ops cluster because Workload Identity
+eliminates long-lived credentials entirely. On CaaS, the SA key requires manual
+rotation and secure storage.
+
+---
+
+## QA Environment
+
+QA is a separate environment with a separate OneCloud tenant per environment. It runs
+integration tests, automated pipelines, and CI/CD flows — generating significantly more
+provisioning churn than prod BAU.
+
+**Sizing basis:**
+- Resource count: 20–30% of prod (~1,500–2,000 MRs, single Ops cluster)
+- Provisioning rate: 3–4× prod (~300–400 ops/day) as a planning ceiling — QA sees more
+  churn than prod from CI/CD pipelines and e2e tests (which run provision/delete cycles
+  against QA, with a toggle for real vs mock cloud platform APIs). But provisioning rate
+  does not drive any component spec at these volumes. Even at 10× prod (0.01 req/s), no
+  component is constrained by throughput: the API server returns 202 immediately, and 1
+  provisioning-worker pod with 10 concurrent activities handles thousands of provisions
+  per day without saturation. The actual sizing constraint is MR count (informer cache
+  for Crossplane, workflow volume for Temporal DB).
+- HA not required — single replicas for most components; QA disruption is tolerable
+- No sync standby for Platform DB
+
+**Drift scan at QA scale:**
+```
+1,500–2,000 MRs across ~5 GVRs = ~15–20 scan chunks per cycle
+1 drift-worker pod × 10 concurrent activities = 10 concurrent tasks
+~20 chunks × ~1s/chunk ÷ 10 concurrent = ~2 seconds per scan cycle — trivial
+```
+
+### API Server (QA)
+
+| | QA |
+|---|---|
+| CPU request | 50m |
+| CPU limit | 200m |
+| Memory request | 64Mi |
+| Memory limit | 128Mi |
+| Replicas | 1 |
+
+Single replica — no HA requirement. 300–400 ops/day = ~0.004 req/s average; the
+async 202 design means API server is never the bottleneck even at peak test load.
+
+### Temporal Server (QA)
+
+| Service | CPU request | CPU limit | Mem request | Mem limit | Replicas |
+|---|---|---|---|---|---|
+| Frontend | 100m | 250m | 128Mi | 256Mi | 1 |
+| History | 250m | 500m | 256Mi | 512Mi | 1 |
+| Matching | 100m | 250m | 128Mi | 256Mi | 1 |
+| Internal Worker | 100m | 250m | 128Mi | 256Mi | 1 |
+
+History shards: 2 (minimum). Single replicas acceptable — workflow failures in QA
+are tolerable and self-healing on restart.
+
+### Temporal Workers (QA)
+
+**Provisioning worker:**
+
+| | QA |
+|---|---|
+| CPU request | 100m |
+| CPU limit | 250m |
+| Memory request | 128Mi |
+| Memory limit | 256Mi |
+| Replicas | 2 (static) |
+
+2 replicas kept for provisioning worker — not for throughput (1 pod handles thousands
+of provisions/day at this scale), but to avoid a single point of failure during active
+test runs where a pod restart would stall the entire pipeline.
+
+**Drift worker:**
+
+| | QA |
+|---|---|
+| CPU request | 100m |
+| CPU limit | 250m |
+| Memory request | 128Mi |
+| Memory limit | 256Mi |
+| Replicas | 1 (static) |
+
+1 replica sufficient — ~20 scan chunks per cycle completes in seconds at concurrency=10.
+
+### Crossplane (QA)
+
+All providers: 1 replica each.
+
+| Component | CPU request | CPU limit | Mem request | Mem limit |
+|---|---|---|---|---|
+| Crossplane Core | 100m | 250m | 128Mi | 256Mi |
+| provider-roc-lbaas | 50m | 150m | 64Mi | 128Mi |
+| provider-roc-vmaas | 50m | 150m | 64Mi | 128Mi |
+| provider-roc-dbaas | 50m | 150m | 64Mi | 128Mi |
+| provider-roc-staas | 50m | 100m | 32Mi | 64Mi |
+| provider-roc-caas | 50m | 100m | 32Mi | 64Mi |
+| GCP sub-providers (each) | 25m | 50m | 32Mi | 64Mi |
+| Composition Functions (each) | 50m | 100m | 32Mi | 64Mi |
+
+Memory basis: 2,000 MRs ÷ 5 resource types = ~400 MRs per sub-provider × 10KB = ~4MB
+informer cache each. 64–128Mi limits are generous.
+
+### Platform DB (QA)
+
+| | QA |
+|---|---|
+| CPU | 1 vCPU |
+| RAM | 2GB |
+| Storage | 10GB |
+| Replicas | Single instance (no standby) |
+
+Storage: 2,000 MRs × 7.5KB desired state = ~15MB. Audit logs at 400/day × 365 days ×
+12 months × 500B = ~73MB. Total well under 1GB — 10GB provides headroom for test
+data accumulation.
+
+Audit log retention: 12 months (vs 36 months prod). QA audit data has no compliance
+or operational significance.
+
+### Temporal DB (QA)
+
+| | QA |
+|---|---|
+| CPU | 1 vCPU |
+| RAM | 2GB |
+| Storage | 10GB |
+| Replicas | Single instance |
+
+Storage: QA drift scan executions are much smaller than prod — ~20 activities × ~2.2KB
++ overhead ≈ ~45KB/execution. 10,080 executions × 45KB = ~453MB. Well within 10GB.
+7-day retention same as prod — operational debugging window is the same regardless
+of environment.
+
+### Redis (QA)
+
+Not included — deferred alongside prod. Introduced in QA when Redis is added to prod.
+
+### Others — KEDA, ESO (QA)
+
+**KEDA:** Not included — deferred same as prod. Introduced in QA when KEDA is added
+to prod (Year 3–4).
+
+**ESO:**
+
+| | QA |
+|---|---|
+| CPU request | 25m |
+| CPU limit | 100m |
+| Memory request | 32Mi |
+| Memory limit | 64Mi |
+| Replicas | 1 |
+
+Same role as prod — syncs ROC credentials and GCP tenant metadata from Secret Manager
+into K8s secrets. Specs are halved from prod; QA secret sync volume is identical.

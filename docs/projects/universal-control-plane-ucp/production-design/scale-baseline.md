@@ -223,9 +223,19 @@ not be under UCP management initially.
 **Recurring maintenance spikes are small and well-spaced.**
 CaaS Slack announcement history (July 2026) shows 24 maintenance operations involving
 cluster/node provisioning in one month — ~0.8 ops/day average, peak 3 ops/day at
-different times. Each operation involves at most 2 clusters and as few as 1-2 nodes,
-generating ~50 UCP operations per event. Recurring maintenance is not a meaningful
-spike for component sizing.
+different times. Each operation involves at most 2 clusters; the Slack announcements
+mention as few as 1-2 nodes but do not state how many nodes per cluster are touched.
+CaaS averages ~44 VMaaS nodes per cluster, so the actual node count per event is
+unknown. The ~50 UCP API calls per event figure (covering provision submissions, status
+checks, list calls, and session overhead) is an unverified estimate.
+
+CaaS is one of four Year 1 tenants. Other tenants contribute additional maintenance
+traffic estimated by scale relative to CaaS: DBaaS (~20 calls/day), Coupon (~7), RPay
+(~10). Total across all tenants: ~77 calls/day average, ~200–300 on a peak day with
+two tenants doing heavy maintenance simultaneously (~0.003 req/s).
+
+Recurring maintenance is not a meaningful spike for component sizing regardless of
+the exact per-event multiplier.
 
 A potential one-time spike could occur if CaaS does a **bulk import** of existing
 resources at onboarding (~12,000+ operations). However this depends entirely on
