@@ -285,22 +285,28 @@ Both workers need Platform DB connections — included in connection pool totals
 
 ## Platform DB
 
-**What Platform DB stores:**
+**What Platform DB actually stores (from PoC migrations + system design):**
 
-| Data | Size estimate | Notes |
+| Table | Size estimate | Notes |
 |---|---|---|
-| Desired state (XR spec per resource) | ~5–10KB per resource | Full spec.forProvider, all config fields |
-| resource_cluster_assignments | ~200 bytes per row | Routing metadata only |
-| cluster_resource_memory | ~100 bytes per row | N×T rows |
-| Audit logs | ~500 bytes per row | From actual schema: UUID×2 + TEXT fields + JSONB metadata |
-| Sessions | ~100 bytes per row | user_id + sid + timestamps |
-| Users, RBAC, configs | negligible | Small reference tables |
+| `identity_providers` | negligible | OIDC provider config, few rows |
+| `tenants` | negligible | 4 rows Year 1, grows slowly |
+| `users` | ~300 bytes/row | 22 rows Year 1, 324 Year 5 |
+| `sessions` | ~300 bytes/row | ~44 active rows Year 1 (22 users × ~2 sessions) |
+| `audit_logs` | ~400–500 bytes/row | Main growth table — see below |
+| `blueprint_templates` | ~5–50KB/row (JSONB) | ~20–50 templates at MVP = ~1MB total, negligible |
+| `api_exposures` | negligible | Per-tenant API config |
+| `resource_cluster_assignments` | ~200 bytes/row | Resource routing (from scaling strategy design) |
+| `cluster_resource_memory` | ~100 bytes/row | N×T rows, for sharding |
+| Desired state (XR spec per resource) | ~5–10KB/row | Full spec.forProvider stored as JSONB |
 
-Audit log row size derived from actual `audit_logs` table schema (MCUCP-129 TRD):
-`id` (UUID 16B) + `user_id` (UUID 16B) + `request_id` (TEXT ~36B) + `action` (TEXT ~25B) +
-`resource_type` (TEXT ~20B) + `resource_id` (TEXT ~36B) + `tenant_rns` (TEXT ~50B) +
-`metadata` (JSONB 0–500B) + `created_at` (TIMESTAMPTZ 8B) + PG row overhead (~23B)
-= **~230–730B, average ~500B**
+**Note:** No RBAC table exists at MVP. No general config table — not needed.
+
+Audit log row size derived from actual `audit_logs` table (PoC `db.go` migrations):
+`id` (UUID 16B) + `user_id` (UUID 16B) + `session_id` (TEXT ~36B) + `action` (TEXT ~25B) +
+`resource` (TEXT ~30B) + `metadata` (JSONB 0–500B) + `ip_address` (TEXT ~20B) +
+`user_agent` (TEXT ~80B) + `created_at` (TIMESTAMPTZ 8B) + PG row overhead (~23B)
+= **~250–800B, average ~500B**
 
 **Storage calculations:**
 
