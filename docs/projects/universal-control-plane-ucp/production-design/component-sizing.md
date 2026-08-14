@@ -248,9 +248,120 @@ scaling plan.
 
 ---
 
+## API Request Rate
+
+**Basis:** MVP has limited interactive features. Drift detection runs automatically,
+provisioning is infrequent. A DevOps/SRE engineer's typical BAU day with UCP at MVP:
+- Submit provisioning request: ~once a week per person
+- Check workflow status: 2-3 times when something is in-flight
+- Approve drift alert: rare, only when drift is detected
+- List resources: occasional
+
+```
+Active users on any given day: 5-10 of 22
+Average API calls per active user: ~3-5
+Total: ~25-50 calls/day
+
+CaaS maintenance (from July 2026 Slack history): ~40 operations/day burst
+Each operation = 1-2 API calls to submit
+
+Peak: ~50-100 calls/hour during CaaS maintenance → ~0.01-0.03 req/s
+Absolute ceiling: ~1-2 req/s during simultaneous maintenance batches
+```
+
+API server is sized for **HA, not traffic.** 2 static pods is justified by fault
+tolerance, not by load.
+
+**Temporal workers also access Platform DB directly:**
+
+| Worker | Platform DB operations |
+|---|---|
+| provisioning-worker | Read desired state (XR spec), write status, read NotificationConfig, write audit logs |
+| drift-worker | Read resource_cluster_assignments, read NotificationConfig, write audit logs |
+
+Both workers need Platform DB connections — included in connection pool totals.
+
+---
+
 ## Platform DB
 
-*To be sized.*
+**What Platform DB stores:**
+
+| Data | Size estimate | Notes |
+|---|---|---|
+| Desired state (XR spec per resource) | ~5–10KB per resource | Full spec.forProvider, all config fields |
+| resource_cluster_assignments | ~200 bytes per row | Routing metadata only |
+| cluster_resource_memory | ~100 bytes per row | N×T rows |
+| Audit logs | ~500 bytes per row | From actual schema: UUID×2 + TEXT fields + JSONB metadata |
+| Sessions | ~100 bytes per row | user_id + sid + timestamps |
+| Users, RBAC, configs | negligible | Small reference tables |
+
+Audit log row size derived from actual `audit_logs` table schema (MCUCP-129 TRD):
+`id` (UUID 16B) + `user_id` (UUID 16B) + `request_id` (TEXT ~36B) + `action` (TEXT ~25B) +
+`resource_type` (TEXT ~20B) + `resource_id` (TEXT ~36B) + `tenant_rns` (TEXT ~50B) +
+`metadata` (JSONB 0–500B) + `created_at` (TIMESTAMPTZ 8B) + PG row overhead (~23B)
+= **~230–730B, average ~500B**
+
+**Storage calculations:**
+
+```
+Desired state:
+  Year 1: 7,800 resources × 7.5KB avg = ~58MB
+  Year 5: 60,000 resources × 7.5KB avg = ~450MB
+
+Audit logs (events/day basis):
+  Year 1: ~400 events/day
+    - CaaS maintenance: 40 ops × 3 events = 120
+    - Other provisioning: 60 ops × 3 events = 180
+    - API interactions: 50 calls × 1 event = 50
+    - Drift approvals: ~50
+  3-year retention: 400 × 365 × 3 × 500B = ~219MB
+
+  Year 5: ~10,000 events/day (more teams, more operations)
+  3-year retention: 10,000 × 365 × 3 × 500B = ~5.4GB
+  With monthly partitioning + archival after 12 months: ~1.8GB active
+
+Other tables (sessions, RBAC, configs, assignments):
+  ~50MB Year 1, ~200MB Year 5
+
+Total storage:
+  Year 1: ~330MB active → provision 20GB (generous headroom, grows slowly)
+  Year 5: ~2.5GB active → provision 100GB
+```
+
+**Connections:**
+```
+API server:          2 pods × 5 connections = 10
+provisioning-worker: 2 pods × 3 connections = 6
+drift-worker:        2 pods × 3 connections = 6
+Total:               ~22 connections
+```
+Well within PostgreSQL default max_connections (100). No pgBouncer needed.
+
+**Write patterns:**
+- Audit logs: heaviest writer, append-only sequential inserts
+- Desired state writes: on every provisioning (~100/day Year 1)
+- Peak writes: CaaS maintenance burst → ~150 inserts over 30 min = ~0.08 writes/s
+- Average writes: ~0.003 writes/s — extremely low IOPS requirement
+
+**Pod / instance spec:**
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU | 2 vCPU | 4 vCPU |
+| RAM | 4GB | 8GB |
+| Storage | 20GB | 100GB |
+| Replicas | Primary + Sync Standby | Primary + Sync Standby + Async Replica |
+
+RAM basis: PostgreSQL shared_buffers ~25% of RAM. Year 1 active data (~330MB)
+fits entirely in 1GB shared_buffers — 4GB RAM provides comfortable OS and index
+cache headroom. Year 5 with larger dataset needs 8GB.
+
+Async replica added at Year 5 to offload read queries (resource inventory, audit
+log searches) from the primary.
+
+**Scale trigger:** storage > 70% or p99 query latency increases on audit log scans.
+Monthly partition archival (already designed) keeps active table size bounded.
 
 ---
 
