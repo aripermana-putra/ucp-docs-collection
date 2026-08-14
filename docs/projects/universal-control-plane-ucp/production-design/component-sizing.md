@@ -120,7 +120,103 @@ Worker concurrency config (both workers):
 
 ## Crossplane / Ops Cluster
 
-*To be sized.*
+**What drives sizing:**
+- Provider pod memory — informer cache holds all MR objects of its type in memory
+- Provider pod CPU — spikes during reconciliation (bulk operations, drift remediation)
+- Crossplane Core — lightweight, manages compositions and functions
+- Function pods — stateless gRPC servers, called during composition pipeline
+
+**MR distribution across providers at Year 1:**
+
+| Provider | Resource types | Estimated MRs |
+|---|---|---|
+| provider-roc | LBaaS, VMaaS, DBaaS, STaaS, CaaS clusters | ~6,000–13,000 (50–100% import) |
+| provider-upjet-gcp | Cloud SQL, GKE, GCS, GCE | ~100–200 (Coupon GCP only, Year 1) |
+
+**Memory calculation for provider-roc:**
+```
+6,000 MRs × 10KB = ~60MB informer cache (conservative 50% import)
+13,000 MRs × 10KB = ~130MB informer cache (full import)
++ Go runtime + overhead = ~50–80MB
+Total: 110–210MB → 512Mi limit gives comfortable headroom
+```
+
+**Pod specs:**
+
+*Crossplane Core:*
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU request | 250m | 500m |
+| CPU limit | 500m | 1000m |
+| Memory request | 256Mi | 512Mi |
+| Memory limit | 512Mi | 1Gi |
+| Replicas | 2 | 2 |
+
+*provider-roc:*
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU request | 250m | 500m |
+| CPU limit | 500m | 1000m |
+| Memory request | 256Mi | 1Gi |
+| Memory limit | 512Mi | 2Gi |
+| Replicas | 2 | 2 |
+
+Memory limit grows Year 1→5 as MR count grows. Bump via DeploymentRuntimeConfig
+before considering a second Ops cluster.
+
+*GCP sub-providers (per sub-provider):*
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU request | 100m | 250m |
+| CPU limit | 250m | 500m |
+| Memory request | 128Mi | 256Mi |
+| Memory limit | 256Mi | 512Mi |
+| Replicas | 2 | 2 |
+
+*Composition Functions (per function — go-templating, auto-ready, env-configs):*
+
+| | Year 1 | Year 5 |
+|---|---|---|
+| CPU request | 100m | 100m |
+| CPU limit | 250m | 500m |
+| Memory request | 64Mi | 128Mi |
+| Memory limit | 128Mi | 256Mi |
+| Replicas | 1 | 2 |
+
+*ESO:*
+
+| | Year 1 |
+|---|---|
+| CPU request | 50m |
+| CPU limit | 200m |
+| Memory request | 64Mi |
+| Memory limit | 128Mi |
+| Replicas | 1 |
+
+**Total Ops cluster footprint Year 1:**
+
+| Component | Pods | Memory (requests) |
+|---|---|---|
+| Crossplane Core | 2 | 512Mi |
+| provider-roc | 2 | 512Mi |
+| provider-upjet-gcp parent | 2 | 256Mi |
+| provider-gcp-sql | 2 | 256Mi |
+| provider-gcp-container | 2 | 256Mi |
+| provider-gcp-compute | 2 | 256Mi |
+| provider-gcp-storage | 2 | 256Mi |
+| Functions ×3 | 3 | 192Mi |
+| ESO | 1 | 64Mi |
+| **Total** | **20 pods** | **~2.5Gi** |
+
+**Recommended Ops cluster node spec:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
+
+**Scale trigger:** provider-roc memory > 70% sustained → increase memory limit via
+DeploymentRuntimeConfig. Only add a second Ops cluster when vertical scaling is
+exhausted. See [Scaling Strategy](scaling-strategy.md) for the full horizontal
+scaling plan.
 
 ---
 
