@@ -604,6 +604,94 @@ rotation and secure storage.
 
 ---
 
+## Cluster Summary
+
+UCP production infrastructure spans two K8s clusters and two managed PostgreSQL
+instances.
+
+---
+
+### Platform Cluster
+
+Hosts the UCP control plane: API server, Temporal server, and Temporal workers.
+Platform DB and Temporal DB run as managed instances outside this cluster.
+
+**Year 1 workload:**
+
+| Component | Pods | CPU requests | Mem requests |
+|---|---|---|---|
+| API Server | 2 | 200m | 256Mi |
+| Temporal Frontend | 2 | 500m | 512Mi |
+| Temporal History | 2 | 1,000m | 1,024Mi |
+| Temporal Matching | 2 | 500m | 512Mi |
+| Temporal Internal Worker | 2 | 500m | 512Mi |
+| provisioning-worker | 2 | 200m | 512Mi |
+| drift-worker | 2 | 500m | 512Mi |
+| **Total** | **14 pods** | **3,400m** | **3,840Mi** |
+
+**Recommended node spec Year 1:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
+
+```
+Allocatable per node (system reserved ~0.5 vCPU, ~1GB):
+  CPU:    ~3.5 vCPU × 3 = ~10.5 vCPU total
+  Memory: ~7GB × 3      = ~21GB total
+
+vs Year 1 requests: 3.4 vCPU, 3.75GB
+vs Year 1 limits:   ~8.5 vCPU, ~8.5Gi
+Headroom is comfortable for normal operation and burst.
+```
+
+**Year 5 note:** KEDA drift-worker scales to 20 pods (20 × 512Mi = 10Gi requests
+for drift-workers alone). Scale Platform cluster to 5 × (4 vCPU, 16GB) before
+KEDA is introduced, or increase node memory to 16GB at that point.
+
+---
+
+### Ops Cluster
+
+Hosts Crossplane (all sub-providers and composition functions) and ESO.
+
+**Year 1 workload:**
+
+| Component | Pods | CPU requests | Mem requests |
+|---|---|---|---|
+| Crossplane Core | 2 | 500m | 512Mi |
+| provider-roc-lbaas | 2 | 200m | 256Mi |
+| provider-roc-vmaas | 2 | 200m | 256Mi |
+| provider-roc-dbaas | 2 | 200m | 256Mi |
+| provider-roc-staas | 2 | 100m | 128Mi |
+| provider-roc-caas | 2 | 100m | 128Mi |
+| provider-upjet-gcp parent | 2 | 200m | 256Mi |
+| provider-gcp-sql | 2 | 200m | 256Mi |
+| provider-gcp-container | 2 | 200m | 256Mi |
+| provider-gcp-compute | 2 | 200m | 256Mi |
+| provider-gcp-storage | 2 | 200m | 256Mi |
+| Functions ×3 | 3 | 300m | 192Mi |
+| ESO | 1 | 50m | 64Mi |
+| **Total** | **28 pods** | **~2,650m** | **~3,372Mi** |
+
+**Recommended node spec:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
+
+```
+Allocatable: ~10.5 vCPU, ~21GB total
+vs requests: 2.65 vCPU, ~3.3Gi
+Headroom: 4× CPU, 6× memory — accommodates reconciliation bursts and
+informer cache growth as MR count grows toward Year 5.
+```
+
+---
+
+### Managed Instances
+
+| Instance | CPU | RAM | Storage | HA |
+|---|---|---|---|---|
+| Platform DB | 2 vCPU | 4GB | 20GB | Primary + Sync Standby |
+| Temporal DB | 2 vCPU | 4GB | 50GB SSD | Primary + Sync Standby |
+
+Both run as managed PostgreSQL (Cloud SQL or equivalent) — not K8s workloads.
+
+---
+
 ## QA Environment
 
 QA is a separate environment with a separate OneCloud tenant per environment. It runs
