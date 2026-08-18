@@ -7,8 +7,8 @@ parent_page_id: "../production-design.md"
 # Component Sizing
 
 Per-component resource specifications for UCP infrastructure. Sizing is based on
-Year 1 load (~7,800 MRs mid estimate, 22 users) with Year 5 architecture design. See
-[Scale Baseline](scale-baseline.md) for the full range (~7,300–8,000) and rationale.
+Year 1 load (~9,000 MRs mid estimate, 22 users) with Year 5 architecture design. See
+[Scale Baseline](scale-baseline.md) for the full range (~8,600–9,000) and rationale.
 
 **Sizing philosophy:** Deploy lean (Year 1 specs), scale horizontally before
 vertically. Pod spec barely changes Year 1→5 — replica count is what scales.
@@ -81,7 +81,18 @@ env var). Prevents whale tenants from blocking concurrency slots for the full sc
 **Task count per scan cycle:**
 ```
 Tasks = Σ(MRs per tenant per GVR) ÷ DRIFT_SCAN_BATCH_SIZE
-Year 1: ~500 tasks (CaaS LBaaS alone: 5,800 ÷ 100 = 58 chunks)
+
+Year 1 (50% CaaS import + full DBaaS, all confirmed teams):
+  (LBaaS, CaaS):           ~2,900 ÷ 100 = 29 chunks
+  (LBaaS, DBaaS):            ~223 ÷ 100 =  3 chunks
+  (LBaaS, Coupon/RPay):       ~14 ÷ 100 =  1 chunk
+  (VMaaS, CaaS):           ~3,500 ÷ 100 = 35 chunks
+  (VMaaS, DBaaS):          ~1,768 ÷ 100 = 18 chunks
+  (clusters, CaaS):          ~160 ÷ 100 =  2 chunks
+  Others (GCE/GKE/CloudSQL for Coupon, CaaS clusters for Coupon+RPay,
+          DBaaS service instances ~30, STaaS assumed <100):  ~6 chunks
+  Total: ~100 chunks
+
 Year 5: ~3,000–5,000 tasks
 ```
 
@@ -109,7 +120,7 @@ justifies it (Year 3+).
 | Replicas | 2 (static) | HPA/KEDA 2→20 |
 
 Year 1: 2 static replicas × 10 concurrent = 20 concurrent tasks.
-~500 tasks × ~1s each ÷ 20 concurrent = ~25 seconds per scan cycle. Comfortable within 60s.
+~100 chunks × ~1s each ÷ 20 concurrent = ~5 seconds per scan cycle. Comfortable within 60s.
 
 KEDA introduced when task count per scan grows beyond what static replicas can complete
 within 60 seconds — expected around Year 3–4 as tenant count and MR count grow.
@@ -167,8 +178,8 @@ CPU sizing reflects the active leader's needs; the standby uses negligible CPU.
 | Provider | Resource type | Estimated MRs (Year 1) |
 |---|---|---|
 | provider-roc-lbaas | LBaaS | ~2,900–5,800 (50–100% CaaS import) + ~223 DBaaS |
-| provider-roc-vmaas | VMaaS | ~3,500–7,017 (50–100% CaaS import) |
-| provider-roc-dbaas | DBaaS | ~223–4,949 (compute type pending confirmation) |
+| provider-roc-vmaas | VMaaS | ~3,500–7,017 CaaS (50–100% import) + 1,768 DBaaS = ~5,268–8,785 total |
+| provider-roc-dbaas | DBaaS service instances | TBD — represents DBaaS product instances consumed by tenant teams (e.g. MySQL, PostgreSQL instances provisioned via DBaaS API). Distinct from DBaaS's own infrastructure (VMaaS nodes → provider-roc-vmaas, LBaaS → provider-roc-lbaas). Count unknown at Year 1. |
 | provider-roc-staas | STaaS | unknown — assumed small |
 | provider-roc-caas | CaaS clusters | ~160 (130 prod + 30 dev) |
 | provider-upjet-gcp | Cloud SQL, GKE, GCS, GCE | ~100–200 (Coupon GCP only, Year 1) |
@@ -181,8 +192,8 @@ own resource type.
 
 ```
 provider-roc-lbaas:  ~6,000 MRs × 10KB + ~30MB overhead = ~90MB  → 256Mi limit
-provider-roc-vmaas:  ~7,017 MRs × 10KB + ~30MB overhead = ~100MB → 256Mi limit
-provider-roc-dbaas:  ~4,949 MRs × 10KB + ~30MB overhead = ~80MB  → 256Mi limit
+provider-roc-vmaas:  ~8,785 MRs × 10KB + ~30MB overhead = ~118MB → 256Mi limit  (CaaS 7,017 + DBaaS 1,768)
+provider-roc-dbaas:  count TBD (DBaaS service instances, not infrastructure nodes) → 256Mi limit as placeholder
 provider-roc-staas:  small (unknown count) + ~30MB        = ~40MB  → 128Mi limit
 provider-roc-caas:   ~160 clusters × 10KB + ~30MB        = ~32MB  → 128Mi limit
 ```
@@ -345,7 +356,7 @@ Audit log row size derived from actual `audit_logs` table (MVP `db.go` migration
 
 ```
 Desired state:
-  Year 1: 7,800 resources × 7.5KB avg = ~58MB
+  Year 1: 9,000 resources × 7.5KB avg = ~68MB
   Year 5: 60,000 resources × 7.5KB avg = ~450MB
 
 Audit logs (events/day basis):
@@ -427,19 +438,19 @@ ever needed.
 
 **Storage drivers:**
 
-DriftScanWorkflow dominates. It runs every minute, spawns 500 scan chunk activities
+DriftScanWorkflow dominates. It runs every minute, spawns ~100 scan chunk activities
 (Year 1), and each activity carries 100 MR names in its input payload (~2KB/activity).
 
 ```
 Per DriftScanWorkflow execution:
-  500 scan activities × ~2.2KB = ~1.1MB
+  100 scan activities × ~2.2KB = ~220KB
   10 discovery activities × ~200B = ~2KB
-  Workflow overhead                = ~10KB
-  Total:                           ~1.1MB per execution
+  Workflow overhead               = ~10KB
+  Total:                          ~232KB per execution
 
 7-day retention:
   60 executions/hour × 24h × 7 days = 10,080 executions
-  10,080 × 1.1MB = ~11GB
+  10,080 × 232KB = ~2.3GB
 
 Provisioning workflows:
   ~100/day × 7 days = 700 × ~25KB = ~17MB — negligible
@@ -450,7 +461,7 @@ Drift approval workflows:
 Visibility store:
   ~10,850 workflow rows × ~2KB = ~22MB — negligible
 
-Total Year 1: ~11GB → provision 50GB
+Total Year 1: ~2GB → provision 20GB
 Total Year 5: drift scan grows to ~5,000 chunks → ~11MB/execution
   10,080 × 11MB = ~111GB → provision 200GB
   Enable archival to GCS before Year 3 to contain storage growth.
@@ -462,7 +473,7 @@ uncompressed estimates as the conservative baseline.
 
 **Write rate:**
 ```
-DriftScanWorkflow: ~1,532 events/execution × 1 execution/minute ≈ 25 writes/second
+DriftScanWorkflow: (100+10) activities × 3 events + 2 lifecycle = 332 events/execution ÷ 60s ≈ ~6 writes/second
 Provisioning:      ~100/day                                      ≈ negligible
 Total:             ~25 writes/second sustained
 ```
@@ -490,7 +501,7 @@ Set `max_connections=200` on Temporal DB instance (default 100 is insufficient).
 |---|---|---|
 | CPU | 2 vCPU | 4 vCPU |
 | RAM | 4GB | 8GB |
-| Storage | 50GB SSD | 200GB SSD |
+| Storage | 20GB SSD | 100GB SSD |
 | Replicas | Primary + Sync Standby | Primary + Sync Standby |
 
 RAM basis: shared_buffers at 1GB (Year 1) buffers active shard data and hot workflow
@@ -604,94 +615,6 @@ rotation and secure storage.
 
 ---
 
-## Cluster Summary
-
-UCP production infrastructure spans two K8s clusters and two managed PostgreSQL
-instances.
-
----
-
-### Platform Cluster
-
-Hosts the UCP control plane: API server, Temporal server, and Temporal workers.
-Platform DB and Temporal DB run as managed instances outside this cluster.
-
-**Year 1 workload:**
-
-| Component | Pods | CPU requests | Mem requests |
-|---|---|---|---|
-| API Server | 2 | 200m | 256Mi |
-| Temporal Frontend | 2 | 500m | 512Mi |
-| Temporal History | 2 | 1,000m | 1,024Mi |
-| Temporal Matching | 2 | 500m | 512Mi |
-| Temporal Internal Worker | 2 | 500m | 512Mi |
-| provisioning-worker | 2 | 200m | 512Mi |
-| drift-worker | 2 | 500m | 512Mi |
-| **Total** | **14 pods** | **3,400m** | **3,840Mi** |
-
-**Recommended node spec Year 1:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
-
-```
-Allocatable per node (system reserved ~0.5 vCPU, ~1GB):
-  CPU:    ~3.5 vCPU × 3 = ~10.5 vCPU total
-  Memory: ~7GB × 3      = ~21GB total
-
-vs Year 1 requests: 3.4 vCPU, 3.75GB
-vs Year 1 limits:   ~8.5 vCPU, ~8.5Gi
-Headroom is comfortable for normal operation and burst.
-```
-
-**Year 5 note:** KEDA drift-worker scales to 20 pods (20 × 512Mi = 10Gi requests
-for drift-workers alone). Scale Platform cluster to 5 × (4 vCPU, 16GB) before
-KEDA is introduced, or increase node memory to 16GB at that point.
-
----
-
-### Ops Cluster
-
-Hosts Crossplane (all sub-providers and composition functions) and ESO.
-
-**Year 1 workload:**
-
-| Component | Pods | CPU requests | Mem requests |
-|---|---|---|---|
-| Crossplane Core | 2 | 500m | 512Mi |
-| provider-roc-lbaas | 2 | 200m | 256Mi |
-| provider-roc-vmaas | 2 | 200m | 256Mi |
-| provider-roc-dbaas | 2 | 200m | 256Mi |
-| provider-roc-staas | 2 | 100m | 128Mi |
-| provider-roc-caas | 2 | 100m | 128Mi |
-| provider-upjet-gcp parent | 2 | 200m | 256Mi |
-| provider-gcp-sql | 2 | 200m | 256Mi |
-| provider-gcp-container | 2 | 200m | 256Mi |
-| provider-gcp-compute | 2 | 200m | 256Mi |
-| provider-gcp-storage | 2 | 200m | 256Mi |
-| Functions ×3 | 3 | 300m | 192Mi |
-| ESO | 1 | 50m | 64Mi |
-| **Total** | **28 pods** | **~2,650m** | **~3,372Mi** |
-
-**Recommended node spec:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
-
-```
-Allocatable: ~10.5 vCPU, ~21GB total
-vs requests: 2.65 vCPU, ~3.3Gi
-Headroom: 4× CPU, 6× memory — accommodates reconciliation bursts and
-informer cache growth as MR count grows toward Year 5.
-```
-
----
-
-### Managed Instances
-
-| Instance | CPU | RAM | Storage | HA |
-|---|---|---|---|---|
-| Platform DB | 2 vCPU | 4GB | 20GB | Primary + Sync Standby |
-| Temporal DB | 2 vCPU | 4GB | 50GB SSD | Primary + Sync Standby |
-
-Both run as managed PostgreSQL (Cloud SQL or equivalent) — not K8s workloads.
-
----
-
 ## QA Environment
 
 QA is a separate environment with a separate OneCloud tenant per environment. It runs
@@ -699,7 +622,7 @@ integration tests, automated pipelines, and CI/CD flows — generating significa
 provisioning churn than prod BAU.
 
 **Sizing basis:**
-- Resource count: 20–30% of prod (~1,500–2,000 MRs, single Ops cluster)
+- Resource count: 20–30% of prod (~1,800–2,700 MRs, single Ops cluster). DBaaS staging data (VMaaS 160 in scope) confirms staging environments are typically much leaner than 20–30% of prod (~9% for DBaaS VMaaS). The range is a planning ceiling.
 - Provisioning rate: 3–4× prod (~300–400 ops/day) as a planning ceiling — QA sees more
   churn than prod from CI/CD pipelines and e2e tests (which run provision/delete cycles
   against QA, with a toggle for real vs mock cloud platform APIs). But provisioning rate
@@ -713,9 +636,9 @@ provisioning churn than prod BAU.
 
 **Drift scan at QA scale:**
 ```
-1,500–2,000 MRs across ~5 GVRs = ~15–20 scan chunks per cycle
+~1,800–2,700 MRs across ~5 GVRs = ~20–30 scan chunks per cycle
 1 drift-worker pod × 10 concurrent activities = 10 concurrent tasks
-~20 chunks × ~1s/chunk ÷ 10 concurrent = ~2 seconds per scan cycle — trivial
+~30 chunks × ~1s/chunk ÷ 10 concurrent = ~3 seconds per scan cycle — trivial
 ```
 
 ### API Server (QA)
@@ -814,8 +737,8 @@ or operational significance.
 | Storage | 10GB |
 | Replicas | Single instance |
 
-Storage: QA drift scan executions are much smaller than prod — ~20 activities × ~2.2KB
-+ overhead ≈ ~45KB/execution. 10,080 executions × 45KB = ~453MB. Well within 10GB.
+Storage: QA drift scan executions are small — ~20 activities × ~2.2KB + overhead
+≈ ~45KB/execution. 10,080 executions × 45KB = ~453MB. Well within 10GB.
 7-day retention same as prod — operational debugging window is the same regardless
 of environment.
 
@@ -840,3 +763,278 @@ to prod (Year 3–4).
 
 Same role as prod — syncs ROC credentials and GCP tenant metadata from Secret Manager
 into K8s secrets. Specs are halved from prod; QA secret sync volume is identical.
+
+---
+
+## Staging Environment
+
+Staging is a pre-production environment for validating UCP changes before prod deployment.
+It manages actual staging resources of tenant teams — sized closer to prod than QA.
+DB standby is required to support failover testing.
+
+**Sizing basis:**
+- Resource count: ~30–40% of prod (~2,500–3,500 MRs). DBaaS staging confirmed at 160
+  VMaaS in scope; CaaS staging unknown — range is an estimate pending CaaS staging data.
+- HA: DB requires async standby (failover testing). K8s components run 2 replicas for
+  prod-like behaviour but on fewer nodes (2 vs 3).
+- Node spec matches prod (4 vCPU, 8GB) — staging must exercise the same resource
+  profiles, just at smaller scale.
+
+**Drift scan at Staging scale:**
+```
+~2,500–3,500 MRs across ~5 GVRs = ~30–40 scan chunks per cycle
+1 drift-worker pod × 10 concurrent = ~3–4 seconds per scan cycle
+```
+
+### API Server (Staging)
+
+| | Staging |
+|---|---|
+| CPU request | 100m |
+| CPU limit | 500m |
+| Memory request | 128Mi |
+| Memory limit | 256Mi |
+| Replicas | 2 |
+
+### Temporal Server (Staging)
+
+| Service | CPU request | CPU limit | Mem request | Mem limit | Replicas |
+|---|---|---|---|---|---|
+| Frontend | 250m | 500m | 256Mi | 512Mi | 1 |
+| History | 500m | 1000m | 512Mi | 1Gi | 1 |
+| Matching | 250m | 500m | 256Mi | 512Mi | 1 |
+| Internal Worker | 250m | 500m | 256Mi | 512Mi | 1 |
+
+History shards: 2. Single replicas — staging disruption is tolerable.
+
+### Temporal Workers (Staging)
+
+| | Provisioning | Drift |
+|---|---|---|
+| CPU request | 100m | 250m |
+| CPU limit | 250m | 500m |
+| Memory request | 256Mi | 256Mi |
+| Memory limit | 512Mi | 512Mi |
+| Replicas | 2 (static) | 1 (static) |
+
+### Crossplane (Staging)
+
+All providers: 1 replica each. Same node spec as prod (4 vCPU, 8GB) — exercises real
+provider behaviour.
+
+| Component | CPU request | CPU limit | Mem request | Mem limit |
+|---|---|---|---|---|
+| Crossplane Core | 250m | 500m | 256Mi | 512Mi |
+| ROC heavy sub-providers (each) | 100m | 250m | 128Mi | 256Mi |
+| ROC light sub-providers (each) | 50m | 150m | 64Mi | 128Mi |
+| GCP sub-providers (each) | 100m | 250m | 128Mi | 256Mi |
+| Composition Functions (each) | 100m | 250m | 64Mi | 128Mi |
+
+### Platform DB (Staging)
+
+| | Staging |
+|---|---|
+| CPU | 1 vCPU |
+| RAM | 2GB |
+| Storage | 10GB |
+| Replicas | Primary + Async Standby |
+
+Async standby enables failover testing without the write latency overhead of sync.
+
+### Temporal DB (Staging)
+
+| | Staging |
+|---|---|
+| CPU | 1 vCPU |
+| RAM | 2GB |
+| Storage | 10GB SSD |
+| Replicas | Primary + Async Standby |
+
+### Redis, KEDA, ESO (Staging)
+
+Same deferral rules as prod. ESO same spec as QA.
+
+---
+
+## Dev Environment
+
+Dev is a shared developer testing environment for validating feature changes before QA.
+Minimal resources, no HA, single replicas throughout. Disruption is acceptable.
+
+**Sizing basis:**
+- Resource count: ~10–15% of prod (~500–1,000 MRs) — mostly synthetic test resources
+- No HA requirements
+- Smaller nodes (2 vCPU, 4GB) — dev workload is negligible
+
+**Drift scan at Dev scale:**
+```
+~500–1,000 MRs across ~5 GVRs = ~5–10 scan chunks per cycle
+~10 chunks × ~1s ÷ 10 concurrent = ~1 second per scan cycle
+```
+
+### API Server (Dev)
+
+| | Dev |
+|---|---|
+| CPU request | 50m |
+| CPU limit | 200m |
+| Memory request | 64Mi |
+| Memory limit | 128Mi |
+| Replicas | 1 |
+
+### Temporal Server (Dev)
+
+| Service | CPU request | CPU limit | Mem request | Mem limit | Replicas |
+|---|---|---|---|---|---|
+| Frontend | 100m | 250m | 128Mi | 256Mi | 1 |
+| History | 250m | 500m | 256Mi | 512Mi | 1 |
+| Matching | 100m | 250m | 128Mi | 256Mi | 1 |
+| Internal Worker | 100m | 250m | 128Mi | 256Mi | 1 |
+
+History shards: 2 (minimum).
+
+### Temporal Workers (Dev)
+
+| | Provisioning | Drift |
+|---|---|---|
+| CPU request | 100m | 100m |
+| CPU limit | 250m | 250m |
+| Memory request | 128Mi | 128Mi |
+| Memory limit | 256Mi | 256Mi |
+| Replicas | 1 (static) | 1 (static) |
+
+### Crossplane (Dev)
+
+All providers: 1 replica each.
+
+| Component | CPU request | CPU limit | Mem request | Mem limit |
+|---|---|---|---|---|
+| Crossplane Core | 100m | 250m | 128Mi | 256Mi |
+| ROC sub-providers (each) | 50m | 100m | 32Mi | 64Mi |
+| GCP sub-providers (each) | 25m | 50m | 32Mi | 64Mi |
+| Composition Functions (each) | 50m | 100m | 32Mi | 64Mi |
+
+### Platform DB (Dev)
+
+| | Dev |
+|---|---|
+| CPU | 1 vCPU |
+| RAM | 2GB |
+| Storage | 5GB |
+| Replicas | Single instance |
+
+### Temporal DB (Dev)
+
+| | Dev |
+|---|---|
+| CPU | 1 vCPU |
+| RAM | 2GB |
+| Storage | 5GB SSD |
+| Replicas | Single instance |
+
+### Redis, KEDA, ESO (Dev)
+
+Same deferral rules as prod. ESO same spec as QA.
+
+---
+
+## Cluster Summary
+
+UCP runs as a separate instance per environment. Each instance spans two K8s clusters
+and two managed PostgreSQL instances.
+
+**Environment overview:**
+
+| | Dev | QA | Staging | Prod |
+|---|---|---|---|---|
+| Est. MR count | ~500–1,000 | ~1,800–2,700 | ~2,500–3,500 | ~9,000 |
+| Platform cluster | 1 × (2 vCPU, 4GB) | 2 × (2 vCPU, 4GB) | 2 × (4 vCPU, 8GB) | 3 × (4 vCPU, 8GB) |
+| Ops cluster | 1 × (2 vCPU, 4GB) | 2 × (2 vCPU, 4GB) | 2 × (4 vCPU, 8GB) | 3 × (4 vCPU, 8GB) |
+| API Server replicas | 1 | 1 | 2 | 2 (HPA 2–8) |
+| Temporal services | 1 each | 1 each | 1 each | 2 each |
+| Provisioning worker | 1 | 2 | 2 | 2 |
+| Drift worker | 1 | 1 | 1 | 2 |
+| Crossplane providers | 1 each | 1 each | 1 each | 2 each |
+| Platform DB | 1v / 2G / 5G, single | 1v / 2G / 10G, single | 1v / 2G / 10G, async standby | 2v / 4G / 20G, sync standby |
+| Temporal DB | 1v / 2G / 5G SSD, single | 1v / 2G / 10G SSD, single | 1v / 2G / 10G SSD, async standby | 2v / 4G / 20G SSD, sync standby |
+
+---
+
+### Platform Cluster (Prod)
+
+Hosts the UCP control plane: API server, Temporal server, and Temporal workers.
+Platform DB and Temporal DB run as managed instances outside this cluster.
+
+**Year 1 workload:**
+
+| Component | Pods | CPU requests | Mem requests |
+|---|---|---|---|
+| API Server | 2 | 200m | 256Mi |
+| Temporal Frontend | 2 | 500m | 512Mi |
+| Temporal History | 2 | 1,000m | 1,024Mi |
+| Temporal Matching | 2 | 500m | 512Mi |
+| Temporal Internal Worker | 2 | 500m | 512Mi |
+| provisioning-worker | 2 | 200m | 512Mi |
+| drift-worker | 2 | 500m | 512Mi |
+| **Total** | **14 pods** | **3,400m** | **3,840Mi** |
+
+**Recommended node spec Year 1:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
+
+```
+Allocatable per node (system reserved ~0.5 vCPU, ~1GB):
+  CPU:    ~3.5 vCPU × 3 = ~10.5 vCPU total
+  Memory: ~7GB × 3      = ~21GB total
+
+vs Year 1 requests: 3.4 vCPU, 3.75GB
+vs Year 1 limits:   ~8.5 vCPU, ~8.5Gi
+Headroom is comfortable for normal operation and burst.
+```
+
+**Year 5 note:** KEDA drift-worker scales to 20 pods (20 × 512Mi = 10Gi requests
+for drift-workers alone). Scale Platform cluster to 5 × (4 vCPU, 16GB) before
+KEDA is introduced, or increase node memory to 16GB at that point.
+
+---
+
+### Ops Cluster (Prod)
+
+Hosts Crossplane (all sub-providers and composition functions) and ESO.
+
+**Year 1 workload:**
+
+| Component | Pods | CPU requests | Mem requests |
+|---|---|---|---|
+| Crossplane Core | 2 | 500m | 512Mi |
+| provider-roc-lbaas | 2 | 200m | 256Mi |
+| provider-roc-vmaas | 2 | 200m | 256Mi |
+| provider-roc-dbaas | 2 | 200m | 256Mi |
+| provider-roc-staas | 2 | 100m | 128Mi |
+| provider-roc-caas | 2 | 100m | 128Mi |
+| provider-upjet-gcp parent | 2 | 200m | 256Mi |
+| provider-gcp-sql | 2 | 200m | 256Mi |
+| provider-gcp-container | 2 | 200m | 256Mi |
+| provider-gcp-compute | 2 | 200m | 256Mi |
+| provider-gcp-storage | 2 | 200m | 256Mi |
+| Functions ×3 | 3 | 300m | 192Mi |
+| ESO | 1 | 50m | 64Mi |
+| **Total** | **28 pods** | **~2,650m** | **~3,372Mi** |
+
+**Recommended node spec:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
+
+```
+Allocatable: ~10.5 vCPU, ~21GB total
+vs requests: 2.65 vCPU, ~3.3Gi
+Headroom: 4× CPU, 6× memory — accommodates reconciliation bursts and
+informer cache growth as MR count grows toward Year 5.
+```
+
+---
+
+### Managed Instances (Prod)
+
+| Instance | CPU | RAM | Storage | HA |
+|---|---|---|---|---|
+| Platform DB | 2 vCPU | 4GB | 20GB | Primary + Sync Standby |
+| Temporal DB | 2 vCPU | 4GB | 20GB SSD | Primary + Sync Standby |
+
+Both run as managed PostgreSQL (Cloud SQL or equivalent) — not K8s workloads.

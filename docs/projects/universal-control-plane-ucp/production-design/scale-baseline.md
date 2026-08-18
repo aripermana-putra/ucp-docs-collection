@@ -238,6 +238,27 @@ estimate.
 
 Year 1 confirmed teams: CaaS, DBaaS, Coupon, RPay
 
+### DBaaS resource breakdown (confirmed from DBaaS team)
+
+Data confirmed directly from DBaaS team, 2026-08-18.
+
+| Resource | Production | Staging | UCP Year 1 scope | Notes |
+|---|---|---|---|---|
+| VMaaS nodes | 1,768 | 160 | ✓ | In scope — VMaaS provider |
+| BMaaS nodes | 2,781 | 107 | ✗ Year 1 | Same as CaaS BMaaS decision |
+| RIaaS nodes | 958 | 443 | ✗ Year 1 | Old VM platform; team plans migration to VMaaS ~2028. Adds to future VMaaS count when migrated. |
+| Robin nodes | 6 | — | ✗ Year 1 | VM flavour, out of MVP scope |
+| LBaaS instances | ~223 | — | ✓ | Confirmed via Grafana |
+| **Total prod nodes** | **4,555** | **267** | | BMaaS + VMaaS + Robin |
+
+**DBaaS as UCP tenant MR count (Year 1): ~1,991 MRs**
+(LBaaS ~223 + VMaaS 1,768)
+
+RIaaS (958 prod nodes) is a future growth data point — when migration to VMaaS completes (~2028),
+DBaaS VMaaS count grows by ~958 nodes.
+
+---
+
 ### CaaS resource breakdown (updated from Grafana)
 
 Data sourced from `daichi-prometheus` (BMaaS) and `cortex-caas-prod` (K8S nodes),
@@ -266,14 +287,14 @@ Dashboard references:
 | Team | Type | Estimated MRs | Basis |
 |---|---|---|---|
 | CaaS | Service provider | ~6,400 | LBaaS ~2,900 (50%) + VMaaS ~3,500 (50%) — see disclaimer above |
-| DBaaS | Service provider | ~223–4,949 | LBaaS: ~223 LBs (confirmed). Nodes: 4,726 (confirmed via `count(node_uname_info)` on cortex-dbaas-prod) but compute type unknown (VMaaS / BMaaS / RIaaS) — pending DBaaS team confirmation |
+| DBaaS | Service provider | ~1,991 | LBaaS: ~223. VMaaS: 1,768 (confirmed, Year 1 scope). BMaaS: 2,781 (out of Year 1 scope). RIaaS: 958 prod (out of Year 1 scope, migrating to VMaaS ~2028). Data confirmed by DBaaS team 2026-08-18. |
 | Coupon | Large product team | ~225 | Architecture doc + CCoE: GCP confirmed ~9 MRs (7 GCE + 1 GKE + 1 Cloud SQL). OneCloud portion (BMaaS, LBaaS, CaaS) pending Aniket Lambe confirmation — drives most of the estimate |
 | RPay | Large product team | ~350–500 | Architecture doc estimate + CCoE: prod-labeled GCP ~24 MRs; including r-pay-1 (unconfirmed ownership/env) ~188 GCP MRs. If r-pay-1 is confirmed prod, total likely exceeds ~350 |
-| **Year 1 Total** | | **~7,800–8,000 MRs** | RPay upper bound raised to 500 pending r-pay-1 confirmation |
+| **Year 1 Total** | | **~9,000 MRs** | DBaaS confirmed at ~1,991 (VMaaS 1,768 + LBaaS 223) |
 
-> Conservative floor (DBaaS LBaaS-only, RPay at 350): **~7,300 MRs**
-> Mid estimate (DBaaS ~800, RPay at 400): **~7,800 MRs**
-> If CaaS imports 100% of resources and VMaaS is fully operational: **~13,400 MRs** Year 1.
+> Conservative (CaaS 50% import, RPay at 350): **~8,600 MRs**
+> Mid estimate (CaaS 50% import, RPay at 400): **~9,000 MRs**
+> If CaaS imports 100% of resources and VMaaS is fully operational: **~14,800 MRs** Year 1.
 
 ---
 
@@ -281,7 +302,7 @@ Dashboard references:
 
 | Year | Teams onboarded | Est. MR count | Notes |
 |---|---|---|---|
-| Year 1 | 4 (22 DevOps/SRE) | ~7,300–8,000 | Conservative floor ~7,300; mid estimate ~7,800. CaaS dominates (~82%) |
+| Year 1 | 4 (22 DevOps/SRE) | ~8,600–9,000 | Conservative ~8,600; mid ~9,000. CaaS still dominates (~72%) with DBaaS now second (~22%) |
 | Year 2 | +new teams (44 DevOps/SRE) | ~10,000 | New service provider teams add more |
 | Year 3 | 77 DevOps/SRE | ~20,000 | GCP resources starting |
 | Year 4 | 121 DevOps/SRE | ~35,000 | App developers adding GCP resources |
@@ -337,10 +358,11 @@ In-place operational tasks (stop/start/restart, patching) are out of MVP scope.
 As UCP adds operational capabilities in later phases, spike frequency and volume
 may increase.
 
-**CCoE inventory data does not materially affect Year 1 sizing.**
-CaaS (~6,400 MRs) accounts for ~82% of Year 1 total. Even a significant upward
-revision of Coupon or RPay (e.g. RPay from 350 to 500) shifts the Year 1 total by
-less than 2%. Year 1 sizing is insensitive to product team estimates.
+**CCoE inventory data does not materially affect Year 1 sizing; DBaaS confirmation does.**
+CCoE data (Coupon/RPay GCP resources) has minimal impact — product team revisions shift
+the total by < 3%. However, the confirmed DBaaS node breakdown changed the Year 1 total
+from ~7,800 to ~9,000 MRs (+15%), driven by 1,768 confirmed VMaaS nodes. CaaS
+(~6,400 MRs) still dominates at ~71% of Year 1 total; DBaaS is now second at ~22%.
 
 **Year 5 estimate of ~60,000 MRs is conservative, not aggressive.**
 CCoE visible resource types (VM + K8s + DB) across GCP, Azure, and AWS total ~8,600
@@ -356,9 +378,11 @@ interconnects (1,052) are ~4× combined (265). This validates prioritising
 `provider-upjet-gcp` expansion in Year 3+ over AWS or Azure providers. Azure has the
 smallest footprint of the three clouds across all resource types.
 
-**Year 1 total (~7,800 MRs) is stable across estimation approaches.**
-Revising product team estimates (Coupon 200→225, RPay 350→500) changes the total
-by less than 3% because CaaS and DBaaS dominate.
+**Year 1 total is sensitive to service provider data, not product team estimates.**
+Confirmed DBaaS node data (VMaaS 1,768) shifted the Year 1 total from ~7,800 to
+~9,000 (+15%). By contrast, revising product team estimates (Coupon, RPay) changes
+the total by < 3%. Service providers (CaaS, DBaaS) dominate — getting their data right
+matters; product team precision does not.
 
 ---
 
@@ -366,7 +390,7 @@ by less than 3% because CaaS and DBaaS dominate.
 
 UCP is sized for **Year 1 load with Year 5 architecture design.**
 
-Year 1 load (~7,300 MRs, 22 users) is light. The architecture — sharding logic,
+Year 1 load (~9,000 MRs, 22 users) is light. The architecture — sharding logic,
 consistent hashing ring, multi-cluster migration strategy — is already designed to
 scale to Year 5. The infrastructure provisioned at launch reflects actual Year 1
 demand, not the maximum anticipated load.
@@ -377,8 +401,8 @@ Deploying at Year 1 sizing gives approximately 12–18 months before the first
 meaningful scaling action is needed:
 
 ```
-Year 1 launch:  ~7,300 MRs  ← deploy here
-Year 2:        ~10,000 MRs
+Year 1 launch:  ~9,000 MRs  ← deploy here
+Year 2:        ~11,000 MRs
 Year 3:        ~20,000 MRs  ← first Ops cluster scale-out likely here
 ```
 
@@ -408,7 +432,7 @@ triggers to execute the pre-tested scaling runbook, not to start designing one.
 | Team | Data needed | Status |
 |---|---|---|
 | CaaS | Total VM/node count for K8S cluster infrastructure | Pending |
-| DBaaS | Total DB instance count | Pending |
+| DBaaS | Node counts by compute type | Confirmed 2026-08-18 — VMaaS 1,768, BMaaS 2,781, RIaaS 958, Robin 6 (prod) |
 | Coupon | GCP confirmed from CCoE (~9 MRs). OneCloud resources (BMaaS, LBaaS, CaaS) pending Aniket Lambe confirmation | GCP confirmed — OneCloud pending |
 | Point team | Confirm K8S node vs cluster counting | Outreach pending |
 | RPay | Confirm ownership and environment of r-pay-1, paydwh, rpayment-744, rpay-mpos GCP projects | Pending |
