@@ -7,8 +7,9 @@ parent_page_id: "../production-design.md"
 # Scale Baseline
 
 Real-world data to ground architecture assumptions and system capacity planning.
-Data sourced from two approaches: Grafana PromQL queries against OneCloud production
-metrics, and bottom-up analysis of architecture documents from Year 1 confirmed teams.
+Data sourced from three approaches: Grafana PromQL queries against OneCloud production
+metrics, bottom-up analysis of architecture documents from Year 1 confirmed teams, and
+the CCoE GCP inventory [dashboard](https://datastudio.google.com/reporting/653f0ae9-7c10-46cf-8e4d-96e4a59901a2/page/bIroD).
 
 ---
 
@@ -99,13 +100,17 @@ OneCloud DBaaS serving as read replica only.
 | CaaS clusters | 2 | — | |
 | Redis | 1 cluster | 1 cluster (Valkey) | Different implementations per cloud |
 | DBaaS read replica | 1..N | — | OneCloud read only |
-| Cloud SQL | — | 1 primary + up to 20 replicas | Writes go here |
-| GKE | — | 1 autopilot cluster | |
-| GCE (Valkey) | — | 1..N nodes | Self-managed |
+| Cloud SQL | — | 1 primary + up to 20 replicas | Writes go here. CCoE confirmed 1 prod instance — replicas likely sub-resources, not separate MRs |
+| GKE | — | 1 autopilot cluster | CCoE confirmed 1 prod cluster |
+| GCE (Valkey) | — | 1..N nodes | CCoE confirmed 7 stable VMs |
 | BMaaS batch servers | 1..N | — | |
 | Kafka | 1 cluster | — | |
 
 **Estimated UCP MR count: ~200–250 MRs** (production, OneCloud + GCP scope only)
+
+GCP portion confirmed from CCoE (2026-08-17): ~9 MRs (7 GCE + 1 GKE + 1 Cloud SQL).
+Remainder depends on OneCloud resources, particularly BMaaS batch server count —
+pending Aniket Lambe confirmation.
 
 ### Architecture sample — Point team (large product team, not Year 1)
 
@@ -147,6 +152,88 @@ The range reflects provisioning configuration dependency: self-managed VMs
 
 ---
 
+## Approach 3 — CCoE GCP Inventory Dashboard
+
+Data pulled from CCoE GCP inventory [dashboard](https://datastudio.google.com/reporting/653f0ae9-7c10-46cf-8e4d-96e4a59901a2/page/bIroD), collected 2026-08-17. Covers GCP
+resources across all Rakuten teams. Environment breakdown is based on project name
+labels — totals may not sum exactly due to projects without env labels. GCP only —
+OneCloud resources (VMaaS, LBaaS, CaaS, DBaaS, STaaS) are not captured here.
+
+### Total GCP inventory (all Rakuten teams)
+
+| Resource type | All environments | Prod only | Notes |
+|---|---|---|---|
+| GCE instances | 5,941 | 2,422 | |
+| GKE clusters | 500 | 146 | |
+| Cloud SQL instances | 720 | 151 | |
+| Cloud Functions | 1,877 | not broken down | Out of UCP scope |
+| Dedicated Interconnect | 1,052 | — | See observation below |
+
+**Cloud provider comparison (all environments, total count):**
+
+| Resource type | GCP | Azure | AWS | GCP vs combined |
+|---|---|---|---|---|
+| VMs (GCE / Azure VM / EC2) | 5,941 | 2,757 | 2,557 | 5,941 vs 5,314 — comparable |
+| K8s clusters (GKE / AKS / EKS) | 500 | 106 | 70 | 500 vs 176 — **~3× larger** |
+| Databases (Cloud SQL / Azure DB / RDS) | 720 | 160 | 274 | 720 vs 434 — ~66% larger |
+| Network (Interconnect / ExpressRoute / Direct Connect) | 1,052 | 178 | 87 | 1,052 vs 265 — **~4× larger** |
+
+Note: Azure and AWS counts are total (no prod/non-prod breakdown available). GCP counts include all environments.
+
+GCP is Rakuten's dominant cloud provider by resource count. Azure has the smallest
+footprint of the three, particularly in K8s and network resources. The K8s and
+network gap is significant — GCP's Kubernetes adoption is nearly 3× Azure and AWS
+combined.
+
+**Future scale reference:** GCP prod resources alone (2,422 + 146 + 151 = ~2,719)
+represent a significant portion of the total addressable UCP market if all
+Rakuten GCP-using teams are onboarded. Combined with OneCloud resources at similar
+scale, Year 5 estimate of ~60,000 MRs remains plausible.
+
+**Dedicated Interconnect observation:** Non-prod environments (QA, dev, sandbox) are
+present in the data despite CCoE previously stating non-prod does not have Dedicated
+Interconnect support. Not relevant to component sizing but worth noting for network
+architecture planning.
+
+### Coupon GCP (confirmed from CCoE)
+
+| Resource type | Prod/stable count | Notes |
+|---|---|---|
+| GCE instances | 7 | Stable environment |
+| GKE clusters | 1 | Prod environment |
+| Cloud SQL instances | 1 | Prod environment |
+| **Total confirmed GCP MRs** | **~9** | |
+
+Architecture doc estimated "1 primary + up to 20 replicas" for Cloud SQL — CCoE
+shows 1 instance, suggesting replicas are sub-resources rather than separate MRs.
+OneCloud resources (LBaaS, CaaS, BMaaS, Redis, Kafka) remain estimated from the
+architecture doc, pending Aniket Lambe confirmation.
+
+### RPay GCP (unconfirmed ownership)
+
+Filtered by "pay" keyword — projects likely owned by RPay but not verified:
+`paydwh-computing-prod/stg`, `r-pay-1`, `rpayment-744`, `rpay-mpos-prod/stg`.
+
+| Project | GCE | GKE | Cloud SQL |
+|---|---|---|---|
+| paydwh-computing-prod | 11 | 2 | 2 |
+| paydwh-computing-stg | 11 | 2 | 3 |
+| r-pay-1 | 150 | 9 | 5 |
+| rpayment-744 | — | — | 1 |
+| rpay-mpos-prod | 6 | 2 | — |
+| rpay-mpos-stg | 3 | 2 | — |
+
+**Prod-labeled only (conservative):** ~24 GCP MRs (GCE 17 + GKE 4 + Cloud SQL 3)
+
+**Including r-pay-1 (no env label, unconfirmed):** ~188 GCP MRs (GCE 167 + GKE 13 + Cloud SQL 8)
+
+r-pay-1 is the dominant driver (150 GCE, 9 GKE clusters) but carries no environment
+label — could be all prod or a mixed environment. If confirmed as prod, GCP scope
+alone (~188) would push RPay's total (GCP + OneCloud) well above the current ~350
+estimate.
+
+---
+
 ## Year 1 MR Estimate — Confirmed Teams
 
 Year 1 confirmed teams: CaaS, DBaaS, Coupon, RPay
@@ -180,10 +267,12 @@ Dashboard references:
 |---|---|---|---|
 | CaaS | Service provider | ~6,400 | LBaaS ~2,900 (50%) + VMaaS ~3,500 (50%) — see disclaimer above |
 | DBaaS | Service provider | ~223–4,949 | LBaaS: ~223 LBs (confirmed). Nodes: 4,726 (confirmed via `count(node_uname_info)` on cortex-dbaas-prod) but compute type unknown (VMaaS / BMaaS / RIaaS) — pending DBaaS team confirmation |
-| Coupon | Large product team | ~225 | Architecture doc analysis, ~5.5× Budas sample |
-| RPay | Large product team | ~350 | Larger than Coupon, payment service = higher HA requirements, ~9× Budas |
-| **Year 1 Total** | | **~7,800 MRs** | |
+| Coupon | Large product team | ~225 | Architecture doc + CCoE: GCP confirmed ~9 MRs (7 GCE + 1 GKE + 1 Cloud SQL). OneCloud portion (BMaaS, LBaaS, CaaS) pending Aniket Lambe confirmation — drives most of the estimate |
+| RPay | Large product team | ~350–500 | Architecture doc estimate + CCoE: prod-labeled GCP ~24 MRs; including r-pay-1 (unconfirmed ownership/env) ~188 GCP MRs. If r-pay-1 is confirmed prod, total likely exceeds ~350 |
+| **Year 1 Total** | | **~7,800–8,000 MRs** | RPay upper bound raised to 500 pending r-pay-1 confirmation |
 
+> Conservative floor (DBaaS LBaaS-only, RPay at 350): **~7,300 MRs**
+> Mid estimate (DBaaS ~800, RPay at 400): **~7,800 MRs**
 > If CaaS imports 100% of resources and VMaaS is fully operational: **~13,400 MRs** Year 1.
 
 ---
@@ -192,7 +281,7 @@ Dashboard references:
 
 | Year | Teams onboarded | Est. MR count | Notes |
 |---|---|---|---|
-| Year 1 | 4 (22 DevOps/SRE) | ~7,300 | CaaS dominates (~81%) |
+| Year 1 | 4 (22 DevOps/SRE) | ~7,300–8,000 | Conservative floor ~7,300; mid estimate ~7,800. CaaS dominates (~82%) |
 | Year 2 | +new teams (44 DevOps/SRE) | ~10,000 | New service provider teams add more |
 | Year 3 | 77 DevOps/SRE | ~20,000 | GCP resources starting |
 | Year 4 | 121 DevOps/SRE | ~35,000 | App developers adding GCP resources |
@@ -248,9 +337,28 @@ In-place operational tasks (stop/start/restart, patching) are out of MVP scope.
 As UCP adds operational capabilities in later phases, spike frequency and volume
 may increase.
 
+**CCoE inventory data does not materially affect Year 1 sizing.**
+CaaS (~6,400 MRs) accounts for ~82% of Year 1 total. Even a significant upward
+revision of Coupon or RPay (e.g. RPay from 350 to 500) shifts the Year 1 total by
+less than 2%. Year 1 sizing is insensitive to product team estimates.
+
+**Year 5 estimate of ~60,000 MRs is conservative, not aggressive.**
+CCoE visible resource types (VM + K8s + DB) across GCP, Azure, and AWS total ~8,600
+MRs. Adding resource types UCP supports but CCoE does not surface in these views
+(storage, load balancers, VPC/network resources) suggests a 2–3× multiplier —
+public cloud scope alone could reach ~17,000–26,000 MRs. Combined with OneCloud
+(LBaaS alone has 28,664 listeners across 1,256 tenants), the Year 5 ceiling is
+likely larger than the current ~60,000 estimate.
+
+**GCP is Rakuten's dominant public cloud by resource count — prioritise GCP providers.**
+GCP K8s clusters (500) are nearly 3× Azure + AWS combined (176). GCP network
+interconnects (1,052) are ~4× combined (265). This validates prioritising
+`provider-upjet-gcp` expansion in Year 3+ over AWS or Azure providers. Azure has the
+smallest footprint of the three clouds across all resource types.
+
 **Year 1 total (~7,800 MRs) is stable across estimation approaches.**
-Revising product team estimates up (Coupon 200→225, RPay 300→350) changes the total
-by less than 5% because CaaS and DBaaS dominate.
+Revising product team estimates (Coupon 200→225, RPay 350→500) changes the total
+by less than 3% because CaaS and DBaaS dominate.
 
 ---
 
@@ -301,7 +409,8 @@ triggers to execute the pre-tested scaling runbook, not to start designing one.
 |---|---|---|
 | CaaS | Total VM/node count for K8S cluster infrastructure | Pending |
 | DBaaS | Total DB instance count | Pending |
-| Coupon | Confirmed resource count from team | Outreach sent |
+| Coupon | GCP confirmed from CCoE (~9 MRs). OneCloud resources (BMaaS, LBaaS, CaaS) pending Aniket Lambe confirmation | GCP confirmed — OneCloud pending |
 | Point team | Confirm K8S node vs cluster counting | Outreach pending |
-| GCP | Resource counts per type across all teams (CCoE inventory) | Access request submitted (SWRSREOPE-91009) |
+| RPay | Confirm ownership and environment of r-pay-1, paydwh, rpayment-744, rpay-mpos GCP projects | Pending |
+| GCP | Resource counts per type across all teams | Confirmed — CCoE dashboard accessed 2026-08-17 |
 | LBaaS JPW1 | Same metrics for Japan West region | Not yet queried |

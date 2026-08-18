@@ -7,8 +7,8 @@ parent_page_id: "../production-design.md"
 # Component Sizing
 
 Per-component resource specifications for UCP infrastructure. Sizing is based on
-Year 1 load (~7,800 MRs, 22 users) with Year 5 architecture design. See
-[Scale Baseline](scale-baseline.md) for the data and rationale behind these numbers.
+Year 1 load (~7,800 MRs mid estimate, 22 users) with Year 5 architecture design. See
+[Scale Baseline](scale-baseline.md) for the full range (~7,300–8,000) and rationale.
 
 **Sizing philosophy:** Deploy lean (Year 1 specs), scale horizontally before
 vertically. Pod spec barely changes Year 1→5 — replica count is what scales.
