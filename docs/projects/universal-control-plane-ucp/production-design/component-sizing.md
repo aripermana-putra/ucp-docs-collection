@@ -617,259 +617,47 @@ rotation and secure storage.
 
 ## QA Environment
 
-QA is a separate environment with a separate OneCloud tenant per environment. It runs
-integration tests, automated pipelines, and CI/CD flows — generating significantly more
-provisioning churn than prod BAU.
+QA is the pre-production validation environment — 1:1 with prod (Option 1). It manages
+the same resource scope as prod, runs the same component specs, and validates UCP changes
+before production deployment. No DR site configured.
 
 **Sizing basis:**
-- Resource count: 20–30% of prod (~1,800–2,700 MRs, single Ops cluster). DBaaS staging data (VMaaS 160 in scope) confirms staging environments are typically much leaner than 20–30% of prod (~9% for DBaaS VMaaS). The range is a planning ceiling.
-- Provisioning rate: 3–4× prod (~300–400 ops/day) as a planning ceiling — QA sees more
-  churn than prod from CI/CD pipelines and e2e tests (which run provision/delete cycles
-  against QA, with a toggle for real vs mock cloud platform APIs). But provisioning rate
-  does not drive any component spec at these volumes. Even at 10× prod (0.01 req/s), no
-  component is constrained by throughput: the API server returns 202 immediately, and 1
-  provisioning-worker pod with 10 concurrent activities handles thousands of provisions
-  per day without saturation. The actual sizing constraint is MR count (informer cache
-  for Crossplane, workflow volume for Temporal DB).
-- HA not required — single replicas for most components; QA disruption is tolerable
-- No sync standby for Platform DB
+- Resource count: ~9,000 MRs — same as prod
+- All pod specs identical to prod
+- Platform DB and Temporal DB: same spec as prod with sync standby within region
+- No DR site (no Osaka) — QA disruption is tolerable, regional disaster recovery not required
+- Audit log retention: 36 months (same as prod)
 
-**Drift scan at QA scale:**
-```
-~1,800–2,700 MRs across ~5 GVRs = ~20–30 scan chunks per cycle
-1 drift-worker pod × 10 concurrent activities = 10 concurrent tasks
-~30 chunks × ~1s/chunk ÷ 10 concurrent = ~3 seconds per scan cycle — trivial
-```
+All component specs are identical to prod. See each prod component section for
+detailed specs. Key differences from prod:
 
-### API Server (QA)
-
-| | QA |
-|---|---|
-| CPU request | 50m |
-| CPU limit | 200m |
-| Memory request | 64Mi |
-| Memory limit | 128Mi |
-| Replicas | 1 |
-
-Single replica — no HA requirement. 300–400 ops/day = ~0.004 req/s average; the
-async 202 design means API server is never the bottleneck even at peak test load.
-
-### Temporal Server (QA)
-
-| Service | CPU request | CPU limit | Mem request | Mem limit | Replicas |
-|---|---|---|---|---|---|
-| Frontend | 100m | 250m | 128Mi | 256Mi | 1 |
-| History | 250m | 500m | 256Mi | 512Mi | 1 |
-| Matching | 100m | 250m | 128Mi | 256Mi | 1 |
-| Internal Worker | 100m | 250m | 128Mi | 256Mi | 1 |
-
-History shards: 2 (minimum). Single replicas acceptable — workflow failures in QA
-are tolerable and self-healing on restart.
-
-### Temporal Workers (QA)
-
-**Provisioning worker:**
-
-| | QA |
-|---|---|
-| CPU request | 100m |
-| CPU limit | 250m |
-| Memory request | 128Mi |
-| Memory limit | 256Mi |
-| Replicas | 2 (static) |
-
-2 replicas kept for provisioning worker — not for throughput (1 pod handles thousands
-of provisions/day at this scale), but to avoid a single point of failure during active
-test runs where a pod restart would stall the entire pipeline.
-
-**Drift worker:**
-
-| | QA |
-|---|---|
-| CPU request | 100m |
-| CPU limit | 250m |
-| Memory request | 128Mi |
-| Memory limit | 256Mi |
-| Replicas | 1 (static) |
-
-1 replica sufficient — ~20 scan chunks per cycle completes in seconds at concurrency=10.
-
-### Crossplane (QA)
-
-All providers: 1 replica each.
-
-| Component | CPU request | CPU limit | Mem request | Mem limit |
-|---|---|---|---|---|
-| Crossplane Core | 100m | 250m | 128Mi | 256Mi |
-| provider-roc-lbaas | 50m | 150m | 64Mi | 128Mi |
-| provider-roc-vmaas | 50m | 150m | 64Mi | 128Mi |
-| provider-roc-dbaas | 50m | 150m | 64Mi | 128Mi |
-| provider-roc-staas | 50m | 100m | 32Mi | 64Mi |
-| provider-roc-caas | 50m | 100m | 32Mi | 64Mi |
-| GCP sub-providers (each) | 25m | 50m | 32Mi | 64Mi |
-| Composition Functions (each) | 50m | 100m | 32Mi | 64Mi |
-
-Memory basis: 2,000 MRs ÷ 5 resource types = ~400 MRs per sub-provider × 10KB = ~4MB
-informer cache each. 64–128Mi limits are generous.
-
-### Platform DB (QA)
-
-| | QA |
-|---|---|
-| CPU | 1 vCPU |
-| RAM | 2GB |
-| Storage | 10GB |
-| Replicas | Single instance (no standby) |
-
-Storage: 2,000 MRs × 7.5KB desired state = ~15MB. Audit logs at 400/day × 365 days ×
-12 months × 500B = ~73MB. Total well under 1GB — 10GB provides headroom for test
-data accumulation.
-
-Audit log retention: 12 months (vs 36 months prod). QA audit data has no compliance
-or operational significance.
-
-### Temporal DB (QA)
-
-| | QA |
-|---|---|
-| CPU | 1 vCPU |
-| RAM | 2GB |
-| Storage | 10GB |
-| Replicas | Single instance |
-
-Storage: QA drift scan executions are small — ~20 activities × ~2.2KB + overhead
-≈ ~45KB/execution. 10,080 executions × 45KB = ~453MB. Well within 10GB.
-7-day retention same as prod — operational debugging window is the same regardless
-of environment.
-
-### Redis (QA)
-
-Not included — deferred alongside prod. Introduced in QA when Redis is added to prod.
-
-### Others — KEDA, ESO (QA)
-
-**KEDA:** Not included — deferred same as prod. Introduced in QA when KEDA is added
-to prod (Year 3–4).
-
-**ESO:**
-
-| | QA |
-|---|---|
-| CPU request | 25m |
-| CPU limit | 100m |
-| Memory request | 32Mi |
-| Memory limit | 64Mi |
-| Replicas | 1 |
-
-Same role as prod — syncs ROC credentials and GCP tenant metadata from Secret Manager
-into K8s secrets. Specs are halved from prod; QA secret sync volume is identical.
-
----
-
-## Staging Environment
-
-Staging is a pre-production environment for validating UCP changes before prod deployment.
-It manages actual staging resources of tenant teams — sized closer to prod than QA.
-DB standby is required to support failover testing.
-
-**Sizing basis:**
-- Resource count: ~30–40% of prod (~2,500–3,500 MRs). DBaaS staging confirmed at 160
-  VMaaS in scope; CaaS staging unknown — range is an estimate pending CaaS staging data.
-- HA: DB requires async standby (failover testing). K8s components run 2 replicas for
-  prod-like behaviour but on fewer nodes (2 vs 3).
-- Node spec matches prod (4 vCPU, 8GB) — staging must exercise the same resource
-  profiles, just at smaller scale.
-
-**Drift scan at Staging scale:**
-```
-~2,500–3,500 MRs across ~5 GVRs = ~30–40 scan chunks per cycle
-1 drift-worker pod × 10 concurrent = ~3–4 seconds per scan cycle
-```
-
-### API Server (Staging)
-
-| | Staging |
-|---|---|
-| CPU request | 100m |
-| CPU limit | 500m |
-| Memory request | 128Mi |
-| Memory limit | 256Mi |
-| Replicas | 2 |
-
-### Temporal Server (Staging)
-
-| Service | CPU request | CPU limit | Mem request | Mem limit | Replicas |
-|---|---|---|---|---|---|
-| Frontend | 250m | 500m | 256Mi | 512Mi | 1 |
-| History | 500m | 1000m | 512Mi | 1Gi | 1 |
-| Matching | 250m | 500m | 256Mi | 512Mi | 1 |
-| Internal Worker | 250m | 500m | 256Mi | 512Mi | 1 |
-
-History shards: 2. Single replicas — staging disruption is tolerable.
-
-### Temporal Workers (Staging)
-
-| | Provisioning | Drift |
+| | QA | Prod |
 |---|---|---|
-| CPU request | 100m | 250m |
-| CPU limit | 250m | 500m |
-| Memory request | 256Mi | 256Mi |
-| Memory limit | 512Mi | 512Mi |
-| Replicas | 2 (static) | 1 (static) |
+| Node spec | 3 nodes/zone × 3 AZs = 9 nodes, n2-custom-4-8192 | Same |
+| Pod replicas | Same as prod | — |
+| Platform DB | db-custom-2-7680, 20GB, sync standby | Same |
+| Temporal DB | db-custom-2-7680, 20GB SSD, sync standby | Same |
+| DR site | None | Option 2 if BCP Lvl 4 mandated |
+| Audit log retention | 36 months | 36 months |
 
-### Crossplane (Staging)
-
-All providers: 1 replica each. Same node spec as prod (4 vCPU, 8GB) — exercises real
-provider behaviour.
-
-| Component | CPU request | CPU limit | Mem request | Mem limit |
-|---|---|---|---|---|
-| Crossplane Core | 250m | 500m | 256Mi | 512Mi |
-| ROC heavy sub-providers (each) | 100m | 250m | 128Mi | 256Mi |
-| ROC light sub-providers (each) | 50m | 150m | 64Mi | 128Mi |
-| GCP sub-providers (each) | 100m | 250m | 128Mi | 256Mi |
-| Composition Functions (each) | 100m | 250m | 64Mi | 128Mi |
-
-### Platform DB (Staging)
-
-| | Staging |
-|---|---|
-| CPU | 1 vCPU |
-| RAM | 2GB |
-| Storage | 10GB |
-| Replicas | Primary + Async Standby |
-
-Async standby enables failover testing without the write latency overhead of sync.
-
-### Temporal DB (Staging)
-
-| | Staging |
-|---|---|
-| CPU | 1 vCPU |
-| RAM | 2GB |
-| Storage | 10GB SSD |
-| Replicas | Primary + Async Standby |
-
-### Redis, KEDA, ESO (Staging)
-
-Same deferral rules as prod. ESO same spec as QA.
+**Redis, KEDA, ESO:** Same deferral rules as prod.
 
 ---
 
 ## Dev Environment
 
-Dev is a shared developer testing environment for validating feature changes before QA.
-Minimal resources, no HA, single replicas throughout. Disruption is acceptable.
+Dev is a shared environment covering both developer feature testing and integration
+testing (previously split across Dev and QA). Disruption is acceptable.
 
 **Sizing basis:**
-- Resource count: ~10–15% of prod (~500–1,000 MRs) — mostly synthetic test resources
-- No HA requirements
-- Smaller nodes (2 vCPU, 4GB) — dev workload is negligible
+- Resource count: ~2,000–3,000 MRs — covers combined Dev + integration test load
+- No HA requirements — single instance DBs, single replicas for most components
+- Nodes: 2 per zone × 3 zones = 6 nodes, e2-custom-2-4096 (2 vCPU, 4GB)
 
 **Drift scan at Dev scale:**
 ```
-~500–1,000 MRs across ~5 GVRs = ~5–10 scan chunks per cycle
-~10 chunks × ~1s ÷ 10 concurrent = ~1 second per scan cycle
+~2,000–3,000 MRs across ~5 GVRs = ~20–30 scan chunks per cycle
+~30 chunks × ~1s ÷ 10 concurrent = ~3 seconds per scan cycle
 ```
 
 ### API Server (Dev)
@@ -901,7 +689,7 @@ History shards: 2 (minimum).
 | CPU limit | 250m | 250m |
 | Memory request | 128Mi | 128Mi |
 | Memory limit | 256Mi | 256Mi |
-| Replicas | 1 (static) | 1 (static) |
+| Replicas | 2 (static) | 1 (static) |
 
 ### Crossplane (Dev)
 
@@ -910,8 +698,8 @@ All providers: 1 replica each.
 | Component | CPU request | CPU limit | Mem request | Mem limit |
 |---|---|---|---|---|
 | Crossplane Core | 100m | 250m | 128Mi | 256Mi |
-| ROC sub-providers (each) | 50m | 100m | 32Mi | 64Mi |
-| GCP sub-providers (each) | 25m | 50m | 32Mi | 64Mi |
+| ROC sub-providers (each) | 50m | 150m | 64Mi | 128Mi |
+| GCP sub-providers (each) | 50m | 100m | 64Mi | 128Mi |
 | Composition Functions (each) | 50m | 100m | 32Mi | 64Mi |
 
 ### Platform DB (Dev)
@@ -919,8 +707,8 @@ All providers: 1 replica each.
 | | Dev |
 |---|---|
 | CPU | 1 vCPU |
-| RAM | 2GB |
-| Storage | 5GB |
+| RAM | 2GB (db-custom-1-3840) |
+| Storage | 10GB |
 | Replicas | Single instance |
 
 ### Temporal DB (Dev)
@@ -928,8 +716,8 @@ All providers: 1 replica each.
 | | Dev |
 |---|---|
 | CPU | 1 vCPU |
-| RAM | 2GB |
-| Storage | 5GB SSD |
+| RAM | 2GB (db-custom-1-3840) |
+| Storage | 10GB SSD |
 | Replicas | Single instance |
 
 ### Redis, KEDA, ESO (Dev)
