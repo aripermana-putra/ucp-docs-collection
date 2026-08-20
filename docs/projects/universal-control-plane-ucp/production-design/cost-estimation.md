@@ -12,7 +12,7 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 > **Important:** All prices are approximate on-demand rates for **asia-northeast1
 > (Tokyo)** as of 2026. Verify against the
 > [GCP Pricing Calculator](https://cloud.google.com/products/calculator) before
-> committing. Actual costs will differ based on sustained use discounts,
+> committing. Actual costs will differ based on corporate price, sustained use discounts,
 > committed use contracts, and storage growth.
 
 ---
@@ -25,8 +25,9 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 | Pricing model | On-demand (no discounts applied) |
 | GKE mode | Standard (not Autopilot) |
 | GKE cluster management fee | ~$72/month per cluster |
-| Node type (Dev/QA) | e2-standard-2 (2 vCPU, 8GB) — closest standard to 2 vCPU/4GB spec |
-| Node type (Staging/Prod) | n2-standard-4 (4 vCPU, 16GB) — closest standard to 4 vCPU/8GB spec |
+| Node type (Dev) | e2-custom-2-4096 (2 vCPU, 4GB) |
+| Node type (QA/Prod) | n2-custom-4-8192 (4 vCPU, 8GB) |
+| Node type (Staging/Prod) | n2-custom-4-8192 (4 vCPU, 8GB) |
 | Cloud SQL (Dev/QA) | db-g1-small (shared-core, ~0.5 vCPU, 1.7GB) |
 | Cloud SQL (Staging) | db-custom-1-3840 (1 vCPU, 3.75GB) |
 | Cloud SQL (Prod) | db-custom-2-7680 (2 vCPU, 7.5GB) |
@@ -41,12 +42,12 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 
 | Component | Spec | Count | Unit cost/month | Total/month |
 |---|---|---|---|---|
-| Platform cluster nodes | e2-standard-2 | 1 | ~$49 | ~$49 |
-| Ops cluster nodes | e2-standard-2 | 1 | ~$49 | ~$49 |
+| Platform cluster nodes | e2-custom-2-4096, 2 nodes/zone × 3 zones = 6 | ~$35 | ~$210 |
+| Ops cluster nodes | e2-custom-2-4096, 2 nodes/zone × 3 zones = 6 | ~$35 | ~$210 |
 | GKE cluster management | — | 2 | ~$72 | ~$144 |
-| Platform DB | db-g1-small, single, 5GB | 1 | ~$26 | ~$26 |
-| Temporal DB | db-g1-small, single, 5GB SSD | 1 | ~$26 | ~$26 |
-| **Total** | | | | **~$294/month** |
+| Platform DB | db-custom-1-3840, single, 10GB | 1 | ~$55 | ~$55 |
+| Temporal DB | db-custom-1-3840, single, 10GB SSD | 1 | ~$55 | ~$55 |
+| **Total** | | | | **~$674/month** |
 
 ---
 
@@ -54,12 +55,14 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 
 | Component | Spec | Count | Unit cost/month | Total/month |
 |---|---|---|---|---|
-| Platform cluster nodes | e2-standard-2 | 2 | ~$49 | ~$98 |
-| Ops cluster nodes | e2-standard-2 | 2 | ~$49 | ~$98 |
+| Platform cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
+| Ops cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
 | GKE cluster management | — | 2 | ~$72 | ~$144 |
-| Platform DB | db-g1-small, single, 10GB | 1 | ~$28 | ~$28 |
-| Temporal DB | db-g1-small, single, 10GB SSD | 1 | ~$28 | ~$28 |
-| **Total** | | | | **~$396/month** |
+| Platform DB | db-custom-2-7680, sync standby, 20GB | 1 | ~$225 | ~$225 |
+| Temporal DB | db-custom-2-7680, sync standby, 20GB SSD | 1 | ~$228 | ~$228 |
+| **Total** | | | | **~$2,559/month** |
+
+QA is 1:1 with prod (Option 1) — same spec, no DR site.
 
 ---
 
@@ -67,8 +70,8 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 
 | Component | Spec | Count | Unit cost/month | Total/month |
 |---|---|---|---|---|
-| Platform cluster nodes | n2-standard-4 | 2 | ~$138 | ~$276 |
-| Ops cluster nodes | n2-standard-4 | 2 | ~$138 | ~$276 |
+| Platform cluster nodes | n2-custom-4-8192, 2 nodes/zone × 3 zones = 6 | ~$109 | ~$654 |
+| Ops cluster nodes | n2-custom-4-8192, 2 nodes/zone × 3 zones = 6 | ~$109 | ~$654 |
 | GKE cluster management | — | 2 | ~$72 | ~$144 |
 | Platform DB | db-custom-1-3840, async standby, 10GB | 1 | ~$83 | ~$83 |
 | Temporal DB | db-custom-1-3840, async standby, 10GB SSD | 1 | ~$83 | ~$83 |
@@ -83,12 +86,12 @@ standby provides zone-level HA. This is the baseline production deployment.
 
 | Component | Spec | Count | Unit cost/month | Total/month |
 |---|---|---|---|---|
-| Platform cluster nodes | n2-standard-4 | 3 | ~$138 | ~$414 |
-| Ops cluster nodes | n2-standard-4 | 3 | ~$138 | ~$414 |
+| Platform cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
+| Ops cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
 | GKE cluster management | — | 2 | ~$72 | ~$144 |
 | Platform DB | db-custom-2-7680, sync standby, 20GB | 1 | ~$225 | ~$225 |
 | Temporal DB | db-custom-2-7680, sync standby, 20GB SSD | 1 | ~$228 | ~$228 |
-| **Prod total** | | | | **~$1,425/month** |
+| **Prod total** | | | | **~$2,559/month** |
 
 ### Prod + DR Site (BCP Level 4 — Multi-Region, Active-Standby)
 
@@ -102,12 +105,12 @@ failover procedure.
 
 | Component | Spec | Count | Unit cost/month | Total/month |
 |---|---|---|---|---|
-| Platform cluster nodes | n2-standard-4 | 3 | ~$138 | ~$414 |
-| Ops cluster nodes | n2-standard-4 | 3 | ~$138 | ~$414 |
+| Platform cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
+| Ops cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
 | GKE cluster management | — | 2 | ~$72 | ~$144 |
 | Platform DB | Cross-region read replica, 20GB | 1 | ~$225 | ~$225 |
 | Temporal DB | Cross-region read replica, 20GB SSD | 1 | ~$228 | ~$228 |
-| **DR site total** | | | | **~$1,425/month** |
+| **DR site total** | | | | **~$2,559/month** |
 
 | | Monthly | Notes |
 |---|---|---|
@@ -121,14 +124,13 @@ failover procedure.
 
 | Environment | Monthly | Annual | Notes |
 |---|---|---|---|
-| Dev | ~$294 | ~$3,528 | |
-| QA | ~$396 | ~$4,752 | |
-| Staging | ~$862 | ~$10,344 | |
-| Prod (BCP Lvl 3, multi-AZ only) | ~$1,425 | ~$17,100 | |
-| **Total (BCP Lvl 3)** | **~$2,977/month** | **~$35,724/year** | |
+| Dev | ~$674 | ~$8,088 | Covers combined Dev + QA load |
+| QA | ~$2,559 | ~$30,708 | 1:1 with prod, no DR site |
+| Prod (BCP Lvl 3, multi-AZ only) | ~$2,559 | ~$30,708 | |
+| **Total (BCP Lvl 3)** | **~$5,792/month** | **~$69,504/year** | |
 | | | | |
-| + DR site (BCP Lvl 4, multi-region) | +~$1,425 | +~$17,100 | Active-standby in Osaka |
-| **Total (BCP Lvl 4)** | **~$4,402/month** | **~$52,824/year** | |
+| + DR site (BCP Lvl 4, multi-region) | +~$2,559 | +~$30,708 | Active-standby in Osaka |
+| **Total (BCP Lvl 4)** | **~$8,351/month** | **~$100,212/year** | |
 
 ---
 
@@ -146,10 +148,10 @@ failover procedure.
 
 | Component | Saving | Adjusted monthly |
 |---|---|---|
-| Cluster nodes (6 × n2-standard-4) | 37% off ~$828 | ~$522 |
+| Cluster nodes (18 × n2-custom-4-8192) | 37% off ~$1,962 | ~$1,236 |
 | GKE management | No discount | ~$144 |
 | Cloud SQL | ~20% off ~$453 | ~$362 |
-| **Adjusted prod total** | | **~$1,028/month** |
+| **Adjusted prod total** | | **~$1,742/month** |
 
 ---
 

@@ -945,18 +945,19 @@ and two managed PostgreSQL instances.
 
 **Environment overview:**
 
-| | Dev | QA | Staging | Prod |
-|---|---|---|---|---|
-| Est. MR count | ~500–1,000 | ~1,800–2,700 | ~2,500–3,500 | ~9,000 |
-| Platform cluster | 1 × (2 vCPU, 4GB) | 2 × (2 vCPU, 4GB) | 2 × (4 vCPU, 8GB) | 3 × (4 vCPU, 8GB) |
-| Ops cluster | 1 × (2 vCPU, 4GB) | 2 × (2 vCPU, 4GB) | 2 × (4 vCPU, 8GB) | 3 × (4 vCPU, 8GB) |
-| API Server replicas | 1 | 1 | 2 | 2 (HPA 2–8) |
-| Temporal services | 1 each | 1 each | 1 each | 2 each |
-| Provisioning worker | 1 | 2 | 2 | 2 |
-| Drift worker | 1 | 1 | 1 | 2 |
-| Crossplane providers | 1 each | 1 each | 1 each | 2 each |
-| Platform DB | 1v / 2G / 5G, single | 1v / 2G / 10G, single | 1v / 2G / 10G, async standby | 2v / 4G / 20G, sync standby |
-| Temporal DB | 1v / 2G / 5G SSD, single | 1v / 2G / 10G SSD, single | 1v / 2G / 10G SSD, async standby | 2v / 4G / 20G SSD, sync standby |
+| | Dev | QA | Prod |
+|---|---|---|---|
+| Est. MR count | ~2,000–3,000 | ~9,000 | ~9,000 |
+| Platform cluster | 2 nodes/zone (6 total) e2-custom-2-4096 | 3 nodes/zone (9 total) n2-custom-4-8192 | 3 nodes/zone (9 total) n2-custom-4-8192 |
+| Ops cluster | 2 nodes/zone (6 total) e2-custom-2-4096 | 3 nodes/zone (9 total) n2-custom-4-8192 | 3 nodes/zone (9 total) n2-custom-4-8192 |
+| API Server replicas | 1 | 2 (HPA 2–8) | 2 (HPA 2–8) |
+| Temporal services | 1 each | 2 each | 2 each |
+| Provisioning worker | 2 | 2 | 2 |
+| Drift worker | 1 | 2 | 2 |
+| Crossplane providers | 1 each | 2 each | 2 each |
+| Platform DB | db-custom-1-3840, 10GB, single | db-custom-2-7680, 20GB, sync standby | db-custom-2-7680, 20GB, sync standby |
+| Temporal DB | db-custom-1-3840, 10GB SSD, single | db-custom-2-7680, 20GB SSD, sync standby | db-custom-2-7680, 20GB SSD, sync standby |
+| DR site | None | None | Option 2 if BCP Lvl 4 mandated |
 
 ---
 
@@ -978,21 +979,23 @@ Platform DB and Temporal DB run as managed instances outside this cluster.
 | drift-worker | 2 | 500m | 512Mi |
 | **Total** | **14 pods** | **3,400m** | **3,840Mi** |
 
-**Recommended node spec Year 1:** 3 nodes × (4 vCPU, 8GB RAM) across 3 AZs.
+**Recommended node spec Year 1:** 3 nodes per zone × 3 zones = 9 nodes total, n2-custom-4-8192 (4 vCPU, 8GB).
 
 ```
 Allocatable per node (system reserved ~0.5 vCPU, ~1GB):
-  CPU:    ~3.5 vCPU × 3 = ~10.5 vCPU total
-  Memory: ~7GB × 3      = ~21GB total
+  CPU:    ~3.5 vCPU × 9 nodes = ~31.5 vCPU total
+  Memory: ~13GB × 9 nodes     = ~117GB total
 
-vs Year 1 requests: 3.4 vCPU, 3.75GB
+vs Year 1 requests: 3.4 vCPU, 3.75GB — very comfortable headroom
 vs Year 1 limits:   ~8.5 vCPU, ~8.5Gi
-Headroom is comfortable for normal operation and burst.
+
+3 nodes per zone ensures zone failure tolerance: surviving 6 nodes
+comfortably absorb all pods without rescheduling pressure.
 ```
 
 **Year 5 note:** KEDA drift-worker scales to 20 pods (20 × 512Mi = 10Gi requests
-for drift-workers alone). Scale Platform cluster to 5 × (4 vCPU, 16GB) before
-KEDA is introduced, or increase node memory to 16GB at that point.
+for drift-workers alone). The existing 9-node spec has sufficient headroom through
+Year 5 — add nodes before KEDA is introduced if utilization approaches 70%.
 
 ---
 
@@ -1038,3 +1041,12 @@ informer cache growth as MR count grows toward Year 5.
 | Temporal DB | 2 vCPU | 4GB | 20GB SSD | Primary + Sync Standby |
 
 Both run as managed PostgreSQL (Cloud SQL or equivalent) — not K8s workloads.
+
+**Non-prod managed instances:**
+
+| Instance | Dev | QA |
+|---|---|---|
+| Platform DB | db-custom-1-3840, 10GB, single | db-custom-2-7680, 20GB, sync standby |
+| Temporal DB | db-custom-1-3840, 10GB SSD, single | db-custom-2-7680, 20GB SSD, sync standby |
+
+QA is 1:1 with prod (Option 1) — same spec, no DR site. Dev covers combined Dev + QA load with single instance DBs; disruption is tolerable.
