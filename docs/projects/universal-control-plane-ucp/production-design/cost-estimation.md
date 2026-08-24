@@ -26,11 +26,10 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 | GKE mode | Standard (not Autopilot) |
 | GKE cluster management fee | ~$72/month per cluster |
 | Node type (Dev) | e2-custom-2-4096 (2 vCPU, 4GB) |
-| Node type (QA/Prod) | n2-custom-4-8192 (4 vCPU, 8GB) |
-| Node type (Staging/Prod) | n2-custom-4-8192 (4 vCPU, 8GB) |
-| Cloud SQL (Dev/QA) | db-g1-small (shared-core, ~0.5 vCPU, 1.7GB) |
-| Cloud SQL (Staging) | db-custom-1-3840 (1 vCPU, 3.75GB) |
-| Cloud SQL (Prod) | db-custom-2-7680 (2 vCPU, 7.5GB) |
+| Node type (QA / Prod) | n2-custom-4-8192 (4 vCPU, 8GB) |
+| Cloud SQL (Dev) | db-custom-1-3840 (1 vCPU, 3.75GB) |
+| Cloud SQL (QA / Prod) | db-custom-2-7680 (2 vCPU, 7.5GB) |
+| OneCloud LBaaS pricing | FY2027 unit prices (JPY, from roc_flavors_export). Converted at ¥150/USD. |
 | Cloud SQL storage | SSD ~$0.17/GB/month |
 | Cloud SQL HA | ~1.5× single instance cost (standby replica) |
 
@@ -47,7 +46,9 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 | GKE cluster management | — | 2 | ~$72 | ~$144 |
 | Platform DB | db-custom-1-3840, single, 10GB | 1 | ~$55 | ~$55 |
 | Temporal DB | db-custom-1-3840, single, 10GB SSD | 1 | ~$55 | ~$55 |
-| **Total** | | | | **~$674/month** |
+| LBaaS GSLB | 1 DNS record (¥3.47/hr × 730hr = ¥2,534/month) | 1 | ~$17 | ~$17 |
+| LBaaS DLB | 1 shared DLB gateway to GCP (¥0.58/hr × 730hr = ¥425/month) | 1 | ~$3 | ~$3 |
+| **Total** | | | | **~$694/month** |
 
 ---
 
@@ -60,22 +61,11 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 | GKE cluster management | — | 2 | ~$72 | ~$144 |
 | Platform DB | db-custom-2-7680, sync standby, 20GB | 1 | ~$225 | ~$225 |
 | Temporal DB | db-custom-2-7680, sync standby, 20GB SSD | 1 | ~$228 | ~$228 |
-| **Total** | | | | **~$2,559/month** |
+| LBaaS GSLB | 1 DNS record (¥3.47/hr × 730hr = ¥2,534/month) | 1 | ~$17 | ~$17 |
+| LBaaS DLB | 1 shared DLB gateway to GCP (¥0.58/hr × 730hr = ¥425/month) | 1 | ~$3 | ~$3 |
+| **Total** | | | | **~$2,579/month** |
 
 QA is 1:1 with prod (Option 1) — same spec, no DR site.
-
----
-
-### Staging
-
-| Component | Spec | Count | Unit cost/month | Total/month |
-|---|---|---|---|---|
-| Platform cluster nodes | n2-custom-4-8192, 2 nodes/zone × 3 zones = 6 | ~$109 | ~$654 |
-| Ops cluster nodes | n2-custom-4-8192, 2 nodes/zone × 3 zones = 6 | ~$109 | ~$654 |
-| GKE cluster management | — | 2 | ~$72 | ~$144 |
-| Platform DB | db-custom-1-3840, async standby, 10GB | 1 | ~$83 | ~$83 |
-| Temporal DB | db-custom-1-3840, async standby, 10GB SSD | 1 | ~$83 | ~$83 |
-| **Total** | | | | **~$862/month** |
 
 ---
 
@@ -91,7 +81,9 @@ standby provides zone-level HA. This is the baseline production deployment.
 | GKE cluster management | — | 2 | ~$72 | ~$144 |
 | Platform DB | db-custom-2-7680, sync standby, 20GB | 1 | ~$225 | ~$225 |
 | Temporal DB | db-custom-2-7680, sync standby, 20GB SSD | 1 | ~$228 | ~$228 |
-| **Prod total** | | | | **~$2,559/month** |
+| LBaaS GSLB | 1 DNS record (¥3.47/hr × 730hr = ¥2,534/month) | 1 | ~$17 | ~$17 |
+| LBaaS DLB | 1 shared DLB gateway to GCP (¥0.58/hr × 730hr = ¥425/month) | 1 | ~$3 | ~$3 |
+| **Prod total** | | | | **~$2,579/month** |
 
 ### Prod + DR Site (BCP Level 4 — Multi-Region, Active-Standby)
 
@@ -110,13 +102,67 @@ failover procedure.
 | GKE cluster management | — | 2 | ~$72 | ~$144 |
 | Platform DB | Cross-region read replica, 20GB | 1 | ~$225 | ~$225 |
 | Temporal DB | Cross-region read replica, 20GB SSD | 1 | ~$228 | ~$228 |
-| **DR site total** | | | | **~$2,559/month** |
+| LBaaS DLB (Osaka gateway) | 1 additional DLB for DR site routing (¥0.58/hr × 730hr) | 1 | ~$3 | ~$3 |
+| **DR site total** | | | | **~$2,562/month** |
 
 | | Monthly | Notes |
 |---|---|---|
-| Prod (primary) | ~$1,425 | |
-| DR site (standby) | ~$1,425 | Same spec — must handle full prod load on failover |
-| **Prod + DR total** | **~$2,850/month** | ~2× prod cost — standby is idle but must be ready |
+| Prod (primary) | ~$2,579 | Includes LBaaS GSLB + DLB |
+| DR site (Osaka standby) | ~$2,562 | Same compute spec; GSLB shared, extra DLB for Osaka routing |
+| **Prod + DR total** | **~$5,141/month** | ~2× prod cost — standby idle but must handle full load on failover |
+
+---
+
+## OneCloud LBaaS Detail
+
+UCP uses Rakuten OneCloud LBaaS for the internal traffic entry point regardless of
+which cloud option is chosen. All prices are FY2027 unit prices from
+`roc_flavors_export_2027-07-27.csv`, billed per hour. Converted at ¥150/USD.
+
+### Components UCP requires
+
+| Component | Flavor | Unit | FY2027 Price (¥/hr) |
+|---|---|---|---|
+| GSLB | GLB-Hour-DNS Record | Per DNS record | ¥3.4708 |
+| Shared DLB | Shared DLB-Hour-Load Balancer | Per LB instance | ¥0.5823 |
+| Bandwidth | Shared DLB-Hour-Mega bit/Second | Per Mbps | ¥0.0932 |
+| New connections | Shared DLB-Hour-New Connection/Second | Per new conn/s | ¥0.0083 |
+| Concurrent connections | Shared DLB-Hour-Concurrent Connection | Per concurrent conn | ¥0.0001 |
+
+**What UCP uses per environment:**
+- 1 GSLB DNS record — single entry point for `ucp.internal.rakuten.com`
+- 1 Shared DLB — gateway instance routing internal traffic to GCP via Dedicated Interconnect
+- Bandwidth and connections: negligible — UCP serves internal users only, average traffic ~0.003 req/s
+
+### Monthly calculation (730 hours/month)
+
+| Component | Qty | ¥/month | ~/month (USD) |
+|---|---|---|---|
+| GSLB DNS record | 1 | ¥2,534 | ~$17 |
+| Shared DLB | 1 | ¥425 | ~$3 |
+| Bandwidth (<1 Mbps avg) | ~1 Mbps | ¥68 | ~$0.50 |
+| Connections (negligible at UCP traffic level) | — | ~¥1 | ~$0 |
+| **Total per environment** | | **¥3,028** | **~$20/month** |
+
+### Per-environment LBaaS cost
+
+| Environment | GSLB | DLB(s) | Total (¥/month) | Total (~USD/month) |
+|---|---|---|---|---|
+| Dev | 1 DNS record | 1 DLB (GCP gateway) | ¥3,028 | ~$20 |
+| QA | 1 DNS record | 1 DLB (GCP gateway) | ¥3,028 | ~$20 |
+| Prod (BCP Lvl 3) | 1 DNS record | 1 DLB (GCP gateway) | ¥3,028 | ~$20 |
+| Prod + DR (BCP Lvl 4) | 1 DNS record | 2 DLBs (Tokyo + Osaka gateway) | ¥3,453 | ~$23 |
+
+> **Note on Professional Support fee:** LBaaS has a platform support fee of
+> ¥12,929/month. This is a shared organisational cost — confirm with LBaaS team
+> whether UCP would be charged this as a new tenant or whether it is absorbed
+> into existing contracts.
+
+### BCP Level 3 vs 4 difference (LBaaS only)
+
+For Option 2 (multi-region DR), the GSLB is shared — it already routes to multiple
+backends. The only additional cost is 1 extra DLB instance in Osaka as the DR
+gateway: +¥425/month (+~$3/month). The DR cost impact from LBaaS is negligible.
 
 ---
 
@@ -124,13 +170,13 @@ failover procedure.
 
 | Environment | Monthly | Annual | Notes |
 |---|---|---|---|
-| Dev | ~$674 | ~$8,088 | Covers combined Dev + QA load |
-| QA | ~$2,559 | ~$30,708 | 1:1 with prod, no DR site |
-| Prod (BCP Lvl 3, multi-AZ only) | ~$2,559 | ~$30,708 | |
-| **Total (BCP Lvl 3)** | **~$5,792/month** | **~$69,504/year** | |
+| Dev | ~$694 | ~$8,328 | GCP + LBaaS. Covers combined Dev + integration test load |
+| QA | ~$2,579 | ~$30,948 | GCP + LBaaS. 1:1 with prod, no DR site |
+| Prod (BCP Lvl 3, multi-AZ only) | ~$2,579 | ~$30,948 | GCP + LBaaS |
+| **Total (BCP Lvl 3)** | **~$5,852/month** | **~$70,224/year** | |
 | | | | |
-| + DR site (BCP Lvl 4, multi-region) | +~$2,559 | +~$30,708 | Active-standby in Osaka |
-| **Total (BCP Lvl 4)** | **~$8,351/month** | **~$100,212/year** | |
+| + DR site (BCP Lvl 4, multi-region) | +~$2,562 | +~$30,744 | GCP Osaka + extra DLB |
+| **Total (BCP Lvl 4)** | **~$8,414/month** | **~$100,968/year** | |
 
 ---
 
@@ -151,7 +197,8 @@ failover procedure.
 | Cluster nodes (18 × n2-custom-4-8192) | 37% off ~$1,962 | ~$1,236 |
 | GKE management | No discount | ~$144 |
 | Cloud SQL | ~20% off ~$453 | ~$362 |
-| **Adjusted prod total** | | **~$1,742/month** |
+| LBaaS | No discount (OneCloud pricing) | ~$20 |
+| **Adjusted prod total** | | **~$1,762/month** |
 
 ---
 
