@@ -124,8 +124,8 @@ which cloud option is chosen. All prices are FY2027 unit prices from
 | Component | Flavor | Unit | FY2027 Price (¥/hr) |
 |---|---|---|---|
 | GSLB | GLB-Hour-DNS Record | Per DNS record | ¥3.4708 |
-| Shared DLB | Shared DLB-Hour-Load Balancer | Per LB instance | ¥0.5823 |
-| Bandwidth | Shared DLB-Hour-Mega bit/Second | Per Mbps | ¥0.0932 |
+| Shared DLB | Shared DLB-Hour-Load Balancer (non-CaaS) | Per LB instance | ¥0.5823 |
+| Bandwidth | Shared DLB-Hour-Mega bit/Second (non-CaaS) | Per Mbps | ¥0.0932 |
 | New connections | Shared DLB-Hour-New Connection/Second | Per new conn/s | ¥0.0083 |
 | Concurrent connections | Shared DLB-Hour-Concurrent Connection | Per concurrent conn | ¥0.0001 |
 
@@ -133,6 +133,23 @@ which cloud option is chosen. All prices are FY2027 unit prices from
 - 1 GSLB DNS record — single entry point for `ucp.internal.rakuten.com`
 - 1 Shared DLB — gateway instance routing internal traffic to GCP via Dedicated Interconnect
 - Bandwidth and connections: negligible — UCP serves internal users only, average traffic ~0.003 req/s
+
+**Why Shared DLB, not Dedicated:**
+
+LBaaS also offers Dedicated DLB nodes (¥30.92/hr = ~¥22,572/month per node) which
+reserve an entire DLB node exclusively for one tenant. UCP uses Shared DLB for the
+following reasons:
+
+| | Shared DLB | Dedicated DLB |
+|---|---|---|
+| Cost | ¥0.58/hr per LB (~¥425/month) | ¥30.92/hr per node (~¥22,572/month) — ~53× more expensive |
+| Traffic isolation | Multi-tenant shared infrastructure | Exclusive node, no noisy neighbour |
+| Use case | Standard workloads | High-traffic or strict SLA requirements |
+
+UCP serves internal users only at ~0.003 req/s average. There is no performance
+isolation requirement, no bandwidth constraint, and no compliance requirement that
+would justify a dedicated node. Shared DLB is sufficient for UCP's entire lifecycle
+at the traffic volumes projected.
 
 ### Monthly calculation (730 hours/month)
 
@@ -146,12 +163,51 @@ which cloud option is chosen. All prices are FY2027 unit prices from
 
 ### Per-environment LBaaS cost
 
+**Option 1 (Single Cloud) and Option 2 (Multi-Region Active-Standby): Single DLB**
+
+Only 1 active backend target per environment — no traffic distribution between multiple active backends. Single DLB is sufficient.
+
 | Environment | GSLB | DLB(s) | Total (¥/month) | Total (~USD/month) |
 |---|---|---|---|---|
-| Dev | 1 DNS record | 1 DLB (GCP gateway) | ¥3,028 | ~$20 |
-| QA | 1 DNS record | 1 DLB (GCP gateway) | ¥3,028 | ~$20 |
-| Prod (BCP Lvl 3) | 1 DNS record | 1 DLB (GCP gateway) | ¥3,028 | ~$20 |
-| Prod + DR (BCP Lvl 4) | 1 DNS record | 2 DLBs (Tokyo + Osaka gateway) | ¥3,453 | ~$23 |
+| Dev | 1 DNS record | 1 shared DLB (GCP gateway) | ¥3,028 | ~$20 |
+| QA | 1 DNS record | 1 shared DLB (GCP gateway) | ¥3,028 | ~$20 |
+| Prod (BCP Lvl 3) | 1 DNS record | 1 shared DLB (GCP gateway) | ¥3,028 | ~$20 |
+| Prod + DR (BCP Lvl 4) | 1 DNS record | 2 shared DLBs (Tokyo + Osaka gateway) | ¥3,453 | ~$23 |
+| **Total LBaaS (Option 1/2, all envs)** | | | **¥9,084/month** | **~$61/month** |
+
+**Option 3 (Multi-Cloud Active-Active): DLB on DLB for QA and Prod, single DLB for Dev**
+
+Dev uses single DLB — development testing doesn't need accurate multi-cloud traffic weighting.
+QA mirrors prod Option 3 — QA must validate the full DLB on DLB traffic path before production deployment.
+
+| Environment | LBaaS setup | Total (¥/month) | Total (~USD/month) |
+|---|---|---|---|
+| Dev | Single DLB (same as Option 1/2) | ¥3,028 | ~$20 |
+| QA | DLB on DLB (mirrors prod Option 3) | ¥48,953 | ~$327 |
+| Prod | DLB on DLB | ¥48,953 | ~$327 |
+| **Total LBaaS (Option 3, all envs)** | | **¥100,934/month** | **~$673/month** |
+
+**Option 3 (Multi-Cloud Active-Active): DLB on DLB**
+
+Active-active distributes live traffic between GCP and CaaS simultaneously. GSLB is DNS-based — DNS caching causes short-window traffic imbalance (e.g. a "50%:50%" split could be 10%:90% in a 1-minute window). DLB on DLB solves this with a 2-layer architecture providing 1% precision weighting, independent of DNS TTL.
+
+```
+GSLB → 1st DLB (dedicated, fine-grained weighting) → 2nd DLB-GCP (shared) → GCP LB → API servers
+                                                     → 2nd DLB-CaaS (shared) → CaaS → API servers
+```
+
+The 1st DLB requires a **dedicated cluster** (DLB on DLB scope per LBaaS documentation). Minimum 2 dedicated nodes for HA within the 1st layer.
+
+| Component | Spec | ¥/month |
+|---|---|---|
+| GSLB DNS record | GLB-Hour-DNS Record × 730hr | ¥2,534 |
+| 1st DLB — dedicated cluster (2 nodes, HA) | 2 × Dedicated DLB-Hour-Node × 730hr | ¥45,144 |
+| Reserved VIP on dedicated cluster | Dedicated DLB-Hour-Reserved VIP × 730hr | ¥425 |
+| 2nd DLB — GCP gateway (shared) | Shared DLB-Hour-Load Balancer × 730hr | ¥425 |
+| 2nd DLB — CaaS gateway (shared) | Shared DLB-Hour-Load Balancer × 730hr | ¥425 |
+| **Total per environment (Option 3)** | | **¥48,953/month (~$327/month)** |
+
+Option 3 LBaaS cost is ~16× higher than Options 1/2 due to the dedicated cluster requirement. Still small relative to overall infrastructure cost (~6% of Option 3 total).
 
 > **Note on Professional Support fee:** LBaaS has a platform support fee of
 > ¥12,929/month. This is a shared organisational cost — confirm with LBaaS team
@@ -202,12 +258,58 @@ gateway: +¥425/month (+~$3/month). The DR cost impact from LBaaS is negligible.
 
 ---
 
+## Dedicated Interconnect Traffic Cost
+
+UCP traffic between Rakuten internal network and GCP crosses the **GATD Shared VPC line**
+(Rakuten x GCP Dedicated Interconnect, 40 Gbps shared). Charged per GB both directions.
+
+**Official rate (from January 2026):** **22.22 JPY/GB** — ingress and egress
+Source: [Public Cloud Cost Allocation and Billing](https://confluence.rakuten-it.com/confluence/spaces/CLOUDSOL/pages/6711068530/Public+Cloud+Cost+Allocation+and+Billing)
+(Section 5). Cannot be opted out. Billed 1 month after usage per Service ID.
+
+**UCP traffic estimate:**
+
+UCP serves internal users at ~0.003 req/s average, ~5–10KB round-trip per request.
+
+```
+All traffic to GCP (Options 1 / 2):
+  0.003 req/s × 2,592,000 s/month × 7.5KB avg = ~58 GB/month
+  58 GB × 22.22 JPY = ~¥1,289/month ≈ ~$9/month
+
+Option 3 (50% user traffic to GCP + cross-cloud component calls):
+  ~60 GB/month (conservative) × 22.22 JPY = ~¥1,333/month ≈ ~$9/month
+```
+
+**Conclusion:** Interconnect traffic cost is negligible for UCP at Year 1 traffic levels — same order of magnitude (~$9/month) regardless of option. Becomes relevant only at sustained high throughput or large payload sizes.
+
+---
+
+## Additional GCP Cost Components
+
+The following surcharges apply on top of all GCP compute costs. Source: [Public Cloud Cost Allocation and Billing](https://confluence.rakuten-it.com/confluence/spaces/CLOUDSOL/pages/6711068530/Public+Cloud+Cost+Allocation+and+Billing).
+
+| Surcharge | Rate | Notes |
+|---|---|---|
+| GCP base discount | ~29% off list price | Applied at Rakuten enterprise contract level — already reflected in per-node estimates |
+| GCP Premium Support (CCoE) | ~5% of GCP spend | Allocated proportionally. Cannot be opted out. |
+| CCoE Professional Support | 2.0% (FY26) / up to 3.5% (FY27) | Applied to One Cloud bill, 2 months after usage |
+
+**Estimated surcharge impact on prod (BCP Lvl 3, ~$2,559/month GCP spend):**
+
+| Surcharge | FY26 | FY27 |
+|---|---|---|
+| CCoE Premium Support (~5%) | ~$128/month | ~$128/month |
+| CCoE Professional Support | ~$51/month (2%) | ~$90/month (3.5%) |
+| **Total surcharges** | **~$179/month** | **~$218/month** |
+
+These are not included in the per-environment estimates above. Add them to the final budget projection.
+
+---
+
 ## What Is Not Included
 
 | Item | Notes |
 |---|---|
-| Egress / network traffic | Cross-region egress from Dedicated Interconnect calls. Negligible at Year 1 scale (~$0.01/GB). |
 | Cloud Storage (GCS) | Used for Temporal archival and OIDC JWKS hosting. Negligible cost (<$5/month). |
 | Cloud Monitoring / Logging | Depends on log volume and retention. Estimate separately. |
 | CaaS hosting costs | If Ops cluster or Platform cluster runs on CaaS instead of GKE, costs are billed through OneCloud. Not modelled here. |
-| Dedicated Interconnect | Typically a shared organisational cost, not UCP-specific. |
