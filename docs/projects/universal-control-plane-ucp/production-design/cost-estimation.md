@@ -63,7 +63,8 @@ GCP costs from Calculator (2026-08-28). Regional cluster, same spec as prod prim
 | GCP Load Balancer | | $19.85 |
 | **GCP subtotal** | | **$3,747.87** |
 | LBaaS GSLB + DLB | ¥3,028/month ÷ ¥150 | ~$20 |
-| **Total** | | **~$3,768/month** |
+| GCP Secret Manager | ~15 secrets × $0.06 + ~21,600 ops × $0.03/10k | ~$1 |
+| **Total** | | **~$3,769/month** |
 
 QA mirrors prod primary site spec — same spec as prod Tokyo, no DR site.
 
@@ -85,11 +86,11 @@ as active-standby DR. Option 2 approved 2026-08-28.
 | GCP Load Balancer | | $19.85 |
 | **GCP per site** | | **$3,747.87** |
 
-| | GCP | LBaaS | Monthly total |
-|---|---|---|---|
-| Prod primary (Tokyo) | $3,747.87 | ~$20 (GSLB + DLB) | ~$3,768 |
-| DR site (Osaka standby) | $3,747.87 | ~$3 (extra DLB only) | ~$3,751 |
-| **Prod + DR total** | **$7,495.74** | **~$23** | **~$7,519/month** |
+| | GCP | LBaaS | Secret Manager | Monthly total |
+|---|---|---|---|---|
+| Prod primary (Tokyo) | $3,747.87 | ~$20 (GSLB + DLB) | ~$1 | ~$3,769 |
+| DR site (Osaka standby) | $3,747.87 | ~$3 (extra DLB only) | — | ~$3,751 |
+| **Prod + DR total** | **$7,495.74** | **~$23** | **~$1** | **~$7,520/month** |
 
 ~2× prod cost — standby is idle but must handle full load on failover.
 
