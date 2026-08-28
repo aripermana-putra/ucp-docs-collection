@@ -613,19 +613,29 @@ GKE is the preferred deployment target for the Ops cluster because Workload Iden
 eliminates long-lived credentials entirely. On CaaS, the SA key requires manual
 rotation and secure storage.
 
+**When introduced:** ESO and GCP Secret Manager are introduced together with Option 2
+(2 Ops clusters — Tokyo + Osaka). Both clusters pull credentials from the same Secret
+Manager instance, ensuring Osaka always has current credentials before failover.
+Without this, stale credentials on the standby cluster would break reconciliation the
+moment failover is triggered.
+
+**GCP Secret Manager cost:** ~15–20 secrets × $0.06/version/month + ~21,600 operations
+(2 clusters × 15 secrets × 24 refreshes/day × 30 days) × $0.03/10,000 = **~$1/month**.
+Negligible.
+
 ---
 
 ## QA Environment
 
-QA is the pre-production validation environment — 1:1 with prod (Option 1). It manages
-the same resource scope as prod, runs the same component specs, and validates UCP changes
-before production deployment. No DR site configured.
+QA is the pre-production validation environment. It mirrors the **prod primary site spec**
+(Tokyo, same cluster and DB configuration) and validates UCP changes before production
+deployment. No DR site — QA disruption is tolerable.
 
 **Sizing basis:**
-- Resource count: ~9,000 MRs — same as prod
-- All pod specs identical to prod
+- Resource count: ~9,000 MRs — same as prod primary site
+- All pod specs identical to prod primary site
 - Platform DB and Temporal DB: same spec as prod with sync standby within region
-- No DR site (no Osaka) — QA disruption is tolerable, regional disaster recovery not required
+- No DR site — QA does not replicate the Osaka DR site
 - Audit log retention: 36 months (same as prod)
 
 All component specs are identical to prod. See each prod component section for
@@ -637,10 +647,12 @@ detailed specs. Key differences from prod:
 | Pod replicas | Same as prod | — |
 | Platform DB | db-custom-2-7680, 20GB, sync standby | Same |
 | Temporal DB | db-custom-2-7680, 20GB SSD, sync standby | Same |
-| DR site | None | Option 2 if BCP Lvl 4 mandated |
+| DR site | None | GCP Osaka (asia-northeast2), active-standby — confirmed (Option 2 approved) |
 | Audit log retention | 36 months | 36 months |
 
-**Redis, KEDA, ESO:** Same deferral rules as prod.
+**Redis, KEDA:** Deferred — same rules as prod.
+**ESO:** Active — same spec and Secret Manager setup as prod. QA Ops cluster syncs
+credentials from the same GCP Secret Manager instance as prod.
 
 ---
 
@@ -722,7 +734,9 @@ All providers: 1 replica each.
 
 ### Redis, KEDA, ESO (Dev)
 
-Same deferral rules as prod. ESO same spec as QA.
+**Redis, KEDA:** Deferred — same rules as prod.
+**ESO:** Deferred for Dev. Credentials managed as manual K8s secrets. Dev does not
+require synchronized credentials across multiple clusters.
 
 ---
 
@@ -745,7 +759,8 @@ and two managed PostgreSQL instances.
 | Crossplane providers | 1 each | 2 each | 2 each |
 | Platform DB | db-custom-1-3840, 10GB, single | db-custom-2-7680, 20GB, sync standby | db-custom-2-7680, 20GB, sync standby |
 | Temporal DB | db-custom-1-3840, 10GB SSD, single | db-custom-2-7680, 20GB SSD, sync standby | db-custom-2-7680, 20GB SSD, sync standby |
-| DR site | None | None | Option 2 if BCP Lvl 4 mandated |
+| DR site | None | None | GCP Osaka (asia-northeast2), active-standby — confirmed (Option 2 approved) |
+| ESO + Secret Manager | Deferred — manual K8s secrets | Active — syncs from GCP Secret Manager | Active — Tokyo + Osaka both pull from same Secret Manager (~$1/month) |
 
 ---
 
@@ -837,4 +852,4 @@ Both run as managed PostgreSQL (Cloud SQL or equivalent) — not K8s workloads.
 | Platform DB | db-custom-1-3840, 10GB, single | db-custom-2-7680, 20GB, sync standby |
 | Temporal DB | db-custom-1-3840, 10GB SSD, single | db-custom-2-7680, 20GB SSD, sync standby |
 
-QA is 1:1 with prod (Option 1) — same spec, no DR site. Dev covers combined Dev + QA load with single instance DBs; disruption is tolerable.
+QA mirrors prod primary site spec — same cluster and DB spec as prod Tokyo, no DR site. Dev covers combined Dev + integration test load with single instance DBs; disruption is tolerable.

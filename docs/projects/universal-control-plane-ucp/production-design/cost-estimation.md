@@ -21,17 +21,14 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 
 | Parameter | Value |
 |---|---|
-| Region | asia-northeast1 (Tokyo) |
-| Pricing model | On-demand (no discounts applied) |
-| GKE mode | Standard (not Autopilot) |
-| GKE cluster management fee | ~$72/month per cluster |
-| Node type (Dev) | e2-custom-2-4096 (2 vCPU, 4GB) |
-| Node type (QA / Prod) | n2-custom-4-8192 (4 vCPU, 8GB) |
-| Cloud SQL (Dev) | db-custom-1-3840 (1 vCPU, 3.75GB) |
-| Cloud SQL (QA / Prod) | db-custom-2-7680 (2 vCPU, 7.5GB) |
+| GCP costs | Actual from GCP Pricing Calculator, effective 2026-08-28. On-demand, no discounts. |
+| Region | asia-northeast1 (Tokyo) for primary; asia-northeast2 (Osaka) for DR site |
+| Node type (Dev) | e2-custom-2-4096 (2 vCPU, 4GB), Zonal cluster |
+| Node type (QA / Prod) | n2-custom-4-8192 (4 vCPU, 8GB), Regional cluster |
+| Cloud SQL (Dev) | Zonal - Small instance |
+| Cloud SQL (QA / Prod) | Regional (sync standby) |
 | OneCloud LBaaS pricing | FY2027 unit prices (JPY, from roc_flavors_export). Converted at ¥150/USD. |
-| Cloud SQL storage | SSD ~$0.17/GB/month |
-| Cloud SQL HA | ~1.5× single instance cost (standby replica) |
+| Option 2 (approved) | Prod primary (Tokyo) × 2 — same spec deployed in Osaka as active-standby DR |
 
 ---
 
@@ -39,77 +36,62 @@ Specs are sourced from [Component Sizing](component-sizing.md).
 
 ### Dev
 
-| Component | Spec | Count | Unit cost/month | Total/month |
-|---|---|---|---|---|
-| Platform cluster nodes | e2-custom-2-4096, 2 nodes/zone × 3 zones = 6 | ~$35 | ~$210 |
-| Ops cluster nodes | e2-custom-2-4096, 2 nodes/zone × 3 zones = 6 | ~$35 | ~$210 |
-| GKE cluster management | — | 2 | ~$72 | ~$144 |
-| Platform DB | db-custom-1-3840, single, 10GB | 1 | ~$55 | ~$55 |
-| Temporal DB | db-custom-1-3840, single, 10GB SSD | 1 | ~$55 | ~$55 |
-| LBaaS GSLB | 1 DNS record (¥3.47/hr × 730hr = ¥2,534/month) | 1 | ~$17 | ~$17 |
-| LBaaS DLB | 1 shared DLB gateway to GCP (¥0.58/hr × 730hr = ¥425/month) | 1 | ~$3 | ~$3 |
-| **Total** | | | | **~$694/month** |
+GCP costs from Calculator (2026-08-28). Zonal cluster (no HA required for Dev).
+
+| Component | GCP Calculator | Total/month |
+|---|---|---|
+| Platform Cluster (Zonal, e2-custom-2-4096, 6 nodes) | Mgmt $73 + PD $39 + Core $128.89 + RAM $34.39 | $275.28 |
+| Ops Cluster (Zonal, e2-custom-2-4096, 6 nodes) | Same | $275.28 |
+| Platform DB (Zonal Small, 10GB) | $33.58 + $2.21 | $35.79 |
+| Temporal DB (Zonal Small, 10GB) | $33.58 + $2.21 | $35.79 |
+| **GCP subtotal** | | **$622.14** |
+| LBaaS GSLB + DLB | ¥3,028/month ÷ ¥150 | ~$20 |
+| **Total** | | **~$642/month** |
 
 ---
 
 ### QA
 
-| Component | Spec | Count | Unit cost/month | Total/month |
-|---|---|---|---|---|
-| Platform cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
-| Ops cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
-| GKE cluster management | — | 2 | ~$72 | ~$144 |
-| Platform DB | db-custom-2-7680, sync standby, 20GB | 1 | ~$225 | ~$225 |
-| Temporal DB | db-custom-2-7680, sync standby, 20GB SSD | 1 | ~$228 | ~$228 |
-| LBaaS GSLB | 1 DNS record (¥3.47/hr × 730hr = ¥2,534/month) | 1 | ~$17 | ~$17 |
-| LBaaS DLB | 1 shared DLB gateway to GCP (¥0.58/hr × 730hr = ¥425/month) | 1 | ~$3 | ~$3 |
-| **Total** | | | | **~$2,579/month** |
+GCP costs from Calculator (2026-08-28). Regional cluster, same spec as prod primary.
 
-QA is 1:1 with prod (Option 1) — same spec, no DR site.
+| Component | GCP Calculator | Total/month |
+|---|---|---|
+| Platform Cluster (Regional, n2-custom-4-8192, 9 nodes) | Mgmt $73 + PD $117 + Core $1,120.81 + RAM $299.06 | $1,609.87 |
+| Ops Cluster (Regional, n2-custom-4-8192, 9 nodes) | Same | $1,609.87 |
+| Platform DB (Regional sync standby, 20GB) | vCPU $156.80 + RAM $53.14 + Storage $44.20 | $254.14 |
+| Temporal DB (Regional sync standby, 20GB) | Same | $254.14 |
+| GCP Load Balancer | | $19.85 |
+| **GCP subtotal** | | **$3,747.87** |
+| LBaaS GSLB + DLB | ¥3,028/month ÷ ¥150 | ~$20 |
+| **Total** | | **~$3,768/month** |
+
+QA mirrors prod primary site spec — same spec as prod Tokyo, no DR site.
 
 ---
 
-### Prod (BCP Level 3 — Multi-AZ)
+### Prod (BCP Level 4 — Multi-Region, Active-Standby) ← **Confirmed**
 
-Primary site in asia-northeast1 (Tokyo), nodes spread across 3 AZs. Cloud SQL sync
-standby provides zone-level HA. This is the baseline production deployment.
+Primary site in asia-northeast1 (Tokyo) × same spec deployed in asia-northeast2 (Osaka)
+as active-standby DR. Option 2 approved 2026-08-28.
 
-| Component | Spec | Count | Unit cost/month | Total/month |
-|---|---|---|---|---|
-| Platform cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
-| Ops cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
-| GKE cluster management | — | 2 | ~$72 | ~$144 |
-| Platform DB | db-custom-2-7680, sync standby, 20GB | 1 | ~$225 | ~$225 |
-| Temporal DB | db-custom-2-7680, sync standby, 20GB SSD | 1 | ~$228 | ~$228 |
-| LBaaS GSLB | 1 DNS record (¥3.47/hr × 730hr = ¥2,534/month) | 1 | ~$17 | ~$17 |
-| LBaaS DLB | 1 shared DLB gateway to GCP (¥0.58/hr × 730hr = ¥425/month) | 1 | ~$3 | ~$3 |
-| **Prod total** | | | | **~$2,579/month** |
+**Per site (Tokyo or Osaka) — from GCP Calculator (2026-08-28):**
 
-### Prod + DR Site (BCP Level 4 — Multi-Region, Active-Standby)
-
-DR site in asia-northeast2 (Osaka). Active-standby: the DR site runs at full spec and
-is ready to absorb 100% of traffic on failover, but serves no live traffic under normal
-conditions. Platform DB and Temporal DB use cross-region read replicas that are promoted
-to primary on failover. Temporal requires MCR (Multi-Cluster Replication) or manual
-failover procedure.
-
-**DR site (asia-northeast2):**
-
-| Component | Spec | Count | Unit cost/month | Total/month |
-|---|---|---|---|---|
-| Platform cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
-| Ops cluster nodes | n2-custom-4-8192, 3 nodes/zone × 3 zones = 9 | ~$109 | ~$981 |
-| GKE cluster management | — | 2 | ~$72 | ~$144 |
-| Platform DB | Cross-region read replica, 20GB | 1 | ~$225 | ~$225 |
-| Temporal DB | Cross-region read replica, 20GB SSD | 1 | ~$228 | ~$228 |
-| LBaaS DLB (Osaka gateway) | 1 additional DLB for DR site routing (¥0.58/hr × 730hr) | 1 | ~$3 | ~$3 |
-| **DR site total** | | | | **~$2,562/month** |
-
-| | Monthly | Notes |
+| Component | GCP Calculator | Total/month |
 |---|---|---|
-| Prod (primary) | ~$2,579 | Includes LBaaS GSLB + DLB |
-| DR site (Osaka standby) | ~$2,562 | Same compute spec; GSLB shared, extra DLB for Osaka routing |
-| **Prod + DR total** | **~$5,141/month** | ~2× prod cost — standby idle but must handle full load on failover |
+| Platform Cluster (Regional, n2-custom-4-8192, 9 nodes) | Mgmt $73 + PD $117 + Core $1,120.81 + RAM $299.06 | $1,609.87 |
+| Ops Cluster (Regional, n2-custom-4-8192, 9 nodes) | Same | $1,609.87 |
+| Platform DB (Regional sync standby, 20GB) | vCPU $156.80 + RAM $53.14 + Storage $44.20 | $254.14 |
+| Temporal DB (Regional sync standby, 20GB) | Same | $254.14 |
+| GCP Load Balancer | | $19.85 |
+| **GCP per site** | | **$3,747.87** |
+
+| | GCP | LBaaS | Monthly total |
+|---|---|---|---|
+| Prod primary (Tokyo) | $3,747.87 | ~$20 (GSLB + DLB) | ~$3,768 |
+| DR site (Osaka standby) | $3,747.87 | ~$3 (extra DLB only) | ~$3,751 |
+| **Prod + DR total** | **$7,495.74** | **~$23** | **~$7,519/month** |
+
+~2× prod cost — standby is idle but must handle full load on failover.
 
 ---
 
@@ -227,12 +209,13 @@ gateway: +¥425/month (+~$3/month). The DR cost impact from LBaaS is negligible.
 | Environment | Monthly | Annual | Notes |
 |---|---|---|---|
 | Dev | ~$694 | ~$8,328 | GCP + LBaaS. Covers combined Dev + integration test load |
-| QA | ~$2,579 | ~$30,948 | GCP + LBaaS. 1:1 with prod, no DR site |
-| Prod (BCP Lvl 3, multi-AZ only) | ~$2,579 | ~$30,948 | GCP + LBaaS |
-| **Total (BCP Lvl 3)** | **~$5,852/month** | **~$70,224/year** | |
+| Dev | ~$642 | ~$7,704 | GCP $622.14 + LBaaS ~$20 |
+| QA | ~$3,768 | ~$45,216 | GCP $3,747.87 + LBaaS ~$20 |
+| **Dev + QA subtotal** | **~$4,500 (GCP) + ¥6,056 (LBaaS)** | | GCP from Calculator 2026-08-28 |
 | | | | |
-| + DR site (BCP Lvl 4, multi-region) | +~$2,562 | +~$30,744 | GCP Osaka + extra DLB |
-| **Total (BCP Lvl 4)** | **~$8,414/month** | **~$100,968/year** | |
+| Prod primary (Tokyo) | ~$3,768 | ~$45,216 | GCP $3,747.87 + LBaaS ¥3,028 |
+| Prod DR site (Osaka) | ~$3,751 | ~$45,012 | GCP $3,747.87 + LBaaS ¥425 (extra DLB only) |
+| **Prod total (BCP Lvl 4) ← confirmed** | **~$7,500 (GCP) + ¥3,453 (LBaaS)** | | Option 2 approved 2026-08-28 |
 
 ---
 
