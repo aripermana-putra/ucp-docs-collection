@@ -73,17 +73,6 @@ PoC did not measure that difference quantitatively, but it is the same "one cent
 config vs. per-app CRD" shape noted in the
 [Components table](../../research/system-resource-monitoring.md#components-to-configure-and-manage).
 
-## Wall-clock time
-
-**~19 minutes** from `spot-pool` resize to the original two metric categories
-(`hostmetrics`/`kubeletstats`/`k8scluster`/`prometheus` receivers) confirmed queryable in Mimir
-(derived from Kubernetes object timestamps — see
-[implementation.md](implementation.md#wall-clock-time)). This excludes prior design/planning
-time and the sandbox cluster access setup (gcloud/kubectl auth), which is one-time per operator
-and not specific to this variant. Cloud SQL metrics via `googlecloudmonitoringreceiver` are not
-included in this figure — see [implementation.md](implementation.md#sandbox-cluster) for the
-IAM setup step they require.
-
 ## What this PoC did not prove
 
 - Production-scale traffic or query load against Mimir — sandbox traffic is not representative

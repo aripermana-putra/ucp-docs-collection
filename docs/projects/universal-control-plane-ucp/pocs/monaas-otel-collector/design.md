@@ -19,8 +19,9 @@ Human review document. Read this before the PoC starts executing.
 ## Research Question
 
 > What is the actual operational overhead of Option B's OTel Collector variant — measured as
-> component count, manifest count, and wall-clock setup time on the sandbox GKE cluster —
-> for GKE resource metrics, a custom application metric, and Cloud SQL infra metrics?
+> component count, manifest count, and which components require ongoing maintenance on the
+> sandbox GKE cluster — for GKE resource metrics, a custom application metric, and Cloud SQL
+> infra metrics?
 
 The parent research's Analysis and Recommendation treat Option B's operational-overhead
 figure as an estimate, not a measurement (see [Analysis — Push vs pull for application
@@ -37,9 +38,11 @@ comparison is explicitly out of scope for this PoC's own report.
 The OTel Collector variant narrows Option B's operational-overhead disadvantage compared to a
 plain self-managed Prometheus stack, by consolidating `node-exporter`,
 `kube-state-metrics`, and the Prometheus Operator's role into one collector binary type — but
-still requires materially more manifests, more distinct components, and more setup time than
-Option A's zero-deployment resource metrics and single `PodMonitoring` CRD for the custom app
-metric.
+still requires materially more manifests and more distinct components, at least one of which
+needs recurring, hands-on maintenance as new metric targets are added, than Option A's
+zero-deployment resource metrics and single `PodMonitoring` CRD for the custom app metric. One-time
+setup duration is not part of this comparison — it is upfront effort spent once, not recurring
+overhead.
 
 ---
 
@@ -56,7 +59,7 @@ metric.
 | Grafana Mimir, deployed in-cluster (monolithic mode) as the Cortex-compatible backend | ✅ | |
 | `prometheusremotewriteexporter` from the Collector to in-cluster Mimir | ✅ | |
 | PromQL query against Mimir confirming both resource and custom metrics are present | ✅ | |
-| Component/manifest count and wall-clock time recorded for Option B, comparable in shape to the Cloud Monitoring PoC's Option A numbers | ✅ | |
+| Component/manifest count, and which components require ongoing maintenance, recorded for Option B, comparable in shape to the Cloud Monitoring PoC's Option A numbers | ✅ | |
 | `googlecloudmonitoringreceiver` on the Deployment Collector, pulling Cloud SQL's own infra metrics (CPU, memory, disk, connections) from the Cloud Monitoring API for the `test-db-metrics` instance | ✅ | |
 | `roles/monitoring.viewer` granted to the node pools' default Compute Engine service account, for `googlecloudmonitoringreceiver` auth via ADC (Workload Identity is not enabled on this cluster — see Sandbox cluster) | ✅ | |
 | Producing the Option A vs Option B comparison itself | | ✅ — written into the parent research document once both PoCs have run, not into this PoC's own report |
@@ -98,7 +101,7 @@ flowchart TD
     P3 --> P4[Phase 4\nAdd prometheusreceiver scrape\nfor the sample workload]
     P4 --> P5[Phase 5\nConfigure googlecloudmonitoring\nreceiver for Cloud SQL]
     P5 --> P6[Phase 6\nQuery resource + custom +\nCloud SQL metric via Mimir PromQL]
-    P6 --> P7[Phase 7\nRecord component/manifest\ncount and wall-clock time]
+    P6 --> P7[Phase 7\nRecord component/manifest\ncount and maintenance burden]
     P6 -->|No data| Investigate[Investigate receiver config\n/ RBAC / exporter auth]
 ```
 
@@ -165,8 +168,11 @@ flowchart TD
 ### Phase 7 — Record
 
 1. Record: number of distinct manifests applied, number of distinct software components
-   deployed (matching the parent research's Components table categories), and wall-clock time
-   from "cluster with nothing added" to "all three metric categories queryable."
+   deployed (matching the parent research's Components table categories), and which of those
+   components require recurring, hands-on maintenance as new metric targets are added — this
+   matters more than one-time setup duration, since more components mean more things to
+   maintain and more things that can go wrong. One-time setup duration is not recorded as a
+   comparison metric.
 2. Hand these numbers to the parent research document, where they are compared against the
    Cloud Monitoring PoC's Option A numbers for the same metric categories.
 
@@ -180,7 +186,7 @@ flowchart TD
 | Resource metrics queryable | Node/pod resource metric visible via Mimir PromQL, sourced only from the OTel Collector (no GMP involved) |
 | Custom app metric queryable | Sample workload's counter metric visible via Mimir PromQL, sourced only from the OTel Collector |
 | Cloud SQL metric queryable | A `test-db-metrics` infra metric (e.g. CPU utilization) visible via Mimir PromQL, sourced via `googlecloudmonitoringreceiver` |
-| Overhead measured, not estimated | Component count, manifest count, and wall-clock time recorded for Option B, in a form directly comparable to the existing Cloud Monitoring PoC's Option A numbers |
+| Overhead measured, not estimated | Component count, manifest count, and which components require ongoing maintenance recorded for Option B, in a form directly comparable to the existing Cloud Monitoring PoC's Option A numbers |
 
 ---
 
@@ -188,12 +194,12 @@ flowchart TD
 
 | Risk | Mitigation / fallback |
 |------|---------------------|
-| `opentelemetry-operator` requires `cert-manager`, adding setup steps not present in Option A | Record installing `cert-manager` as part of Option B's measured setup time and manifest count — this is itself a data point, not something to work around |
+| `opentelemetry-operator` requires `cert-manager`, adding a component not present in Option A | Record `cert-manager` as part of Option B's measured component and manifest count — this is itself a data point, not something to work around |
 | `hostmetricsreceiver`/`kubeletstatsreceiver` need `hostNetwork`/`hostPath` or elevated RBAC not needed by GMP's managed collector | Budget time for RBAC troubleshooting; record any additional permission manifests in the component count |
 | DaemonSet Collector runs cluster-wide, adding real resource pressure to every node pool — `system-pool` is already at 37–72% CPU / 47–70% memory allocatable | This is intentional and expected — Option B's real-world DaemonSet would face the same pressure in production on every pool; if it doesn't fit, that is itself a finding for the comparison, not a PoC failure to route around |
 | Mimir's monolithic mode behaves differently under load than MonaaS's actual distributed Cortex | Acceptable for this PoC — the measurement target is tenant-side setup overhead, not backend query performance at scale |
 | Receiver/exporter version mismatches between `opentelemetry-operator`'s bundled Collector image and the specific receivers named in this design | Use the OTel Collector Contrib distribution, which bundles all receivers named here; note the specific image tag used in `implementation.md` |
-| `googlecloudmonitoringreceiver` requires GCP IAM setup (`roles/monitoring.viewer`) not needed by the other receivers | Record the IAM binding as a real setup step in Option B's measured setup time and manifest count, not something to work around |
+| `googlecloudmonitoringreceiver` requires GCP IAM setup (`roles/monitoring.viewer`) not needed by the other receivers | Record the IAM binding as a real setup step in Option B's measured manifest count, not something to work around |
 | Cloud SQL metrics only become visible in Cloud Monitoring after a short ingestion delay (separate from the Collector's own scrape interval) | Acceptable for this PoC; record the actual observed delay in `implementation.md` rather than treating an initial empty query as a failure |
 | `googlecloudmonitoringreceiver` emits no resource label identifying which Cloud SQL instance a metric came from — with 2+ instances (e.g. platform DB and Temporal DB, each active/standby), same-named metrics from different instances collide into one series | Not resolved in this PoC (only one instance exists in the sandbox project); requires further exploration — see Open Questions |
 
