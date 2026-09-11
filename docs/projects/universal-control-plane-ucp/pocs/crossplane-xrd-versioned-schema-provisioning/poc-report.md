@@ -49,6 +49,9 @@ and applied successfully — the core claim MCUCP-145's TRD depends on.
   version bump, not just the immediately-previous one.
 - Crossplane restarts cleanly on an XRD/CRD schema change with no crash loop, given a healthy
   underlying data disk (see Finding below for the contrasting case where it wasn't).
+- Provision's XR-target resolution (`Group`/`Kind`/`Resource`) is also zero-code-change once
+  derived from `EntrySchema` directly — the one exception noted in the initial Phase 6 run is
+  resolved (see Finding below).
 
 ## What Was Not Proven
 
@@ -57,9 +60,6 @@ and applied successfully — the core claim MCUCP-145's TRD depends on.
   time and did not test the without-restart path, so the restart's necessity remains unconfirmed
   (see design.md's Risks — this was flagged as an open question going in, not resolved by this
   run).
-- Zero-code-change extensibility for provision's *XR-target resolution* (the `Group`/`Kind`/
-  `Resource` lookup) — this is a known, explicitly scoped-out exception, not something this PoC
-  set out to prove (see Finding below).
 - Anything about real provisioning, availability checks, or the real MCUCP-146 `provision`
   endpoint's shape — explicitly out of scope (design.md Scope).
 
@@ -81,16 +81,20 @@ derivation/implementation prose (`StorageVersion`, `deriveEntrySchema`, `Describ
 have both been corrected to use `referenceable: true` consistently, with only one version marked
 `referenceable: true` at a time.
 
-## Finding — Provision's XR-target lookup is a scoped exception, and is likely trivially fixable
+## Finding — Provision's XR-target lookup — Resolved
 
-Provisioning the new `gcp-cloud-sql` XRD required adding one entry to `main.go`'s static
-`xrTargets` map before the running `apiserver` picked it up — the one part of Phase 6 that is
-not zero-code-change. This was scoped out deliberately going in (design.md Scope: "XR-target
-derivation" is out of scope), not discovered as an unplanned gap. Worth noting for any follow-up:
-`Group` (`spec.group`), `Kind` (`spec.names.kind`), and `Resource` (`spec.names.plural`) are all
-present verbatim on the same XRD object already being `LIST`ed for schema derivation — reading
-them directly, rather than maintaining a static map, looks like a small follow-up, not a hard
-problem. Not implemented here since it was out of scope.
+Provisioning the new `gcp-cloud-sql` XRD originally required adding one entry to `main.go`'s
+static `xrTargets` map before the running `apiserver` picked it up — the one part of Phase 6 that
+was not zero-code-change (deliberately scoped out per design.md's Scope: "XR-target derivation").
+This has since been fixed: `EntrySchema` now carries `Group`/`Kind`/`Resource`, read directly off
+the same XRD object's `spec.group`/`spec.names.kind`/`spec.names.plural` in the same
+`deriveEntrySchema` call as `Versions`/`StorageVersion` — no second call, no static registry.
+`httpapi.Server` no longer takes an `xrTargets` map at all; `handleProvision` builds the applied
+XR's `apiVersion`/`kind` and the dynamic client's `GroupVersionResource` from the cached
+`EntrySchema` alone. Verified against the live cluster: both `gcp-gke` (`v1gamma1`) and
+`gcp-cloud-sql` (`v1alpha1`) provision successfully with zero entries in any static map. MCUCP-145's
+TRD has been updated to carry `Group`/`Kind`/`Resource` as part of `EntrySchema` for the same
+reason — same source object, same derive step.
 
 ## Test Data
 
@@ -126,26 +130,41 @@ problem. Not implemented here since it was out of scope.
 ### Template (`GET /catalog/gcp-gke/template`)
 
 ```yaml
-# schemaVersion (fixed) — schema version this template was generated against; leave as-is
-schemaVersion: v1beta1
-# name (required) — resource name
+# schemaVersion (fixed) — XRD version this template was generated against; leave as-is
+schemaVersion: v1gamma1
+# name (required) — Resource name
 name: ""
-cluster:
-  # VPC network name
-  network: ""
-  # REGULAR | RAPID | STABLE
-  releaseChannel: REGULAR
-  # Subnetwork name
-  subnetwork: ""
-nodepool:
-  # Initial node count
-  nodeCount: 1
+
 shared:
-  # Region/zone for cluster and node pool
-  location: us-central1
-  # GCP project ID
+  # location (optional) — Region/zone for cluster and node pool (default: us-central1)
+  #   example: "us-central1"
+  location: ""
+  # projectId (required) — GCP project ID
+  #   example: "coupon-prod-gcp"
   projectId: ""
+
+cluster:
+  # network (optional) — VPC network name
+  network: ""
+  # releaseChannel (optional) — REGULAR | RAPID | STABLE (default: REGULAR)
+  #   example: "REGULAR"
+  releaseChannel: ""
+  # subnetwork (optional) — Subnetwork name
+  subnetwork: ""
+
+nodepool:
+  # maxNodeCount (optional) — Maximum node count for autoscaling (default: 5)
+  #   example: 10
+  maxNodeCount: ""
+  # nodeCount (optional) — Initial node count (default: 1)
+  #   example: 3
+  nodeCount: ""
 ```
+
+Matches MCUCP-145's worked `--generate-template` example format exactly: `shared` first, then
+one group per resource-graph item in graph order, `(required|optional)` per field, a second
+`example:` comment line where the schema has one, and every value emitted blank regardless of
+default.
 
 ### Provision — valid `v1beta1` submission → 201 Created
 
@@ -318,6 +337,7 @@ real JSON Schema validator, a Crossplane restart, and a second version bump. Rec
 
 1. MCUCP-145's TRD has been corrected to use `referenceable: true/false` instead of the
    non-existent `storage: true/false` field (see Finding above) — done.
-2. Treating this PoC as closed for its stated research question — all of design.md's success
-   criteria are met, with provision's XR-target resolution as the one explicitly scoped
-   exception (see Finding above).
+2. MCUCP-145's TRD now carries `Group`/`Kind`/`Resource` as part of `EntrySchema` (see Finding
+   above) — done.
+3. Treating this PoC as closed for its stated research question — all of design.md's success
+   criteria are met, with no remaining scoped exceptions.

@@ -24,12 +24,12 @@ Module: `github.com/aripermana-putra/kitchen-sink/crossplane-xrd-versioned-schem
 | File | Role |
 |---|---|
 | `crossplane/xrd/gcp-gke.xrd.yaml` | Multi-version dummy XRD (`v1alpha1`, `v1beta1`) |
-| `internal/catalog/types.go` | `Item`, `EntrySchema` (`Versions map[string]map[string]any`, `StorageVersion`), `ResourceGraphNode` |
+| `internal/catalog/types.go` | `Item`, `EntrySchema` (`Versions map[string]map[string]any`, `StorageVersion`, `Group`, `Kind`, `Resource`), `ResourceGraphNode` |
 | `internal/catalog/catalog.go` | `Cache` — `sync.RWMutex`-guarded, full-slice-replace `Swap`, `GetEntrySchema` |
 | `internal/catalog/poller.go` | `Poller` — immediate first poll, then fixed-interval, stale-on-failure |
-| `internal/xrdclient/xrdclient.go` | `Client.ListCatalogItems` — derives `Item` and `EntrySchema` per XRD in one `LIST` |
+| `internal/xrdclient/xrdclient.go` | `Client.ListCatalogItems` — derives `Item` and `EntrySchema` (including `Group`/`Kind`/`Resource` from `spec.group`/`spec.names`) per XRD in one `LIST` |
 | `internal/validate/validate.go` | `Against` — compiles and validates a JSON Schema map against an object via `santhosh-tekuri/jsonschema/v6` |
-| `internal/httpapi/httpapi.go` | `Server` — `handleDescribe`, `handleTemplate`, `handleProvision`, `handleReady` |
+| `internal/httpapi/httpapi.go` | `Server` — `handleDescribe`, `handleTemplate`, `handleProvision`, `handleReady`; `handleProvision` builds the applied XR's GVR from `EntrySchema.Group`/`Kind`/`Resource`, no static target registry |
 | `cmd/apiserver/main.go` | Wires kubeconfig-based `dynamic.Interface`, `xrdclient`, `Poller`, `httpapi.Server` |
 
 ## Environment
@@ -78,10 +78,15 @@ poll, fixed-interval ticker, stale-on-failure).
 ### Phase 3 — Describe and template endpoints
 
 `GET /catalog/{serviceId}` returns `Versions[StorageVersion]` only, alongside the resource graph
-and `storageVersion` name. `GET /catalog/{serviceId}/template` renders the same schema as YAML:
-a fixed `schemaVersion: <StorageVersion>` line, a `name: ""` placeholder, then each schema group
-(`shared`/`cluster`/`nodepool`, sorted) and its properties (sorted), with `# <description>`
-comment lines and defaults where present.
+and `storageVersion` name. `GET /catalog/{serviceId}/template` renders the same schema as YAML,
+matching MCUCP-145's worked `--generate-template` example exactly: a fixed
+`schemaVersion: <StorageVersion>` line, a `name: ""` placeholder, then `shared` (if present)
+followed by one group per resource-graph item in graph order (properties sorted alphabetically
+within each group), separated by a blank line. Each property gets a
+`# <name> (required|optional) — <description> (default: <default>)` comment, a second
+`#   example: <value>` comment line when the schema has one, and its value is always emitted
+`""` regardless of any default — nothing is pre-filled, matching the TRD's "no validation at
+generation time" rule.
 
 ### Phase 4 — Provision endpoint
 
@@ -151,22 +156,21 @@ the changes with **no changes to `internal/catalog`, `internal/xrdclient`, `inte
   three** validated and applied successfully in the same run, proving old versions keep working
   across more than one version bump, not just the immediately-previous one.
 
-**Scoped exception — provision's XR-target lookup.** `main.go`'s `xrTargets` map (`Group`,
-`Kind`, `Resource` per `serviceId`) is a static registry, deliberately out of scope per design.md
-("XR-target derivation" is explicitly excluded from Scope). Provisioning the new
-`gcp-cloud-sql` XRD required adding one entry to this static map before restarting the
-`apiserver` binary — this is the one part of Phase 6 that is not zero-code-change, and it was
-scoped out going in, not discovered as a gap. Note for follow-up: `Group`
-(`spec.group`), `Kind` (`spec.names.kind`), and `Resource` (`spec.names.plural`) are all present
-verbatim on the same XRD object already being `LIST`ed for schema derivation — nothing about them
-needs to be *derived* (unlike the Kind-from-plural-capitalization problem this PoC's `httpapi.go`
-comment describes elsewhere), so removing the static map in favor of reading these three fields
-directly off each `Item` is likely a small, low-risk follow-up rather than a hard problem — not
-implemented here since it was out of this PoC's stated scope.
+**Scoped exception — provision's XR-target lookup — resolved.** `main.go`'s `xrTargets` map
+(`Group`, `Kind`, `Resource` per `serviceId`) was originally a static registry, deliberately out
+of scope per design.md ("XR-target derivation" excluded from Scope). It has since been removed:
+`catalog.EntrySchema` now carries `Group`/`Kind`/`Resource`, read via three `unstructured.NestedString`
+calls (`spec.group`, `spec.names.kind`, `spec.names.plural`) in the same `deriveEntrySchema` call
+that already reads `spec.versions[]` — no second call, no separate `XRTarget` type.
+`httpapi.NewServer` no longer takes an `xrTargets` argument; `handleProvision` builds the applied
+XR's `apiVersion`/`kind` and the dynamic client's `GroupVersionResource` from the cached
+`EntrySchema` (`es.Group`/`es.Kind`/`es.Resource`) directly. Re-verified against the live cluster
+after the change: `POST /catalog/gcp-gke/provision` (`v1gamma1`) and
+`POST /catalog/gcp-cloud-sql/provision` (`v1alpha1`) both return `201 Created` with zero entries
+in any static map, confirmed via `kubectl get xgcpgkeclusters`/`xgcpcloudsqlinstances`.
 
-`describe`/`template`/schema derivation and the provision *validation* path are all confirmed
-zero-code-change; the provision *target resolution* path is confirmed to need one static map
-entry per new service, exactly as design.md's Scope table anticipated.
+`describe`/`template`/schema derivation and both parts of provision — *validation* and *target
+resolution* — are now all confirmed zero-code-change.
 
 ## Risks Observed
 
