@@ -70,12 +70,12 @@ You do not need to create your own cards — the pre-made Genki deck has everyth
 
 ## Kana Track Checklist
 
-- [ ] [K1 — Hiragana: A row](#k1--hiragana-a-row)
-- [ ] [K2 — Hiragana: K row](#k2--hiragana-k-row)
-- [ ] [K3 — Hiragana: S row](#k3--hiragana-s-row)
-- [ ] [K4 — Hiragana: T row](#k4--hiragana-t-row)
-- [ ] [K5 — Hiragana: N row](#k5--hiragana-n-row)
-- [ ] [K6 — Hiragana: H row](#k6--hiragana-h-row)
+- [x] [K1 — Hiragana: A row](#k1--hiragana-a-row)
+- [x] [K2 — Hiragana: K row](#k2--hiragana-k-row)
+- [x] [K3 — Hiragana: S row](#k3--hiragana-s-row)
+- [x] [K4 — Hiragana: T row](#k4--hiragana-t-row)
+- [x] [K5 — Hiragana: N row](#k5--hiragana-n-row)
+- [x] [K6 — Hiragana: H row](#k6--hiragana-h-row)
 - [ ] [K7 — Hiragana: M row](#k7--hiragana-m-row)
 - [ ] [K8 — Hiragana: Y row](#k8--hiragana-y-row)
 - [ ] [K9 — Hiragana: R row](#k9--hiragana-r-row)
