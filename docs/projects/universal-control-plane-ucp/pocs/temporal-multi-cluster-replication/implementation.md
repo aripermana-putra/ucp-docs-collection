@@ -11,12 +11,13 @@ Supporting proof doc. Describes what was built, run, and observed for each phase
 
 ## Source Code
 
-- **Repository:** `aripermana-putra/kitchen-sink` (not yet pushed to the remote at time of
-  writing; commit exists locally)
+- **Repository:** `aripermana-putra/kitchen-sink`
 - **Path:** `temporal-multi-cluster-replication-poc/`
 - **Files:** `cluster-a/docker-compose.yml`, `cluster-a/config_template.yaml`,
-  `cluster-b/docker-compose.yml`, `cluster-b/config_template.yaml`
-- **Commit:** `794d98148850fa64e228035f39fed371ad1671ad`
+  `cluster-b/docker-compose.yml`, `cluster-b/config_template.yaml`, `README.md`
+- **Commit:** `41aa54c` (docker-compose/config + runnable playbook)
+- **Pending commit:** `worker/main.go`, `worker/go.mod`, `worker/go.sum` (the Phase 16–17
+  worker) — written and built, not yet committed at time of writing; see Phase 16 below.
 
 ## Environment
 
@@ -268,6 +269,51 @@ completed on the first attempt — no need for v2. `TargetClusterName` alone was
 (07:56:49–07:57:00) for the 5 backfilled workflows. The same direct Postgres query against
 cluster-b afterward showed all 6 workflows present, correct `run_id`s.
 
+### Phase 16 — Real worker infrastructure
+
+`worker/main.go` (kitchen-sink): one workflow `DisputeWorkflow` executing one activity
+`SlowActivity` (`StartToCloseTimeout` 20s, sleeps 15s, logs `CLUSTER_LABEL` and attempt
+number). `go mod tidy` resolved `go.temporal.io/sdk v1.49.0`. `go build` produced a 28.2MB
+binary — larger than the design doc's rough estimate; added to the kitchen-sink root
+`.gitignore` (`temporal-multi-cluster-replication-poc/worker/dispute-worker`), confirmed
+excluded via `git check-ignore -v`.
+
+### Phase 17 — The dispute attempt
+
+**First attempt — a timing artifact, not a real result.** Confirming the activity was
+in-flight and killing the worker/cluster were split across separate tool calls; the
+inter-call latency alone (~90 seconds) let the activity's 15-second sleep complete and report
+back to Cluster A *before* the kill command ran — event timestamps proved it
+(`ActivityTaskCompleted` at 00:05:04Z, containers stopped at 00:06:35Z). No outage actually
+occurred. Fixed by chaining start→confirm→kill→stop within one shell invocation for the
+second attempt.
+
+**Second attempt — genuine outage, clean reproduction of the retry/completion half.**
+`worker-a` `SIGKILL`'d and cluster-a's containers stopped ~4 seconds into the activity's
+15-second sleep — worker log confirmed no completion line before the kill. Forced failover
+to cluster-b. `worker-b` polled and received the retry immediately: log shows `attempt=2
+cluster=B executing`, completed 15s later. `workflow show`: `Status: COMPLETED`, `Result:
+"completed by cluster=B attempt=2"`.
+
+**The dispute half did not reproduce, for a worker-code reason, not a Temporal-mechanism
+one.** `newClient()` calls `client.Dial(...)` followed by `log.Fatalln` on any error, with no
+retry. When `worker-a` was launched racing `docker compose start cluster-a`, cluster-a's
+frontend wasn't yet accepting connections — `Dial` failed with connection-refused, and the
+process exited immediately, before ever reaching its poll loop. It never attempted the race.
+A second variation (wait for cluster-a's `operator cluster health` to report `SERVING`, then
+launch `worker-a`) missed the window from the other side — by the time health-polling
+confirmed `SERVING`, cluster-a's own namespace belief had already converged to `cluster-b`,
+consistent with Phase 10's ~10-second convergence. Per the "don't loop indefinitely" guidance,
+no third attempt was made.
+
+**Final state:** `workflow show` against both clusters for `dispute-wf-3` returns identical
+11-event history and result. No divergence occurred, because no dispute occurred — this
+confirms consistency in a scenario where nothing actually conflicted, not the conflict-
+resolution mechanism itself. A follow-up that wants to force the actual dispute needs a
+worker built to survive a briefly-unreachable cluster (retry-on-connect, or
+`client.NewLazyClient`'s deferred-connection behavior) instead of one that exits on first
+`Dial` failure.
+
 ## Notes for reproducing this PoC
 
 - `namespace-handover` is not exposed as a documented CLI verb for self-hosted operators — it
@@ -281,3 +327,11 @@ cluster-b afterward showed all 6 workflows present, correct `run_id`s.
   its persistence store directly, as done in Phase 14.
 - `--promote-global`, not `--promote-namespace`, and it cannot be combined with `--cluster` in
   the same `operator namespace update` call — two separate calls are required.
+- For any timing-sensitive test (confirm-in-flight → kill → failover, or similar), chain the
+  steps within a single shell invocation rather than separate tool/command calls — inter-call
+  latency alone can be enough to let the thing you're trying to interrupt finish first (see
+  Phase 17's first attempt).
+- A worker with no retry-on-connect logic cannot participate in any test that races its
+  startup against a cluster becoming reachable — a plain `client.Dial()` + fatal-on-error
+  worker will simply die rather than wait and retry. Use `client.NewLazyClient` or hand-rolled
+  connect-retry logic for any future test along these lines.

@@ -50,6 +50,7 @@ entirely. Colima's default networking provides this without any vmnet bridging o
 | ✅ Rejoin: restart Cluster A after the forced-failover scenario, verify it self-corrects to passive without manual intervention | ❌ Backup/restore as an alternative to `force-replication` for seeding a new cluster (noted in the research doc, not tested) |
 | ✅ Namespace handover — the internal `HANDOVER`-state drain workflow, not just a plain metadata flip | |
 | ✅ Adding a cluster to an already-populated deployment — not a real UCP migration path (both clusters will be created together from the start), tested purely so the team has an answer if this situation ever comes up | |
+| ✅ Real worker-driven execution and a genuine version-conflict dispute (Phases 16–17): a workflow actively in-flight on Cluster A when it's stopped, completed on Cluster B, then Cluster A restarted racing its own stale-belief window against a live worker | |
 
 ## Approach
 
@@ -307,6 +308,62 @@ now visible there. Record how long the backfill took for the (small) number of w
 involved, and whether `EnableVerification`/`TargetClusterName` behaved as the source-level
 comments suggested.
 
+### Phase 16 — Real worker infrastructure
+
+Every workflow tested so far (Phases 7–15) had no worker ever polling for it — those tests
+only checked that history/namespace state replicated, never that a workflow was actually
+*driven forward* by execution. This phase is the first in this PoC to introduce a real
+worker, needed to test the actual dispute scenario in Phase 17: does Cluster A, upon
+restart, try to resume progressing a workflow that Cluster B already completed while A was
+down — and what happens when it does?
+
+Minimal Go worker + workflow + one slow activity, source in the kitchen-sink repo (see
+`implementation.md`'s Source Code section for the exact path/commit once written): one
+workflow (`DisputeWorkflow`) that executes one activity (`SlowActivity`) with a
+`StartToCloseTimeout` short enough to time out reliably within this PoC's timescales (e.g.
+20s) and an activity body that sleeps long enough (e.g. 15s) to still be genuinely in-flight
+when Cluster A gets stopped mid-test. Two worker processes, `worker-a` and `worker-b`, each
+parameterized by `TEMPORAL_ADDRESS`/`TEMPORAL_NAMESPACE`/a `CLUSTER_LABEL` env var so the
+activity's logged output makes clear which cluster actually executed each attempt.
+
+### Phase 17 — The dispute: does Cluster A try to resume what Cluster B already finished?
+
+1. Start `worker-a` (pointed at cluster-a). Start one `DisputeWorkflow` execution against
+   cluster-a. Confirm the activity is genuinely in-flight (`ActivityTaskStarted` visible, no
+   completion yet) before proceeding — don't just assume the timing worked.
+2. Stop cluster-a's containers **and** `worker-a`, simulating the region actually going down
+   mid-execution (not a clean shutdown after the activity finished).
+3. Forced failover to cluster-b (same mechanic as Phase 9).
+4. Start (or confirm running) `worker-b` (pointed at cluster-b, same namespace/task queue).
+   Since the original attempt never completed or heartbeated back to a live server, its
+   `StartToCloseTimeout` should fire once cluster-b is processing the workflow, triggering a
+   retry — confirm this retry actually gets dispatched to `worker-b` and completes there. This
+   is the first real, worker-driven confirmation of the "how does the passive cluster pick up
+   stale work" mechanism described in the research doc — previously discussed only in theory.
+5. Confirm the workflow shows `COMPLETED` on cluster-b, with the result attributed to the
+   cluster-b attempt (check the logged `CLUSTER_LABEL` in the activity's result/logs).
+6. Restart cluster-a's containers, with `worker-a` already running and polling *at the moment
+   cluster-a's frontend becomes reachable again* — deliberately racing cluster-a's own local,
+   stale-belief window rather than waiting for it to settle. Cluster-a's local mutable state
+   for this workflow still shows the original, never-completed attempt with its original
+   (long-since-elapsed) timeout — expect cluster-a's History service to treat this as overdue
+   immediately upon reacquiring its shard, generate a new local retry task, and — if
+   `worker-a` is polling in time — hand it to `worker-a`, which would then genuinely
+   re-execute the activity a second time, independently of whatever cluster-b already did.
+7. Record what actually happens, whichever way it goes: does `worker-a` get handed a
+   duplicate task? Does it actually re-execute the activity (a real duplicate side effect,
+   not just a discarded task)? What happens when `worker-a` reports its result back to
+   cluster-a — accepted, or does reconciliation reject/discard it once cluster-a's namespace
+   belief catches up? What is the workflow's final, settled state on *both* clusters once
+   everything quiesces — one consistent completed result, or something inconsistent?
+
+This is a genuine test of the version-based conflict-resolution mechanism described in the
+research doc (failover-version stamping, highest-version-wins, losing branch discarded) —
+previously discussed from source and architecture, never actually forced to occur and
+observed. If it doesn't reproduce reliably on the first attempt (timing-dependent), that
+itself is a finding — record what was observed rather than retrying indefinitely to force a
+specific outcome.
+
 ## Success Criteria
 
 | Criterion | Pass condition |
@@ -322,6 +379,8 @@ comments suggested.
 | Namespace handover | Either: the workflow starts, the namespace visibly enters and exits `HANDOVER` state, and the flip to B completes with requests rejected (not silently dropped) during the window; or: the start attempt is rejected, and the exact rejection reason is recorded as the finding |
 | Pre-existing history is absent after promotion | Workflows created before cluster-b was registered are confirmed absent from cluster-b immediately after promotion, not just slow to arrive |
 | `force-replication` backfill | After it completes, the previously-absent pre-existing workflows are confirmed visible on cluster-b |
+| Worker-driven completion on B | An activity in-flight on A when it's stopped is confirmed retried and completed on B via a real worker, not just via CLI/history inspection |
+| Dispute observed and resolved | Whatever actually happens when A restarts with a racing worker is recorded plainly (duplicate execution or not), and the workflow's final settled state on both clusters is confirmed consistent either way |
 
 ## Risks
 

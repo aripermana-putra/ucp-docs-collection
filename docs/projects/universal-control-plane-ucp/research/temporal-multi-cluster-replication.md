@@ -44,6 +44,15 @@ MCR replicates at the **namespace** level, not the cluster level. A namespace is
 - On failover, the new active cluster's version becomes the smallest value ≥ the old version that fits its own pattern.
 - History is modeled as a tree; if two clusters both write branches for the same run (e.g., after an out-of-order failover), the branch with the highest version becomes the current branch, and the losing branch's in-flight tasks are discarded/rebuilt — with external events (signals) re-injected first so the workflow doesn't stall.
 
+Everything above is sourced from the server code, not independently exercised. The linked
+PoC deliberately tried to force this mechanism to actually fire — a workflow in-flight on
+Cluster A when it's stopped, completed on Cluster B, then Cluster A restarted with a worker
+racing its own stale-belief window to grab the same work a second time — and it did not
+reproduce, for a reason specific to the PoC's own test worker (no retry-on-connect logic, so
+it never survived long enough to attempt the race) rather than anything about this mechanism
+behaving differently than described. It remains accurate as read from source, but not yet
+something this research has watched happen.
+
 ### Prerequisites and configuration
 
 - `enableGlobalNamespace: true` on every participating cluster.
