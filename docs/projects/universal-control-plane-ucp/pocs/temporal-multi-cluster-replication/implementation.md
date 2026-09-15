@@ -15,9 +15,9 @@ Supporting proof doc. Describes what was built, run, and observed for each phase
 - **Path:** `temporal-multi-cluster-replication-poc/`
 - **Files:** `cluster-a/docker-compose.yml`, `cluster-a/config_template.yaml`,
   `cluster-b/docker-compose.yml`, `cluster-b/config_template.yaml`, `README.md`
-- **Commit:** `41aa54c` (docker-compose/config + runnable playbook)
-- **Pending commit:** `worker/main.go`, `worker/go.mod`, `worker/go.sum` (the Phase 16–17
-  worker) — written and built, not yet committed at time of writing; see Phase 16 below.
+- **Commits:** `41aa54c` (docker-compose/config + runnable playbook), `eb63069` (Phase 16–17
+  worker: `worker/main.go`, `worker/go.mod`, `worker/go.sum`), `cf2c5d0` (the retry-on-connect
+  fix to `worker/main.go` that made the second pass of Phase 17 reproduce the dispute)
 
 ## Environment
 
@@ -295,24 +295,51 @@ to cluster-b. `worker-b` polled and received the retry immediately: log shows `a
 cluster=B executing`, completed 15s later. `workflow show`: `Status: COMPLETED`, `Result:
 "completed by cluster=B attempt=2"`.
 
-**The dispute half did not reproduce, for a worker-code reason, not a Temporal-mechanism
-one.** `newClient()` calls `client.Dial(...)` followed by `log.Fatalln` on any error, with no
-retry. When `worker-a` was launched racing `docker compose start cluster-a`, cluster-a's
-frontend wasn't yet accepting connections — `Dial` failed with connection-refused, and the
-process exited immediately, before ever reaching its poll loop. It never attempted the race.
-A second variation (wait for cluster-a's `operator cluster health` to report `SERVING`, then
-launch `worker-a`) missed the window from the other side — by the time health-polling
-confirmed `SERVING`, cluster-a's own namespace belief had already converged to `cluster-b`,
-consistent with Phase 10's ~10-second convergence. Per the "don't loop indefinitely" guidance,
-no third attempt was made.
+**The dispute half did not reproduce on this first pass, for a worker-code reason, not a
+Temporal-mechanism one.** `newClient()` called `client.Dial(...)` followed by `log.Fatalln`
+on any error, with no retry. When `worker-a` was launched racing `docker compose start
+cluster-a`, cluster-a's frontend wasn't yet accepting connections — `Dial` failed with
+connection-refused, and the process exited immediately, before ever reaching its poll loop.
+It never attempted the race. A second variation (wait for cluster-a's `operator cluster
+health` to report `SERVING`, then launch `worker-a`) missed the window from the other side —
+by the time health-polling confirmed `SERVING`, cluster-a's own namespace belief had already
+converged to `cluster-b`, consistent with Phase 10's ~10-second convergence. `workflow show`
+against both clusters for `dispute-wf-3` returned identical 11-event history and result — no
+divergence, because no dispute occurred on this pass.
 
-**Final state:** `workflow show` against both clusters for `dispute-wf-3` returns identical
-11-event history and result. No divergence occurred, because no dispute occurred — this
-confirms consistency in a scenario where nothing actually conflicted, not the conflict-
-resolution mechanism itself. A follow-up that wants to force the actual dispute needs a
-worker built to survive a briefly-unreachable cluster (retry-on-connect, or
-`client.NewLazyClient`'s deferred-connection behavior) instead of one that exits on first
-`Dial` failure.
+### Phase 17, second pass — the dispute, actually forced and observed
+
+Fixed `newClient()` (`worker/main.go`) to retry `client.Dial` for up to 2 minutes (1s between
+attempts, logging each failure) instead of failing fast — committed as `cf2c5d0`, rebuilt,
+confirmed compiling before re-running.
+
+Fresh workflow (`dispute-wf-4`), same mechanism as the first pass: activity sleeping from
+02:16:21; `worker-a` `SIGKILL`'d and cluster-a's containers stopped at 02:16:26 (~5s in).
+Forced failover to cluster-b; `worker-b` retried immediately and completed:
+`"completed by cluster=B attempt=2"`, `FailoverVersion: 202`.
+
+`worker-a` relaunched racing `docker compose start cluster-a`. Log evidence, in order:
+`client.Dial to 127.0.0.1:7233 failed (connection refused), retrying in 1s...` → connected on
+the next attempt → **immediately handed the activity again**: `attempt=2 cluster=A executing
+(sleeping 15s)`. Ran the full duration, logged `completed by cluster=A attempt=2` locally,
+then on reporting the result back to cluster-a received:
+```
+Task processing failed with error ... Error workflow execution already completed
+```
+A clean, explicit server-side rejection — not a silent overwrite, not a hang.
+
+Querying cluster-a's own history directly afterward: 11 events, byte-for-byte identical to
+cluster-b's, carrying cluster-b's timestamps (`ActivityTaskStarted` 02:16:43,
+`ActivityTaskCompleted` 02:16:58) rather than cluster-a's local re-execution window
+(02:29:02–02:29:17). No trace of cluster-a's second attempt survived. Final state on both
+clusters: `Status: COMPLETED`, `Result: "completed by cluster=B attempt=2"`, identical
+history — this time because the dispute actually occurred and was resolved, not because
+nothing happened.
+
+Not investigated: whether the discarded branch is visible transiently anywhere (a DLQ, a
+replication-task table) before cleanup, versus never persisted at all. The observation here
+is "no trace found when queried after the fact," not "watched the discard happen in real
+time."
 
 ## Notes for reproducing this PoC
 
@@ -333,5 +360,6 @@ worker built to survive a briefly-unreachable cluster (retry-on-connect, or
   Phase 17's first attempt).
 - A worker with no retry-on-connect logic cannot participate in any test that races its
   startup against a cluster becoming reachable — a plain `client.Dial()` + fatal-on-error
-  worker will simply die rather than wait and retry. Use `client.NewLazyClient` or hand-rolled
-  connect-retry logic for any future test along these lines.
+  worker will simply die rather than wait and retry. `worker/main.go`'s `newClient()` now
+  retries for up to 2 minutes (1s between attempts) — confirmed this is what let the actual
+  dispute reproduce on the second pass.

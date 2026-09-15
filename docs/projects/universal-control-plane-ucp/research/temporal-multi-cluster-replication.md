@@ -44,14 +44,18 @@ MCR replicates at the **namespace** level, not the cluster level. A namespace is
 - On failover, the new active cluster's version becomes the smallest value ≥ the old version that fits its own pattern.
 - History is modeled as a tree; if two clusters both write branches for the same run (e.g., after an out-of-order failover), the branch with the highest version becomes the current branch, and the losing branch's in-flight tasks are discarded/rebuilt — with external events (signals) re-injected first so the workflow doesn't stall.
 
-Everything above is sourced from the server code, not independently exercised. The linked
-PoC deliberately tried to force this mechanism to actually fire — a workflow in-flight on
-Cluster A when it's stopped, completed on Cluster B, then Cluster A restarted with a worker
-racing its own stale-belief window to grab the same work a second time — and it did not
-reproduce, for a reason specific to the PoC's own test worker (no retry-on-connect logic, so
-it never survived long enough to attempt the race) rather than anything about this mechanism
-behaving differently than described. It remains accurate as read from source, but not yet
-something this research has watched happen.
+Confirmed directly, not just from source: the linked PoC forced this mechanism to actually
+fire — a workflow in-flight on Cluster A when it's stopped, completed on Cluster B, then
+Cluster A restarted with a worker racing its own stale-belief window to grab the same work a
+second time. The race landed: both clusters' workers genuinely believed they owned the same
+activity attempt simultaneously. Cluster A's worker ran its full (duplicate) execution, then
+had its result **rejected outright** when it tried to report back —
+`Error workflow execution already completed` — a clean server-side rejection, not a silent
+overwrite or a hang. Querying Cluster A's own history afterward showed no trace of its
+attempt at all: byte-for-byte identical to Cluster B's history, carrying Cluster B's
+timestamps, not Cluster A's. Both clusters converged to one consistent final result. This
+matches "highest failover version wins, losing branch discarded" exactly as described from
+source — now watched happening, not just read.
 
 ### Prerequisites and configuration
 

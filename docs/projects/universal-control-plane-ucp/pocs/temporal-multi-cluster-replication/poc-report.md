@@ -13,7 +13,7 @@ Human-first verdict document.
 | **Answers research question** | [research/temporal-multi-cluster-replication.md](../../research/temporal-multi-cluster-replication.md) — specifically, whether self-hosted Temporal's Multi-Cluster Replication (MCR) actually works: cluster-to-cluster connectivity, namespace/history replication, and failover, including recovery from a real outage |
 | **Design** | [design.md](design.md) |
 | **Implementation detail** | [implementation.md](implementation.md) |
-| **Verdict** | MCR works as documented, including the specific behavior the research doc's Recommendation depends on |
+| **Verdict** | MCR works as documented, including the specific behavior the research doc's Recommendation depends on, and its version-based conflict resolution was directly forced to occur and observed, not just read from source |
 
 ## What this PoC proved
 
@@ -65,34 +65,29 @@ exactly that scenario, deliberately, and it held.
   (~11 seconds for 5 workflows). Both the absence and the presence were confirmed by querying
   Cluster B's Postgres directly, not through the Temporal API — see the finding below on why
   that mattered.
-- **A real worker resuming stale work on the passive cluster (Phases 16–17, half of it).**
-  Every earlier phase only checked that data replicated, never that a workflow was actually
-  executed. This is the first real, worker-driven confirmation: an activity genuinely
-  in-flight on Cluster A (worker mid-sleep) when Cluster A was killed and failed over to
-  Cluster B — the timed-out attempt was retried and completed by a real worker on Cluster B,
-  with the workflow reaching `COMPLETED` carrying that worker's result. Not just inferred from
-  source or CLI history inspection this time — an actual second attempt, actually executed, by
-  an actual worker process on the other cluster.
+- **A real worker resuming stale work on the passive cluster, and a genuine version-conflict
+  dispute, both confirmed with an actual worker (Phases 16–17).** Every earlier phase only
+  checked that data replicated, never that a workflow was actually executed. Here: an activity
+  genuinely in-flight on Cluster A (worker mid-sleep) when Cluster A was killed — the
+  timed-out attempt was retried and completed by a real worker on Cluster B. Then, on a second
+  run with the worker fixed to retry its connection instead of dying on the first
+  connection-refused, the actual dispute was forced and observed: a worker relaunched against
+  Cluster A, racing its own restart, genuinely got handed the same activity a second time —
+  both clusters' workers simultaneously believed they owned the same attempt. Cluster A's
+  worker ran the full duplicate execution, then had its result **rejected outright** on
+  reporting back (`Error workflow execution already completed`) — not a silent overwrite, not
+  a hang. Cluster A's own history afterward showed no trace of that attempt at all — identical
+  to Cluster B's, carrying Cluster B's timestamps. Both clusters converged to one consistent
+  final result. This is the version-based conflict-resolution mechanism (highest failover
+  version wins, losing branch discarded) — previously only read from source, now directly
+  observed happening.
 
 ## What this PoC did not prove
 
-- **A genuine version-conflict dispute (the other half of Phases 16–17) did not occur —
-  and not for a Temporal-mechanism reason.** The plan was to have a worker on Cluster A,
-  already running and polling the instant Cluster A's frontend became reachable again after
-  restart, race Cluster A's own stale-belief window and get handed the same activity a second
-  time, producing a genuine duplicate execution. It didn't happen because the test's own
-  worker has no retry-on-connect logic: `client.Dial()` fails fast and fatally on connection
-  refused, so when launched right as Cluster A's container was restarting, the worker process
-  died before it ever reached its poll loop — it never got a chance to attempt the race at
-  all. A second attempt (wait for `SERVING` first, then launch) missed the window from the
-  other side — by the time health-polling confirmed `SERVING`, Cluster A's namespace belief
-  had already converged to `cluster-b`, consistent with Phase 10's ~10-second convergence
-  finding. Both clusters agreed exactly on the workflow's final state throughout, because no
-  divergence ever actually occurred. A follow-up that wants to force this for real needs a
-  worker built to survive a briefly-unreachable cluster (retry-on-connect, or
-  `client.NewLazyClient`'s deferred-connection behavior) rather than one that dies on first
-  contact failure — this is a gap in the test harness, not evidence about MCR's own
-  conflict-resolution mechanism one way or the other.
+- Whether a discarded losing branch is visible transiently anywhere (a DLQ, a
+  replication-task table) before cleanup, or is simply never persisted at all — not
+  investigated; the observation stopped at "no trace found afterward, querying after the
+  fact," not at watching the discard happen in real time.
 - **Live client-visible rejection during the `HANDOVER` window was not independently
   observed.** The workflow's own history proves the window existed (the
   `UpdateNamespaceState(HANDOVER)` → `UpdateNamespaceState(NORMAL)` pair is unambiguous), but
@@ -165,15 +160,14 @@ could resolve either way). Since UCP's actual rollout creates both clusters from
 the Phases 13–15 finding (pre-existing data isn't backfilled automatically) does not block
 anything — it's reference material for a scenario that isn't the planned path.
 
-One item moves from "confirmed" to "still open, with a known cause" after Phases 16–17: the
-version-based conflict-resolution mechanism (highest failover version wins, losing branch
-discarded) that the research doc describes from source has still never actually been forced
-to occur and observed — only reasoned about. This PoC's attempt to force it failed for a
-test-harness reason (the worker's lack of retry-on-connect), not because MCR behaved
-differently than documented. It's a genuine remaining gap before treating the
-conflict-resolution mechanism as proven rather than well-sourced-but-theoretical — worth a
-follow-up with a more resilient worker if that distinction matters for the eventual
-production decision.
+One item moves fully from "sourced from code" to "confirmed" after a second pass on Phases
+16–17: the version-based conflict-resolution mechanism (highest failover version wins,
+losing branch discarded) was successfully forced to occur and directly observed, once the
+test worker was fixed to retry its connection instead of dying on first contact failure. Two
+workers genuinely believed they owned the same activity attempt simultaneously; Cluster A's
+attempt was cleanly rejected on completion, left no trace in Cluster A's own history, and
+both clusters converged to one consistent result. This closes what had been the single
+biggest remaining gap between "documented mechanism" and "proven mechanism" for this PoC.
 
 ## Test Data
 
@@ -225,13 +219,26 @@ confirmed only `migration-post-1` present before backfill; all 6 workflows prese
 `force-replication` (workflow ID `mcr-poc-force-replication-1`) completed, ~11 seconds
 wall-clock (started 07:56:49, completed 07:57:00) for the 5 backfilled workflows.
 
-Phases 16–17 (real worker, dispute attempt): namespace `mcr-poc-dispute`. `dispute-wf-3`
-started against cluster-a with `worker-a` (`CLUSTER_LABEL=A`) polling; `worker-a` killed
-(`SIGKILL`) and cluster-a stopped ~4 seconds into the activity's 15-second sleep, confirmed
-via worker log with no completion line before the kill. Forced failover to cluster-b;
-`worker-b` (`CLUSTER_LABEL=B`) picked up the retry immediately (`attempt=2`), completed 15s
-later. `workflow show` on cluster-a: `Status: COMPLETED`, `Result: "completed by cluster=B
-attempt=2"`, 11-event history — identical on both clusters after cluster-a's restart, no
-divergence. `worker-a`, restarted racing cluster-a's container boot, never re-entered the
-poll loop — `client.Dial()` failed with connection-refused and the process exited via
-`log.Fatalln` before attempting anything.
+Phases 16–17 (real worker, dispute confirmed on the second pass): namespace
+`mcr-poc-dispute`.
+
+First pass (`dispute-wf-3`) confirmed the retry/completion half only: `worker-a` killed and
+cluster-a stopped ~4s into the activity's 15s sleep; failover to cluster-b; `worker-b` picked
+up the retry (`attempt=2`) and completed. `worker-a`, restarted racing cluster-a's container
+boot, never re-entered the poll loop — its `client.Dial()` failed with connection-refused and
+the process exited via `log.Fatalln` before attempting anything. This was the finding that
+led to fixing `newClient()` to retry the connection instead of failing fast.
+
+Second pass (`dispute-wf-4`, same mechanism, fixed worker): activity sleeping from 02:16:21;
+`worker-a` killed and cluster-a stopped at 02:16:26 (~5s in). Failover to cluster-b;
+`worker-b` retried and completed: `"completed by cluster=B attempt=2"`, `FailoverVersion`
+202. `worker-a` relaunched racing `docker compose start cluster-a`: logged `client.Dial ...
+failed (connection refused), retrying in 1s...`, connected on the next attempt, and was
+immediately handed the activity again — `attempt=2 cluster=A executing`. Ran the full 15s,
+logged `completed by cluster=A attempt=2` locally, then on reporting back got: `Task
+processing failed with error ... Error workflow execution already completed`. Cluster A's own
+history, queried directly afterward, showed no trace of this attempt — 11 events, identical
+to cluster-b's, carrying cluster-b's timestamps (`ActivityTaskStarted` 02:16:43,
+`ActivityTaskCompleted` 02:16:58) rather than cluster-a's local re-execution window
+(02:29:02–02:29:17). Final state on both clusters: `COMPLETED`, `"completed by cluster=B
+attempt=2"`, identical history.
