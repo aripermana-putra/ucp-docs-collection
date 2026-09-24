@@ -160,6 +160,17 @@ sequenceDiagram
   - **Namespace handover** (confirmed in [temporalio/temporal source](https://github.com/temporalio/temporal/blob/main/service/worker/migration/handover_workflow.go)) is a separate, internal Temporal workflow for a *planned* failover: it queries the current replication watermark, waits for the target cluster to catch up within an `AllowedLaggingSeconds` threshold, puts the namespace into `HANDOVER` state (which rejects **all** requests to that namespace, on either cluster, for a short window — confirmed via the `ErrNamespaceHandover` check in [`common/util.go`](https://github.com/temporalio/temporal/blob/main/common/util.go)), waits for the target to fully drain to zero lag, flips the active cluster, then resets state to normal. It minimizes — but does not guarantee zero — data loss, and it cannot run at all if either cluster is unreachable.
 - For an *unplanned* failover (active cluster is actually down), handover is off the table entirely — the operator must use the direct metadata flip against the surviving cluster, accepting whatever replication lag existed at the moment of the outage as the RPO loss window.
 
+UCP runs a single active site with no automatic cross-region failover; an in-region issue is
+handled by the regional cluster itself, not by failing over to another region. Every failover
+in this model is an explicit operator action against a site the operator has already assessed
+— confirmed dead (unplanned) or confirmed healthy (planned). This rules out the scenario where
+a site is alive but merely network-partitioned and continues believing it is active while
+unreachable: that scenario only matters for automatic, unattended failover, which is not part
+of this architecture. The two mechanics above — a direct metadata flip against a surviving
+cluster, and namespace handover against two clusters the operator already knows are both
+reachable — are the only two paths this architecture ever exercises, and both were validated
+by the linked PoC.
+
 ### Rejoining after an outage
 
 When a cluster that was active goes down and later restarts, it does not know it has been failed over — its local namespace record is whatever it last persisted before crashing, which still says "I'm active" if it was active at the time. It finds out purely as a side effect of the always-on stream described above:
@@ -369,6 +380,16 @@ guarantees on every dimension except one they tie on.
 - Is "experimental, unsupported by normal versioning policy" an acceptable risk for a production DR mechanism, or does that alone rule out Option A regardless of its RPO/RTO profile?
 - Does UCP need cross-cluster DR at all in the near term, or is single-cluster + backup/restore (Option C) sufficient for the current stage of the platform?
 - Is there a practical ceiling on how long an outstanding replication-task backlog can safely sit in an active cluster's own database while its peer is unreachable? Not something this PoC's short (seconds-scale) outages exercised — durability of the mechanism is confirmed, but not its behavior at hours/days scale or under heavy write volume during the outage.
+
+Out of scope given UCP's architecture (single active site, no automatic cross-region
+failover; in-region issues are handled by the regional cluster) — not pursued further:
+
+- Live client-visible rejection during the `HANDOVER` window under real replication lag, and
+  behavior under an actual network partition (as opposed to a stopped cluster) where the old
+  site stays alive and unreachable. Both scenarios only matter for automatic, unattended
+  failover between two sites that might disagree about which is active — this architecture
+  never puts an operator in that position, since every failover here is a deliberate action
+  against a site whose status the operator has already confirmed.
 
 ## Related PoCs
 
