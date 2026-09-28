@@ -35,10 +35,15 @@ already states, as an accepted decision, that "EaaS (Filebeat) collects and ship
 Elasticsearch," and [logging-and-audit.md](logging-and-audit.md) (MCUCP-256/257) treats this as
 settled infrastructure that its own logging-policy and audit-log research builds on top of. This
 document's findings on EaaS (see [Option B](#option-b--eaas-rakuten-onecloud-logging-platform))
-surface a connectivity gap that ADR-007 does not address: EaaS's documented ingestion model
-assumes shippers running inside Rakuten's DC network, and UCP runs entirely on GCP. Whether that
-assumption still holds is the central open question this document raises for MCUCP-258 to
-resolve — it does not overturn ADR-007 on its own.
+surface a gap that ADR-007 does not address: EaaS's own documentation describes a DC-network-only
+ingestion model with no public-cloud-aware feature, and says nothing about GCP. Internal
+Confluence records show this is not actually a blocker in practice — other Rakuten GCP-hosted
+services already ship logs to EaaS in production — but the mechanism that makes it work
+(a GCP shared VPC with Cloud Interconnect to Rakuten's DC network, provisioned and ACL'd
+per-project) lives entirely outside EaaS and is not documented by the EaaS team at all. Whether
+UCP's own GCP projects already have this connectivity, or would need to provision it, is the
+central open question this document raises for MCUCP-258 to resolve — it does not overturn
+ADR-007 on its own.
 
 ## Problem
 
@@ -166,18 +171,40 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph Tenant["Tenant workload (OneCloud-native or DC-network-reachable)"]
+    subgraph GCP["GCP project (e.g. GCP-C / MPD pattern)"]
+        Pod["GKE pod\n(stdout/stderr)"]
+        Vector["Vector or Filebeat\nsidecar"]
+        Pod --> Vector
+    end
+    subgraph SharedVPC["Shared VPC: dedicated-interconnect-sharedvpc"]
+        Interconnect["GCP Cloud Interconnect\n(dedicated line to Rakuten DC)"]
+    end
+    Vector -- "SASL_SSL, port 9092\n(ACL'd egress)" --> Interconnect
+    KDC["Kerberos KDC\n(port 88 TCP/UDP,\nrequired for Kafka SASL/GSSAPI)"]
+    Vector -. "auth" .-> KDC
+    Interconnect --> Kafka["EaaS Kafka\n(Secured tier — direct Kafka\naccess only allowed here)"]
+
+    subgraph Tenant["DC-network-native tenant workload\n(ROC / VMaaS / bare metal)"]
         App["App container\n(stdout/stderr)"]
         Filebeat["Filebeat\n(sidecar or shared shipper)"]
         App --> Filebeat
     end
     Filebeat -- "client_id/secret,\nBEAT protocol" --> GW["Logstash gateway\n(dedicated per-tenant endpoints,\ninternal DC hostnames)"]
-    GW --> Kafka["Kafka\n(durability buffer)"]
+    GW --> Kafka
+
     Kafka --> ES["Elasticsearch\n(7.10.2 Normal / 7.17.18 Secured)"]
     ES --> Kibana["Kibana\n(One Cloud SSO-gated)"]
     Kafka -.optional.-> Flink["Flink → HDFS\n(raw archive, Hive-query only)"]
     Kafka -.optional.-> NFSFwd["Logstash NFS forwarder\n→ NFS/Tape (RGR/legal archive)"]
 ```
+
+The GCP-side path is not an EaaS feature — EaaS's own documentation has no concept of it. It works
+because the GCP project sits on a shared VPC with a dedicated GCP Cloud Interconnect line into
+Rakuten's DC network, provisioned and ACL'd by the network/GCP-C team; once that line exists,
+traffic from the GKE pod looks like ordinary DC-network traffic to EaaS, which still only ever
+sees DC-network-origin connections. This is the pattern documented for other Rakuten GCP-hosted
+services (Confluence: *[Session Hint Cookie][PROD] GCP Cluster Onboarding
+Checklist*, *[GCP-C] Common ACL List* — see [References](#references)).
 
 - Core stack: **Kafka + Elasticsearch + Logstash + Kibana**. Two tiers exist — **Normal**
   (Elasticsearch 7.10.2, unencrypted Logstash↔Elasticsearch↔Kibana traffic, not PCI-DSS
@@ -193,18 +220,36 @@ flowchart LR
   EaaS-team-side gateway configuration. Supported raw protocols on Normal EaaS gateways are
   **BEAT, HTTP, TCP/Syslog, GELF**; Secured EaaS narrows this to **BEAT with SSL, HTTPS**.
   Direct Kafka access is prohibited on Normal EaaS, allowed on Secured EaaS.
-- **Connectivity constraint — the central finding for UCP:** EaaS's gateway endpoints are
-  documented with internal DC hostnames (e.g. `*.bdd.local`), and EaaS's own technical
-  documentation and FAQ both state: *"Due to general DEV VPN access policies, you cannot send
-  logs from your local PC. You can use nodes in the DC network to test the connectivity."* No
-  EaaS documentation describes a formal public-cloud/multi-cloud ingestion path analogous to
-  MonaaS's documented tenant-cloud bridge (self-managed Prometheus/OTel Collector →
-  `gateway-tenant-cloud` → Cortex, see [MCUCP-259's Option B
+- **Connectivity constraint — revised finding for UCP.** EaaS's gateway endpoints are documented
+  with internal DC hostnames (e.g. `*.bdd.local`), and EaaS's own technical documentation and FAQ
+  both state: *"Due to general DEV VPN access policies, you cannot send logs from your local PC.
+  You can use nodes in the DC network to test the connectivity."* No EaaS documentation describes
+  a formal public-cloud/multi-cloud ingestion path analogous to MonaaS's documented tenant-cloud
+  bridge (self-managed Prometheus/OTel Collector → `gateway-tenant-cloud` → Cortex, see
+  [MCUCP-259's Option B
   findings](system-resource-monitoring.md#option-b--monaas-onecloud-monitoring-as-a-service)).
-  Reaching an EaaS gateway from a GCP-hosted GKE cluster would require some private network path
-  between GCP and Rakuten's DC network (e.g. Cloud Interconnect or a site-to-site VPN) — whether
-  that path already exists for UCP, and whether EaaS's gateway ACLs would even accept traffic
-  from it, is **unconfirmed** and not addressed in any EaaS documentation reviewed.
+  However, internal Confluence records (not part of EaaS's own documentation set) show this is
+  **not a blocker in practice**: several Rakuten GCP-hosted services already ship logs to EaaS in
+  production —
+  - The `[Session Hint Cookie][PROD] GCP Cluster Onboarding Checklist` documents a GKE pod
+    (Vector sidecar) egressing directly to an EaaS Kafka broker
+    (`*.kaas.jpe2d.dcnw.rakuten:9092`, SASL_SSL), with a Kerberos KDC dependency on port 88
+    (TCP/UDP) for Kafka SASL/GSSAPI, over a GCP shared VPC named
+    `dedicated-interconnect-sharedvpc` — measured at **~23 Mbps per leg at 13.28K QPS**.
+  - The `[GCP-C] Common ACL List` shows a standing, repeated ACL pattern of
+    `GCP Subnet → EaaS kafka servers` across multiple GCP-C (MPD) projects, non-prod and prod.
+  - Multiple 2026 QA/regression reports (e.g. *JumboV2 app logs EaaS migration for GCP region*)
+    confirm GCP-hosted applications dual-writing logs to both Cloud Logging and EaaS in
+    production today.
+
+  The mechanism is infrastructure-level, not an EaaS feature: a GCP project on a shared VPC with
+  a **GCP Cloud Interconnect** dedicated line into Rakuten's DC network, provisioned and ACL'd by
+  the network/GCP-C team. Once that line exists, EaaS still only ever sees DC-network-origin
+  traffic — its DC-network-only posture is unchanged, satisfied invisibly at the network layer.
+  **What's still open for UCP specifically** is whether UCP's GCP projects already sit on such a
+  shared VPC, or whether provisioning one (plus the ACL request and Kerberos KDC access) needs to
+  happen — a concrete, answerable infrastructure question, not an open feasibility question. See
+  [Open questions](#open-questions).
 - **No documented ingestion API.** `eaas-api-guide.md` is an empty stub with no REST/OTLP
   ingestion spec — ingestion is shipper-only.
 - **Onboarding is fully manual/ticket-based**: a JIRA-ticketed "New pipeline Form" and
@@ -226,6 +271,69 @@ flowchart LR
   billed Kibana instance) — but One Kibana **cannot bridge the Normal/Secured boundary**, so a
   tenant split across both tiers cannot search both from one Kibana.
 
+**EaaS → Log-aaS (OpenSearch) migration in progress**
+
+EaaS is not a static platform. Rakuten has an approved project (Confluence, GCSTAT space,
+approval ref EPSDPMO-518) to migrate all EaaS Elasticsearch workloads to a new OpenSearch-based
+platform, renamed **Log-aaS**, driven by a licensing decision rather than a technical one: the
+EaaS team will **not renew Elasticsearch licenses after December 2027** due to a projected 3x
+cost increase, after which existing Elasticsearch-licensed clusters become non-compliant.
+
+```mermaid
+gantt
+    title EaaS → Log-aaS (OpenSearch) migration timeline
+    dateFormat YYYY-MM-DD
+    todayMarker off
+    section EaaS/Log-aaS project
+    Project proposal approved      :milestone, 2026-08-31, 0d
+    Plan/schedule approved (PoC)   :milestone, 2026-09-30, 0d
+    OpenSearch cluster creation    :2026-10-01, 2027-03-31
+    ES to OpenSearch transition    :2027-04-01, 2027-09-30
+    Legacy ES decommission         :2027-10-01, 2027-10-31
+    ES license non-renewal cutoff  :milestone, 2028-01-01, 0d
+    section UCP
+    UCP go-live (estimated)        :milestone, 2027-02-15, 0d
+```
+
+Key differences Log-aaS introduces over legacy EaaS:
+
+- **Self-service by default** — a new API plus a Rakuten OneCloud Portal UI, replacing EaaS's
+  fully manual, JIRA-ticket-driven onboarding (see [Option B's onboarding
+  finding](#option-b--eaas-rakuten-onecloud-logging-platform) above).
+- **Offline/cold storage tier**, restorable via API call — addresses EaaS's current gap where
+  long-term retention requires a separate, non-Kibana-searchable HDFS/NAS-Tape archive.
+- **New pricing model**: per-GB indexing rate (¥0.717/GB) plus separate online (¥60/GB/month) and
+  offline (¥20/GB/month) storage costs, replacing the BMaaS-instance-based dedicated pricing used
+  by legacy EaaS today. Log-aaS's own worked example estimates this as materially cheaper than
+  the equivalent legacy Secured-tier cost for the same volume/retention profile — but this has not
+  been modeled against UCP's own expected log volume (see [Open
+  questions](#open-questions)), and it makes the FY25 EaaS pricing figures in the
+  [Quantitative comparison](#quantitative-comparison) table above a moving target.
+- OpenSearch has been API-compatible with Elasticsearch since forking at the 7.10.2 line, but
+  diverged afterward — internal compatibility investigations for other Rakuten OpenSearch
+  migrations found query DSL differences and dependency/SDK conflicts (Elasticsearch-Java SDK vs.
+  OpenSearch-Java SDK) that required code-level changes for services doing direct
+  Elasticsearch-API queries, though **not** for services only using Filebeat/Logstash shipping
+  and Kibana/Discover-style search.
+
+**What this means for UCP specifically:** UCP's target go-live is estimated for early 2027, which
+falls squarely inside Log-aaS's own "OpenSearch cluster creation" execution phase (through
+2027-03-31) — the new
+platform will not be feature-complete or the default onboarding target yet. If Option B is
+chosen, UCP would onboard onto **legacy EaaS (Elasticsearch)** first, then be carried through the
+EaaS team's own ES→OpenSearch cutover sometime before September 30, 2027 — on the EaaS team's
+schedule, not UCP's choice. Whether that second migration is trivial for UCP depends entirely on
+what UCP builds on top of EaaS: if UCP only ships structured JSON stdout/stderr via
+Filebeat/Vector and uses Kibana Discover for search (the pattern this document's [Option B
+findings](#option-b--eaas-rakuten-onecloud-logging-platform) describe), the migration is expected
+to be a shipper-config/endpoint swap, per Log-aaS's own migration note ("need to create a new
+cluster with OpenSearch and update shipper (filebeat etc) config"). If UCP were to build direct
+Elasticsearch-API integrations, custom alerting against the Elasticsearch query DSL, or ML/security
+features specific to Elastic's platinum license, those would need separate validation against
+OpenSearch and are a materially higher-effort migration. This is a factor for MCUCP-258 to weigh,
+not a reason to delay the platform decision — UCP cannot wait for Log-aaS to be ready given its
+own estimated early-2027 timeline.
+
 **Pros**
 
 - Native Kibana UI — directly satisfies the ticket's literal UI example, with no
@@ -233,19 +341,22 @@ flowchart LR
 - Kafka as a durability buffer ahead of Elasticsearch gives some resilience against short
   Elasticsearch outages, compared to a direct-write pipeline.
 - Aligns with [ADR-007](../../../source/ucp-platform/docs/adr/ADR-007-observability-stack.md)'s
-  existing (currently unverified-for-GCP) assumption and with the MCUCP-259 metrics decision's
-  strategic preference for Rakuten's own OneCloud services over third-party cloud-proprietary
-  ones.
+  existing assumption and with the MCUCP-259 metrics decision's strategic preference for
+  Rakuten's own OneCloud services over third-party cloud-proprietary ones.
+- The GCP-to-EaaS network path is a **known, replicable pattern** already operated by other
+  Rakuten GCP-hosted services (GCP-C/MPD projects, Jumbo V2, hint-cookie-service) — this is not
+  a novel integration UCP would be the first to attempt.
 - Secured EaaS tier provides a PCI-DSS-compliant path if that certification becomes a
   requirement.
 
 **Cons**
 
-- **Unconfirmed whether EaaS is reachable at all from a GCP-hosted GKE cluster** without a
-  private network path that does not currently exist or is not confirmed to exist — this is a
-  qualitatively different risk than MonaaS's dedicated-line *cost* question in the metrics
-  research; there, the bridge is documented and working, only its line-item cost was
-  unquantified. Here, the bridge itself is undocumented.
+- **Requires a GCP Cloud Interconnect / shared-VPC path into Rakuten's DC network**, which is a
+  provisioning dependency outside EaaS's own onboarding process — whether UCP's GCP projects
+  already have this is unconfirmed (see [Open questions](#open-questions)), and if not, it needs
+  its own ACL request and Kerberos KDC access (port 88 TCP/UDP) for Kafka SASL/GSSAPI, on top of
+  EaaS's own ticket-driven onboarding. None of this is documented by the EaaS team — it is only
+  known from other teams' operational history.
 - Fully manual, multi-step, ticket-driven onboarding — no Terraform/API-driven provisioning,
   unlike Cloud Logging's Terraform-managed buckets/sinks.
 - Hand-authored GROK parsing per log group discards the automatic structured-field extraction
@@ -259,15 +370,32 @@ flowchart LR
 - Elasticsearch version inconsistency across EaaS's own docs (7.10.2/7.17.18 vs. "7.5 and
   7.13" elsewhere) makes it hard to plan for compatibility (e.g. with Graylog or specific
   Filebeat versions) without direct confirmation from the EaaS team.
-- Shared multi-tenant default tier carries a documented noisy-neighbor risk (the CaaS
-  DaemonSet shipping path explicitly warns "if one tenant sends lots of logs, performance can
-  be degraded" for other tenants on the shared shipper).
+- Normal (shared) tier carries a documented **backend-side** noisy-neighbor risk: the shared
+  Kafka/Elasticsearch cluster is used concurrently by many unrelated Rakuten tenants, so another
+  tenant's ingestion spike can affect UCP's own indexing/query performance — this is a real,
+  UCP-applicable risk if the Normal tier is chosen, separate from anything about UCP's own
+  client-side log collection.
+- CaaS's own technical guide separately warns of a **client-side** noisy-neighbor risk on its
+  shared DaemonSet shipping path ("if one tenant sends lots of logs, performance can be
+  degraded" for other tenants sharing that shipper) — this does **not** apply to UCP the same
+  way, since UCP runs on its own dedicated GKE clusters rather than CaaS's shared node pools; a
+  DaemonSet on UCP's own nodes would only ever share resources with UCP's own pods. The residual
+  version of this — e.g. Crossplane's provider controllers producing a reconcile-log burst that
+  competes with the API Server's logs on a shared node — is ordinary DaemonSet capacity
+  planning, not a multi-tenant risk.
+- **Onboarding onto EaaS today means being carried through a second, EaaS-team-driven
+  migration** (legacy Elasticsearch → Log-aaS/OpenSearch, target cutover by September 30, 2027)
+  on a timeline UCP does not control — see [EaaS → Log-aaS migration in
+  progress](#eaas--log-aas-opensearch-migration-in-progress) above. Expected low effort for
+  UCP's own Filebeat/Kibana-only usage pattern, but not yet validated against UCP's actual
+  design.
 
 **Trade-offs**
 
 - Trades a native Kibana UI and organizational/strategic alignment with Rakuten's own logging
-  platform for an unresolved — and possibly blocking — network-reachability question, a fully
-  manual onboarding process, and an explicit no-data-loss-guarantee posture.
+  platform for an additional infrastructure dependency (Cloud Interconnect/shared VPC + Kerberos
+  KDC access) that sits outside EaaS's own onboarding process, a fully manual EaaS-side
+  onboarding process, and an explicit no-data-loss-guarantee posture.
 - Trades short-term Elasticsearch search convenience for a fragmented long-term story: recent
   logs in Kibana, older logs in a separate, non-Kibana-searchable archive (HDFS/Hive) or a
   narrowly-scoped legal archive (NAS/Tape).
@@ -345,7 +473,7 @@ the metrics research.
 | UI | Native Logs Explorer — not Kibana | Kibana, One Cloud SSO-gated; "One Kibana" for cross-cluster search (free same-DC, billed cross-DC) | Kibana, fully self-managed access control |
 | Structured JSON field extraction | Automatic (`jsonPayload`) | Manual — hand-authored GROK patterns per log group | Automatic (native Elasticsearch JSON mapping) |
 | Onboarding model | Self-service, Terraform/`gcloud` | Manual, ticket-based (JIRA + Confluence forms), EaaS team as provisioning bottleneck | Self-service, but UCP builds and owns the whole stack |
-| Network path from GCP | Native — same project | **Unconfirmed** — no documented public-cloud ingestion path; DC-network-only ingestion stated explicitly in EaaS docs | Native — runs inside UCP's own GKE clusters |
+| Network path from GCP | Native — same project | No EaaS-side feature for this (DC-network-only per EaaS docs), but a **known infra pattern** exists: GCP shared VPC + Cloud Interconnect to Rakuten DC, already used by other GCP-hosted Rakuten services; open question is whether UCP's GCP projects have it | Native — runs inside UCP's own GKE clusters |
 | Data-loss posture | Standard GCP managed-service durability guarantees | Explicitly **not** loss-guaranteed on either tier, per EaaS's own documentation | Whatever UCP's own Elasticsearch replication/backup design achieves |
 | Compliance | Standard GCP compliance certifications apply | PCI-DSS: No (Normal) / Yes (Secured); Super-Confidential data (PII) prohibited on Normal, conditional/negotiated even on Secured | Whatever UCP configures — no built-in compliance certification |
 | Cross-signal correlation | Native, same-project with Cloud Trace/Cloud Monitoring | Not integrated with UCP's metrics platform (MonaaS) — separate systems, separate UIs | Would need to be built (e.g. correlating via `request_id` across Grafana and Kibana manually) |
@@ -358,26 +486,58 @@ being technically simpler than Option B (MonaaS), because the strategic case for
 rested on a **documented, working** tenant-cloud bridge — the operational cost of that bridge
 was measured and quantified via two executed PoCs.
 
-For logs, Option B's viability rests on a **network path that is not documented to exist**: no
-EaaS documentation describes ingestion from outside Rakuten's DC network, and the DC-network-VPN
-constraint is stated explicitly and repeatedly across EaaS's technical guide and FAQ. Recommending
-Option B here would mean asserting a bridge exists without evidence; recommending against it
-purely on that basis, without giving the EaaS team a chance to confirm or deny it, risks
-discarding the option ADR-007 already assumed and the option most aligned with UCP's stated
-OneCloud/organizational-alignment goals. This document intentionally stops short of a
-recommendation so that the connectivity question in [Open questions](#open-questions) can be
-answered by the EaaS/network teams before MCUCP-258's RFC commits to a platform.
+For logs, Option B's viability no longer rests on whether a network path can exist at all —
+internal Confluence records confirm other Rakuten GCP-hosted services already ship logs to EaaS
+in production via a GCP Cloud Interconnect / shared-VPC pattern (see
+[Option B findings](#option-b--eaas-rakuten-onecloud-logging-platform)). What remains open is
+whether **UCP's specific GCP projects** already have this connectivity, or whether provisioning
+it (shared VPC, Cloud Interconnect, ACLs, Kerberos KDC access) is additional infrastructure work
+that would need to land before EaaS onboarding could start — and how that provisioning
+cost/timeline compares to Option A or C. Recommending Option B here would still mean asserting a
+timeline and cost for infrastructure UCP does not yet know it has; recommending against it
+purely on the old "no documented bridge" basis would now be based on stale information. This
+document intentionally stops short of a recommendation so that the connectivity question in
+[Open questions](#open-questions) can be confirmed for UCP's own GCP projects (by the
+network/GCP-C team) before MCUCP-258's RFC commits to a platform.
 
 ## Open questions
 
-- **Does a network path from UCP's GCP projects to Rakuten's DC network (where EaaS gateway
-  endpoints live) already exist, or would one need to be provisioned (e.g. Cloud Interconnect,
-  site-to-site VPN)?** This is the single highest-priority question — it determines whether
-  Option B is viable at all, not just how much it costs.
-- If such a path exists or is provisioned, would EaaS's gateway ACLs accept traffic from it, and
-  would the "DC-network-only" ingestion constraint documented in EaaS's technical guide and FAQ
-  still apply, or is that constraint specific to VPN-based developer/test access rather than a
-  hard architectural limit?
+- **Network connectivity — confirm directly with the EaaS team.** Other GCP-hosted Rakuten
+  services already ship logs to EaaS in production via a GCP Cloud Interconnect / shared-VPC
+  path (GCP-C/MPD projects, Jumbo V2, hint-cookie-service — see [Option B
+  findings](#option-b--eaas-rakuten-onecloud-logging-platform)), so this is confirmed working in
+  principle, not a documented EaaS feature. Before MCUCP-258 commits to Option B, confirm with
+  the EaaS team (not just inferred from other teams' Confluence pages):
+  - Do UCP's GCP projects already sit on a shared VPC with a Cloud Interconnect line into
+    Rakuten's DC network, or would one need to be provisioned — and if so, what's the lead
+    time/cost (per the `[GCP-C] Common ACL List` and `[Session Hint Cookie]` onboarding-checklist
+    pattern)?
+  - Does reaching EaaS's Kafka brokers directly (Vector-sidecar pattern, port 9092 SASL_SSL)
+    require the **Secured** EaaS tier specifically, since direct Kafka access is documented as
+    prohibited on Normal EaaS?
+  - Is Kerberos KDC connectivity (port 88, TCP and UDP) already available from UCP's GCP
+    projects, or does it need its own ACL request? The onboarding checklist notes this
+    dependency is easy to miss and causes logging to fail silently if absent.
+  - **Known issues/risks/caveats from the EaaS team's own operational experience with this
+    pattern** — e.g. added latency over Cloud Interconnect vs. DC-native shipping, any history of
+    missing/dropped logs specific to the cross-network path, throughput ceilings, or extra
+    failure modes beyond what EaaS's standard no-loss-guarantee posture already covers. This
+    hasn't been confirmed anywhere reviewed so far — the Confluence evidence shows the pattern
+    works, not how well it performs or what has gone wrong with it.
+- If Option B is chosen, does UCP onboard directly onto legacy EaaS (Elasticsearch) given its
+  estimated early-2027 go-live, then get migrated to Log-aaS (OpenSearch) on the EaaS team's own
+  schedule (target cutover by 2027-09-30)? Confirm this sequencing with the EaaS/Log-aaS project
+  team (`Wang, Jialei | Jonsnow | MPD`) rather than assuming it.
+- Does UCP's planned use of EaaS/Log-aaS stay within Filebeat/Vector shipping + Kibana Discover
+  search (low migration effort per Log-aaS's own migration note), or would it need any direct
+  Elasticsearch-API queries, custom ElastAlert-style alerting, or Elastic-platinum-license
+  features (ML, advanced security) that would need separate OpenSearch compatibility validation?
+- What would UCP's estimated cost be under Log-aaS's new per-GB indexing + online/offline storage
+  pricing model (¥0.717/GB indexing, ¥60/GB/month online, ¥20/GB/month offline), once UCP's
+  expected log volume (see the [earlier open question on log
+  volume](#open-questions)) is known? This is a different pricing model from the FY25 EaaS figures
+  in the [Quantitative comparison](#quantitative-comparison) table above, which only reflect
+  legacy EaaS and will not apply once UCP is migrated to Log-aaS.
 - What is UCP's actual expected log volume across all environments, to convert Cloud Logging's
   per-GiB pricing and EaaS's stored-volume-at-month-end pricing into concrete monthly cost
   estimates? (This document did not re-confirm Cloud Logging's current exact per-GiB price —
@@ -405,13 +565,24 @@ answered by the EaaS/network teams before MCUCP-258's RFC commits to a platform.
 
 ## Related PoCs
 
-None yet. If the connectivity question above is answered in favor of EaaS being viable, a PoC
-analogous to the [MonaaS OTel Collector PoC](../pocs/monaas-otel-collector.md) — provisioning a
-Filebeat shipper from a GCP-hosted GKE pod and confirming it can actually reach an EaaS gateway
-endpoint and produce a searchable Kibana index — would be the natural next step before
-committing to Option B. If Cloud Logging or self-hosted EFK is chosen instead, a PoC verifying
-automatic GKE/Cloud SQL log collection (Option A) or a minimal EFK deployment's resource footprint
-(Option C) would parallel the PoCs already executed for the metrics decision.
+Real end-to-end connectivity from UCP's own GKE clusters to EaaS's gateway/Kafka endpoints
+cannot be tested yet — UCP's actual GCP environment isn't provisioned, and that question is
+tracked as a direct confirmation with the EaaS team in [Open
+questions](#open-questions) rather than something a PoC can resolve today.
+
+What can be tested now is the shipper side, decoupled from real network access: the
+[EaaS Log Shipping Simulation PoC](../pocs/eaas-log-shipping-simulation.md) deploys a
+log-generating workload plus a Filebeat shipper in the sandbox GKE cluster, shipping to a
+locally-simulated stand-in for EaaS's pipeline (Logstash → Kafka → Elasticsearch/Kibana, run via
+docker-compose on a local device) to validate shipper config correctness, GROK/JSON field
+parsing, and log-group tagging — the same "stand-in backend" pattern the [MonaaS OTel Collector
+PoC](../pocs/monaas-otel-collector.md) used for its collector variant. This PoC proves the
+shipper-configuration side of Option B works as expected; it does not and cannot prove GCP→EaaS
+network reachability, which stays an open question for the EaaS team to confirm.
+
+If Cloud Logging or self-hosted EFK is chosen instead, a PoC verifying automatic GKE/Cloud SQL
+log collection (Option A) or a minimal EFK deployment's resource footprint (Option C) would
+parallel the PoCs already executed for the metrics decision.
 
 ## References
 
@@ -427,3 +598,22 @@ automatic GKE/Cloud SQL log collection (Option A) or a minimal EFK deployment's 
 - Rakuten OneCloud EaaS documentation set (`docs/Others/EaaS/*`, `docs/Compute/CaaS/caas-technical-guide-logging.md`,
   `docs/roc-tos/eaas-sla.md`, `docs/FAQs/EaaS/EaaS-faqs-general.md`) — internal Docusaurus source
   provided directly for this research; not independently web-linkable, cited by file path
+- [\[Session Hint Cookie\]\[PROD\] GCP Cluster Onboarding Checklist](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6846493805) —
+  documents the Vector-sidecar-to-EaaS-Kafka pattern from a GKE pod, Cloud Interconnect shared
+  VPC, and Kerberos KDC dependency
+- [\[GCP-C\] Common ACL List](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6108637334) —
+  shows the standing `GCP Subnet → EaaS kafka servers` ACL pattern across GCP-C/MPD projects
+- [Redis Cluster Log Shipping to EaaS — Design & Implementation](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6681343690) —
+  Filebeat-to-EaaS-Logstash-gateway implementation detail (DC-network-native example)
+- [How To Implement - Eaas logging using filebeat](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=3952695496) —
+  general Filebeat-to-EaaS-gateway onboarding walkthrough (DC-network-native example)
+- [Test Report: JumboV2 app logs EaaS migration for GCP region](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6471669851) —
+  QA evidence of a GCP-hosted application dual-writing logs to Cloud Logging and EaaS in
+  production
+- [EaaS migration (Elasticsearch → OpenSearch) — Project Proposal](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6814285895) —
+  approved project driving the EaaS→Log-aaS/OpenSearch migration, license non-renewal driver,
+  timeline, scope
+- [EaaS migration (Elasticsearch → OpenSearch) — Note](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6894900976) —
+  license non-renewal date (2028-01) and senior-manager/official-announcement references
+- [Log-aaS New Infrastructure Billing](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6907710088) —
+  Log-aaS's new OpenSearch-based self-service platform, pricing model, and offline-storage tier
