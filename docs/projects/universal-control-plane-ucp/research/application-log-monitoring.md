@@ -24,11 +24,10 @@ This mirrors the three-option shape of the [System Resource Monitoring
 research](system-resource-monitoring.md) (MCUCP-259), which compared GCP Cloud Monitoring,
 MonaaS, and self-hosted Prometheus/Grafana for metrics.
 
-**No recommendation is made in this document.** Each option's findings, pros, cons, and
-quantitative/qualitative comparisons are presented for stakeholder discussion. This is a
-deliberate departure from the MCUCP-259 research, which did conclude with a recommendation —
-see [Why no recommendation yet](#why-no-recommendation-yet) for the reason specific to this
-decision.
+**This document recommends Option B — EaaS.** Each option's findings, pros, cons, and
+quantitative/qualitative comparisons are presented in full below for stakeholder review, the
+same as the MCUCP-259 metrics research's structure — see [Recommendation](#recommendation) for
+the reasoning and the one open item the recommendation still depends on.
 
 **Important cross-reference:** [ADR-007 (Observability Stack)](../../../source/ucp-platform/docs/adr/ADR-007-observability-stack.md)
 already states, as an accepted decision, that "EaaS (Filebeat) collects and ships to
@@ -479,26 +478,51 @@ the metrics research.
 | Cross-signal correlation | Native, same-project with Cloud Trace/Cloud Monitoring | Not integrated with UCP's metrics platform (MonaaS) — separate systems, separate UIs | Would need to be built (e.g. correlating via `request_id` across Grafana and Kibana manually) |
 | Organizational alignment | Deepens single-vendor (GCP) dependency, same concern the metrics research raised for Cloud Monitoring | Aligns with Rakuten's own internal platform strategy, same as MonaaS in the metrics decision — but only if the connectivity gap is resolved | Neutral — no vendor dependency either direction |
 
-## Why no recommendation yet
+## Recommendation
 
-The MCUCP-259 metrics research reached a recommendation despite Option A (Cloud Monitoring)
-being technically simpler than Option B (MonaaS), because the strategic case for Option B
-rested on a **documented, working** tenant-cloud bridge — the operational cost of that bridge
-was measured and quantified via two executed PoCs.
+**Use EaaS as UCP's application log platform.**
 
-For logs, Option B's viability no longer rests on whether a network path can exist at all —
-internal Confluence records confirm other Rakuten GCP-hosted services already ship logs to EaaS
-in production via a GCP Cloud Interconnect / shared-VPC pattern (see
-[Option B findings](#option-b--eaas-rakuten-onecloud-logging-platform)). What remains open is
-whether **UCP's specific GCP projects** already have this connectivity, or whether provisioning
-it (shared VPC, Cloud Interconnect, ACLs, Kerberos KDC access) is additional infrastructure work
-that would need to land before EaaS onboarding could start — and how that provisioning
-cost/timeline compares to Option A or C. Recommending Option B here would still mean asserting a
-timeline and cost for infrastructure UCP does not yet know it has; recommending against it
-purely on the old "no documented bridge" basis would now be based on stale information. This
-document intentionally stops short of a recommendation so that the connectivity question in
-[Open questions](#open-questions) can be confirmed for UCP's own GCP projects (by the
-network/GCP-C team) before MCUCP-258's RFC commits to a platform.
+The MCUCP-259 metrics research reached a recommendation for MonaaS despite Option A (Cloud
+Monitoring) being technically simpler, because the strategic case for Option B rested on a
+**documented, working** tenant-cloud bridge — the operational cost of that bridge was measured
+and quantified via two executed PoCs. The same shape of evidence now exists for logs: internal
+Confluence records confirm other Rakuten GCP-hosted services already ship logs to EaaS in
+production via a GCP Cloud Interconnect / shared-VPC pattern (see [Option B
+findings](#option-b--eaas-rakuten-onecloud-logging-platform)), and the [EaaS Log Shipping
+Simulation PoC](../pocs/eaas-log-shipping-simulation/poc-report.md) independently confirmed a
+shared Filebeat DaemonSet correctly ships and parses every one of UCP's real log shapes (a Go
+service, Temporal Server, Temporal Worker, Crossplane core) into a pipeline shaped like EaaS's
+own.
+
+Rationale:
+
+1. **Connectivity is a known, replicable pattern, not an open feasibility question.** GCP-C/MPD
+   projects, Jumbo V2, and hint-cookie-service all already run this bridge in production —
+   what's left is confirming UCP's own GCP projects have it or provisioning one, a
+   timeline/cost question, not a "does this work at all" question.
+2. **Shipper/parsing correctness is proven, hands-on, for UCP's actual log shapes** — not just a
+   generic sample. The PoC found and fixed real Filebeat/Logstash routing bugs before they could
+   surface during a real EaaS onboarding, and confirmed UCP's Temporal Workers already emit
+   ADR-007-compliant structured JSON.
+3. **Native Kibana UI** directly satisfies the Jira ticket's literal success criterion, with no
+   export/rebuild step (Option A) or self-managed hosting decision (Option C).
+4. **Organizational alignment** — EaaS keeps logs on Rakuten's own OneCloud platform, the same
+   direction already taken for metrics (MonaaS, MCUCP-259), rather than deepening a single-vendor
+   GCP dependency (Option A) or taking on the full operational/licensing burden of running
+   Elasticsearch UCP would otherwise own outright (Option C).
+5. **EaaS's own upcoming platform migration (Log-aaS/OpenSearch) works in UCP's favor, not
+   against it** — self-service APIs and a genuine long-term storage tier are coming, addressing
+   two of legacy EaaS's current cons (manual onboarding, short retention). UCP's estimated
+   early-2027 go-live means onboarding onto legacy EaaS first, then being carried through that
+   cutover on the EaaS team's schedule — expected to be low-effort for UCP's shipper/Kibana-only
+   usage pattern (see [EaaS → Log-aaS migration in
+   progress](#eaas--log-aas-opensearch-migration-in-progress)).
+
+**Confirmed risk to resolve before onboarding:** whether UCP's own GCP projects already sit on a
+shared VPC with a GCP Cloud Interconnect line into Rakuten's DC network, or whether one needs to
+be provisioned — and the resulting lead time/cost. This must be confirmed directly with the
+EaaS/network team (see [Open questions](#open-questions)) before onboarding starts, but it is a
+provisioning detail to resolve, not a reason to withhold the platform decision itself.
 
 ## Open questions
 
