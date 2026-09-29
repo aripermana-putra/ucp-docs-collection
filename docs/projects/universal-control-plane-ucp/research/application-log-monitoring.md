@@ -556,6 +556,20 @@ provisioning detail to resolve, not a reason to withhold the platform decision i
   search (low migration effort per Log-aaS's own migration note), or would it need any direct
   Elasticsearch-API queries, custom ElastAlert-style alerting, or Elastic-platinum-license
   features (ML, advanced security) that would need separate OpenSearch compatibility validation?
+- **Does the shipper side of the Log-aaS cutover stay a Filebeat config change, or does it
+  require a different ingestion mechanism?** Log-aaS's own migration note says to "update
+  shipper (filebeat etc) config" — implying Filebeat keeps working, just repointed at the new
+  cluster — consistent with OpenSearch forking Elasticsearch at the 7.10.2 line and retaining
+  much of that era's ingestion protocol. But Log-aaS is also described as shipping with "our new
+  API," fully self-service — if that new API changes the ingestion mechanism itself rather than
+  just the endpoint, the migration is more than a config change. Not confirmed either way;
+  confirm with the EaaS/Log-aaS project team before assuming a config-only migration.
+- **The UI changes from Kibana to OpenSearch Dashboards** — OpenSearch's own fork of Kibana from
+  before Elastic's license change, not an unrelated product, but with documented divergence
+  since the fork point (query-DSL and API differences have required code-level changes for other
+  Rakuten OpenSearch migrations). Whoever owns UCP's log-search workflows should expect to
+  re-familiarize with OpenSearch Dashboards specifically, not assume Kibana knowledge transfers
+  unchanged.
 - What would UCP's estimated cost be under Log-aaS's new per-GB indexing + online/offline storage
   pricing model (¥0.717/GB indexing, ¥60/GB/month online, ¥20/GB/month offline), once UCP's
   expected log volume (see the [earlier open question on log
