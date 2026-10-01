@@ -31,10 +31,14 @@ The group is still in its early days, so things will evolve — expect some ambi
 | Name | Nickname | Role |
 | --- | --- | --- |
 | Ryo Kimura | Ryo | L3 and L4 Manager |
-| Sebastien Bellefeuille | Sebas | Vice Manager / Architect |
+| Sebastien Bellefeuille | Sebas | Vice L3 Manager |
 | Yusuke Ohashi | Mike | Senior Software Engineer |
 | Ari Permana Putra | Ari | Senior Software Engineer |
+| Govind Madhu | Goku | Senior Software Engineer |
+| Krishna Chalwetkar | Krish | Software QA Engineer |
+| Parth Maheshwari | Parth | Software QA Engineer |
 | Rania Ben Kahla | Rania | Product Manager |
+| Cita Indraswari | Cita | Project Manager |
 
 ---
 
@@ -88,7 +92,7 @@ Rakuten AI Gateway is the internal platform for accessing AI-powered developer t
 **How to request access:**
 
 1. Go to the [User Onboarding guide](https://pages.ghe.rakuten-it.com/AI4B/rakuten-ai-gateway-docs/coding-agent/user-onboarding/user-onboarding.html) and follow **Case 2**
-2. Use SID **100553** when prompted
+2. Use SID **101856** when prompted
 3. Notify Kimura-san (L3 manager) to approve the request
 
 Once approved, you will have access to the following tools:
@@ -98,19 +102,26 @@ Once approved, you will have access to the following tools:
 | Claude Code | Agentic coding assistant (CLI) | By Anthropic — see section 3.3 for setup |
 | Codex | Agentic coding assistant | By OpenAI — see section 3.3 for setup |
 
-### 2.4 GitHub Enterprise (GHE)
+#### 2.3.1 Rakuten AI LLM
 
-Rakuten uses several Git-based repository managers (Bitbucket, GitHub Cloud, GitHub Enterprise). The UCP team uses **GitHub Enterprise (GHE)** — a self-hosted GitHub instance at [ghe.rakuten-it.com](https://ghe.rakuten-it.com).
+Rakuten AI LLM is an LLM API that provides access to Rakuten's in-house models. It is compatible with several coding agent tools.
+
+To get started, refer to the documentation: [Rakuten AI LLM — API Docs](https://api-opensource-ai.mde.rakuten-it.com/doc/)
+
+### 2.4 GitHub Enterprise Cloud (GHEC)
+
+Rakuten uses several Git-based repository managers (Bitbucket, GitHub Cloud, GitHub Enterprise). The UCP team uses **GitHub Enterprise Cloud (GHEC)** — Rakuten's GitHub organization hosted on [github.com/clsd-ucp](https://github.com/clsd-ucp).
 
 **How to get access:**
 
 1. Sign up at [github.com](https://github.com) using your Rakuten email address if you do not have a GitHub account yet
-2. You can log in to GHE with the same GitHub account — however, without an explicit access request, your account will be suspended after some time
-3. Follow the request guide in this document: [GitHub Enterprise — About GitHub Enterprise and Copilot](https://rakutenghd.zendesk.com/hc/en-us/articles/26524830883353--GitHub-Enterprise-About-GitHub-Enterprise-and-Copilot)
-4. After filling out the form, Kimura-san (L3 manager) will receive a notification to approve
-5. After approval, processing takes some time — raise this request as early as possible
+2. You can log in to GHEC with the same GitHub account — however, without an explicit access request, your account will be suspended after some time
+3. Follow the request guide in this document: [GitHub Copilot — Getting Started](https://rakutenghd.zendesk.com/hc/en-us/articles/62140653220761--GitHub-Copilot-Getting-Started)
+4. In the form, choose **GHE Cloud**, enter `clsd-ucp` as the GitHub Organization, and select **No** for Copilot
+5. After filling out the form, Kimura-san (L3 manager) will receive a notification to approve
+6. After approval, processing takes some time — raise this request as early as possible
 
-Once your GHE access is active, ask a senior team member to add you to the UCP repositories. You can browse the full list of repositories at [ghe.rakuten-it.com/clsd-ucp](https://ghe.rakuten-it.com/clsd-ucp).
+Once your GHEC access is active, ask a senior team member to add you to the UCP repositories. You can browse the full list of repositories at [github.com/clsd-ucp](https://github.com/clsd-ucp).
 
 ### 2.5 Jira & Confluence
 
@@ -125,8 +136,8 @@ Ask a senior team member to add you to the following:
 
 | What | Link |
 | --- | --- |
-| UCP Jira project | [MCUCP Board](https://jira.rakuten-it.com/jira/secure/RapidBoard.jspa?projectKey=MCUCP&rapidView=46297&view=planning) |
-| UCP Confluence space | [Universal Control Plane Home](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6227001101/Universal+Control+Plane+Home) |
+| UCP Jira project | [MCUCP Board](https://jira.rakuten-it.com/jira/secure/RapidBoard.jspa?rapidView=45857&projectKey=MCUCP&view=planning&selectedIssue=MCUCP-348&issueLimit=100#) |
+| UCP Confluence space | [Universal Control Plane Home](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6236258417/1-2.+Universal+Control+Plane) |
 
 ### 2.6 Cloud Platform Access
 
@@ -186,26 +197,25 @@ Join the following Slack channels once you have access:
 
 Once your Rakuten AI Gateway access is approved (see section 2.3), set up your chosen tool:
 
-**Claude Code**
+**Coding Agent**
 
-Follow the [Claude Code Setup Guide](https://pages.ghe.rakuten-it.com/AI4B/rakuten-ai-gateway-docs/coding-agent/claude-code/setup-guide.html).
+- **Claude Code** — Follow the [Claude Code Setup Guide](https://pages.ghe.rakuten-it.com/AI4B/rakuten-ai-gateway-docs/coding-agent/claude-code/setup-guide.html).
 
-> **Notes:**
-> - If the installation via `curl` fails, install via Homebrew (Mac) or npm instead — refer to the [official Claude Code setup docs](https://code.claude.com/docs/en/setup#homebrew)
-> - The Claude Code **desktop app** does not support the Rakuten AI Gateway API key — use the **CLI only**
+  > **Notes:**
+  > - If the installation via `curl` fails, install via Homebrew (Mac) or npm instead — refer to the [official Claude Code setup docs](https://code.claude.com/docs/en/setup#homebrew)
+  > - The Claude Code **desktop app** does not support the Rakuten AI Gateway API key — use the **CLI only**
 
-**Codex**
+- **Codex** — Follow the [Codex Setup Guide](https://pages.ghe.rakuten-it.com/AI4B/rakuten-ai-gateway-docs/coding-agent/codex/setup-guide.html).
 
-Follow the [Codex Setup Guide](https://pages.ghe.rakuten-it.com/AI4B/rakuten-ai-gateway-docs/coding-agent/codex/setup-guide.html).
+  > The Codex **CLI only** — the desktop app can no longer be used.
 
-> The Codex desktop app can also be used — the setup guide covers how to inject the API key into it.
+- **opencode**
 
 **Chat-based AI**
 
-If you need an AI chat interface, two options are available:
+If you need an AI chat interface:
 
 - [Rakuten AI Portal](https://r-ai.tsd.public.rakuten-it.com/en-US/chats) — no setup needed, just log in with your Rakuten SSO (independent of Rakuten AI Gateway)
-- Codex desktop app — requires completing the Codex setup above to configure the API key
 
 ---
 
@@ -215,7 +225,7 @@ If you need an AI chat interface, two options are available:
 
 The team runs a daily huddle to sync on progress and blockers.
 
-- **When:** Every day at 10:00 AM (unless rescheduled)
+- **When:** Every day at 01:00 PM (unless rescheduled)
 - **Where:** Zoom Meeting
 
 Ask Kimura-san to add you to the calendar invitation.
@@ -242,17 +252,18 @@ Work through this list during your first week. Raise access request early so pro
 | 1 | Verify Cisco Secure Client is installed and VPN works (intra + remote) — request account if not provisioned | See section 2.1 | Mentor or Senior team member | [ ] |
 | 2 | Request Slack workspace access | See section 2.2 | L3 Manager | [ ] |
 | 3 | Raise Rakuten AI Gateway join request | See section 2.3 | L3 Manager | [ ] |
-| 4 | Raise GHE org and repo access request | Jira ticket | L3 Manager for Approval. Mentor or Senior team member for repo access | [ ] |
-| 5 | Raise Jira project access request | Jira ticket | Mentor or Senior team member | [ ] |
-| 6 | Raise Confluence UCP space access request | Jira ticket | Mentor or Senior team member | [ ] |
-| 7 | Get added to GCP sandbox project (sub-gcp-ucp-clsd-sandbox) | Mentor or Senior team member | Senior team member | [ ] |
-| 8 | Get added to OneCloud UCP tenant (clsd-ucp) | Ask senior team member | Senior team member | [ ] |
-| 9 | Join mail distribution lists (clsd-ucp-group, clsd-ucp-section) | See section 2.7 | Sebas or Kimura-san | [ ] |
-| 10 | (Optional) Connect personal device to r-byod | See section 2.8 | Any teammate | [ ] |
-| 11 | Set up IDE | See section 3.1 | Any teammate | [ ] |
-| 12 | Join Slack channels | See section 3.2 | Any teammate | [ ] |
-| 13 | Set up AI tooling (Claude Code / Codex) | See section 3.3 | Any teammate | [ ] |
-| 14 | Attend daily huddle | See section 4.1 | Kimura-san | [ ] |
+| 4 | (Optional) Get access to Rakuten AI LLM | See section 2.3.1 | Mentor or Senior team member | [ ] |
+| 5 | Raise GHEC org and repo access request | Jira ticket | L3 Manager for Approval. Mentor or Senior team member for repo access | [ ] |
+| 6 | Raise Jira project access request | Jira ticket | Mentor or Senior team member | [ ] |
+| 7 | Raise Confluence UCP space access request | Jira ticket | Mentor or Senior team member | [ ] |
+| 8 | Get added to GCP sandbox project (sub-gcp-ucp-clsd-sandbox) | Mentor or Senior team member | Senior team member | [ ] |
+| 9 | Get added to OneCloud UCP tenant (clsd-ucp) | Ask senior team member | Senior team member | [ ] |
+| 10 | Join mail distribution lists (clsd-ucp-group, clsd-ucp-section) | See section 2.7 | Sebas or Kimura-san | [ ] |
+| 11 | (Optional) Connect personal device to r-byod | See section 2.8 | Any teammate | [ ] |
+| 12 | Set up IDE | See section 3.1 | Any teammate | [ ] |
+| 13 | Join Slack channels | See section 3.2 | Any teammate | [ ] |
+| 14 | Set up AI tooling (Claude Code / Codex) | See section 3.3 | Any teammate | [ ] |
+| 15 | Attend daily huddle | See section 4.1 | Kimura-san | [ ] |
 
 ---
 
