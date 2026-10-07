@@ -478,6 +478,102 @@ the metrics research.
 | Cross-signal correlation | Native, same-project with Cloud Trace/Cloud Monitoring | Not integrated with UCP's metrics platform (MonaaS) — separate systems, separate UIs | Would need to be built (e.g. correlating via `request_id` across Grafana and Kibana manually) |
 | Organizational alignment | Deepens single-vendor (GCP) dependency, same concern the metrics research raised for Cloud Monitoring | Aligns with Rakuten's own internal platform strategy, same as MonaaS in the metrics decision — but only if the connectivity gap is resolved | Neutral — no vendor dependency either direction |
 
+## Cost
+
+Cost is modeled for the two EaaS generations only. Cloud Logging's per-GiB price is not
+re-confirmed in this document (see [Open questions](#open-questions)), and self-hosted EFK has no
+published figure; both remain as described in the [Quantitative
+comparison](#quantitative-comparison).
+
+### Billing models
+
+| | Legacy EaaS (FY25) | Log-aaS |
+|---|---|---|
+| Basis | Data stored in Elasticsearch at month-end | Data ingested, plus data stored per tier |
+| Shared tier | ¥95.9/GB (Normal), ¥135.7/GB (Secured) | Not applicable — dedicated pipeline by default |
+| Dedicated | About ¥21K/node/month (Normal), ¥47K/node/month (Secured) | Not applicable |
+| Indexing | Included | ¥0.717/GB ingested |
+| Online storage | Included (7-day retention) | ¥60/GB/month |
+| Offline storage | Separate services (NFS/Tape billed by the Storage team, HDFS billed by EaaS) | ¥20/GB/month, no replica stored |
+
+### Forecast for comparable MPD tenants
+
+The Log-aaS team published forecasts for existing tenants using their prior utilization
+(14 days online, the remainder offline). The `cls-mpd` tenants are the closest comparables, since
+MPD is also GCP-hosted.
+
+| Tenant | Ingest/day | Log-aaS cost/month | Difference from legacy |
+|---|---|---|---|
+| `cls-mpd` | about 967 GB | ¥1,115,399 | Saves ¥337,928 |
+| `cls-mpd-ra` | about 1,316 GB | ¥1,484,666 | Costs ¥488,056 more |
+| `cls-mpd-stg` | about 203 GB | ¥166,184 | Saves ¥385,240 |
+
+Log-aaS is not uniformly cheaper than legacy EaaS; the result depends on volume and the
+online/offline retention mix. These tenants ingest 200 to 1,300 GB/day; UCP's volume is not yet
+estimated.
+
+### Illustrative UCP estimate
+
+Using the forecast pages' convention (14 days online, all remaining retention offline), Log-aaS
+costs about ¥21.5 for indexing, ¥840 for the online tier, and ¥20 per additional offline day, per
+GB/day of ingest, per month. Legacy EaaS at its 7-day default costs ¥671 (Normal) or ¥950
+(Secured) per GB/day per month, assuming replicas are not counted in the stored volume.
+
+| Ingest/day | Log-aaS, 14-day retention | Log-aaS, 90-day | Log-aaS, 365-day | Legacy Normal, 7-day | Legacy Secured, 7-day |
+|---|---|---|---|---|---|
+| 10 GB | ¥8.6K | ¥23.8K | ¥78.8K | ¥6.7K | ¥9.5K |
+| 20 GB | ¥17.2K | ¥47.6K | ¥157.6K | ¥13.4K | ¥19.0K |
+| 50 GB | ¥43.1K | ¥119.1K | ¥394.1K | ¥33.6K | ¥47.5K |
+| 100 GB | ¥86.2K | ¥238.2K | ¥788.2K | ¥67.1K | ¥95.0K |
+
+The ingest volumes are placeholders, not UCP estimates. Legacy EaaS retention beyond 7 days
+requires the archive services described in [Retention and housekeeping](#retention-and-housekeeping),
+whose pricing is not included here. The Log-aaS billing page's worked example states 3 days of
+offline storage but computes 7; its total is not used in this document.
+
+## Retention and housekeeping
+
+What happens to a log after the online retention window differs between legacy EaaS and Log-aaS.
+Legacy EaaS discards it unless an archive service was requested; Log-aaS moves it to an offline
+tier.
+
+```mermaid
+flowchart LR
+    subgraph Legacy["Legacy EaaS"]
+        K1["Kafka"] --> ES1["Elasticsearch\n7 days prod, 3 days staging"]
+        ES1 -->|"after retention"| D1(["Discarded by default"])
+        K1 -.->|"opt-in consumer"| NFS["Logstash NFS forwarder\nNFS 7 or 14 days, then Tape 6 months or 7 years\nRGR and legal, under 1 GB/day"]
+        K1 -.->|"opt-in consumer"| HDFS["Flink to HDFS\nany retention you define\ninvestigation only, under 100 TB"]
+        NFS -.->|"restore: ticket to NFS team"| R1["Restored data"]
+        HDFS -.->|"retrieve: Hadoop client, self-service\nsearch: Hive only, not Kibana"| R2["Raw, unfiltered logs"]
+    end
+    subgraph LogaaS["Log-aaS (OpenSearch)"]
+        ON["Online tier\nforecasts assume first 14 days"] -->|"ISM policy: snapshot"| OFF["Offline tier\nsnapshot in GCS bucket, no replica"]
+        OFF -->|"snapshot succeeded"| GONE(["Index removed from online tier"])
+        OFF -.->|"restore via API call"| ON2["Restored index"]
+    end
+```
+
+| Aspect | Legacy EaaS | Log-aaS |
+|---|---|---|
+| Online retention | 7 days prod, 3 days staging; extension negotiated with the EaaS team | Online tier; the forecast pages assume the first 14 days; the maximum is not documented |
+| After online retention | Discarded by default; NFS/Tape and HDFS archives are opt-in | Snapshotted to offline storage, then removed from the online tier; if the snapshot step fails, the index is kept |
+| Archive retention | NFS 7 or 14 days (temporary), then Tape 6 months or 7 years; HDFS any period, bounded by Hadoop platform capacity and service level | Not documented |
+| Restore | NFS/Tape: request to the NFS team. HDFS: self-service download with the Hadoop client | Self-service API call; restore time and limits are not documented |
+| Searchable while archived | Tape: no. HDFS: not in Kibana; Hive queries only, on raw unfiltered logs | Not documented; snapshot-based storage implies a restore before searching |
+| Loss and compliance | NFS: data loss unlikely but possible if all Logstash forwarders fail. HDFS: no loss guarantee, does not satisfy RGR or PCI-DSS. NFS/Tape is the RGR/legal path | Not documented for the archive |
+| Cost | NFS/Tape billed by the Storage team; HDFS billed by EaaS including Hadoop-as-a-Service | Offline storage ¥20/GB/month |
+
+The Log-aaS GCS snapshot behavior comes from the Log-aaS failure-test plan (snapshot-to-GCS
+failure cases halt the index deletion), not from a user-facing document. The billing page
+describes offline storage as "cold storage that can be restored using API call".
+
+**Implications for UCP.** The audit-log baseline from [MCUCP-256/257](logging-and-audit.md) is 90
+days hot and 1 year total. Legacy EaaS Tape offers 6 months or 7 years, so meeting that baseline
+on legacy EaaS requires the 7-year option. NFS/Tape is limited to under 1 GB/day, which audit
+logs may fit, but general application logs do not; application logs that need retention beyond 7
+days go to HDFS, which is not searchable in Kibana and does not meet RGR.
+
 ## Recommendation
 
 **Use EaaS as UCP's application log platform.**
@@ -593,6 +689,16 @@ provisioning detail to resolve, not a reason to withhold the platform decision i
   [MCUCP-256/257's](logging-and-audit.md) RGR MON-10 retention baseline (90 days hot, 1 year
   total — established for audit logs, but a reasonable bar for application logs too) argue
   against Option B's retention model regardless of the connectivity question?
+- What is Log-aaS's maximum offline retention, and what are the restore time and limits? Neither
+  is documented; see [Retention and housekeeping](#retention-and-housekeeping).
+- Is Log-aaS offline storage searchable without restoring it first, or does every lookup require
+  an API-driven restore?
+- Does Log-aaS's archive satisfy RGR and legal retention, or does NFS/Tape remain the compliance
+  path for audit logs after the migration?
+- Is archived data on legacy EaaS (NFS/Tape, HDFS) carried over to Log-aaS at cutover, or does it
+  stay on the legacy archive services?
+- What is UCP's expected ingest volume per environment? The [cost
+  estimate](#illustrative-ucp-estimate) uses placeholder volumes until this is known.
 - What is the current, authoritative Elasticsearch version EaaS runs, given the inconsistency
   between EaaS's service-description doc (7.10.2 Normal / 7.17.18 Secured) and its FAQ ("7.5 and
   7.13")? Relevant for any Filebeat-version compatibility planning if Option B is pursued.
@@ -655,3 +761,11 @@ parallel the PoCs already executed for the metrics decision.
   license non-renewal date (2028-01) and senior-manager/official-announcement references
 - [Log-aaS New Infrastructure Billing](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6907710088) —
   Log-aaS's new OpenSearch-based self-service platform, pricing model, and offline-storage tier
+- [Log-aaS forecasted costs based on prior utilization — CLS-MPD tenant](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6907710907) —
+  per-tenant Log-aaS cost forecasts for `cls-mpd`, `cls-mpd-ra`, and `cls-mpd-stg`, with
+  difference from legacy
+- [Log-aaS V1 Failure Test](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6859646879) —
+  failure-test plan showing ISM snapshotting indices to a GCS bucket before deletion
+- EaaS Backup and Archiving Guide and EaaS Pricing (`docs/Others/EaaS/eaas-backup-and-archiving-guide.md`,
+  `docs/Others/EaaS/eaas-pricing.md`) — legacy EaaS archive options, retention, restore, and FY25
+  pricing; covered by the EaaS documentation set entry above, cited by file path
