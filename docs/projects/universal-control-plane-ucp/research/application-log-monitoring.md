@@ -108,8 +108,8 @@ flowchart LR
     CloudSQL["Cloud SQL\n(Platform DB, Temporal DB)\nquery/audit logs"]
     NodeLogs["GKE node/system logs"]
     Agent -- "managed write" --> CL["Cloud Logging\n(managed backend, log buckets)"]
-    CloudSQL -- "native integration, free" --> CL
-    NodeLogs -- "native integration, free" --> CL
+    CloudSQL -- "native integration" --> CL
+    NodeLogs -- "native integration" --> CL
     CL --> Explorer["Logs Explorer\n(native UI)"]
     CL -.optional export.-> BQ["BigQuery / Cloud Storage\n(long-term / analytics)"]
 ```
@@ -123,7 +123,11 @@ flowchart LR
   convention) directly queryable in Logs Explorer without a custom parser/GROK pattern.
 - Cloud SQL query logs and audit logs are exported to Cloud Logging automatically via GCP's
   native Cloud SQL integration — same "automatic, zero-component" pattern as Cloud SQL metrics
-  in Option A of the metrics research.
+  in Option A of the metrics research. Basic database logging is on by default; query logging
+  (`log_statement`) and `pgaudit` require database flags. Cloud SQL's documentation defers billing
+  to the Cloud Logging pricing page, so these logs count as ordinary ingestion against the free
+  allocation and the per-GiB rate (see [Cost](#cost)); which audit log types are exempt is not
+  confirmed here.
 - **Retention**: the default `_Default` log bucket retains logs for **30 days**, configurable
   per bucket from **1 to 3,650 days** (10 years) [[Cloud Logging bucket retention
   docs](https://cloud.google.com/logging/docs/buckets)].
