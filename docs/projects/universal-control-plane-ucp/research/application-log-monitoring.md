@@ -460,7 +460,7 @@ the metrics research.
 |---|---|---|---|
 | Default retention | 30 days ([confirmed](https://cloud.google.com/logging/docs/buckets)) | 7 days prod / 3 days staging (EaaS docs) | Configurable, no default ceiling (ILM-managed) |
 | Max/extended retention | 1–3,650 days per bucket, self-service | Negotiated extension via EaaS team; long-term via separate HDFS (investigation-only, not Kibana-searchable) or NAS/Tape (RGR/legal only) | Unlimited, bounded by disk/cost, self-managed |
-| Ingestion pricing | Per-GiB ingestion cost beyond a per-project monthly free allocation (exact current figures not independently re-confirmed in this pass — see [Open questions](#open-questions)) | Shared tier: ¥95.90/GiB-stored-at-month-end (Normal), ¥135.69/GiB (Secured), FY25 rates | No per-GiB billing; cost is compute + disk + ops time |
+| Ingestion pricing | $0.50/GB ingested beyond 50 GB per project per month free, per the Coupon team's analysis (see [Cost](#cost)) | Shared tier: ¥95.90/GiB-stored-at-month-end (Normal), ¥135.69/GiB (Secured), FY25 rates | No per-GiB billing; cost is compute + disk + ops time |
 | Dedicated/fixed cost | None (pay-per-use) | Dedicated nodes: ¥21,082–50,919/node/month depending on flavor/tier (FY25) | Compute + persistent disk + cluster management fee (no published figure for this specific stack; directionally similar to the ~$800/month self-hosted Prometheus/Grafana baseline the metrics research measured for a comparable operational profile) |
 | Professional/paid support | N/A (standard GCP support tiers apply) | ¥12,242.56/hour (FY25) | N/A (in-house ops) |
 | SLA | Standard GCP SLA for Cloud Logging (not independently re-verified in this pass) | 99.95% single-DC / 99.99% multi-DC uptime; support hours JST 09:00–17:00 only (incident response is the only 24/7 coverage) | No platform SLA — availability is whatever UCP's own HA design achieves |
@@ -477,24 +477,26 @@ the metrics research.
 | Compliance | Standard GCP compliance certifications apply | PCI-DSS: No (Normal) / Yes (Secured); Super-Confidential data (PII) prohibited on Normal, conditional/negotiated even on Secured | Whatever UCP configures — no built-in compliance certification |
 | Cross-signal correlation | Native, same-project with Cloud Trace/Cloud Monitoring | Not integrated with UCP's metrics platform (MonaaS) — separate systems, separate UIs | Would need to be built (e.g. correlating via `request_id` across Grafana and Kibana manually) |
 | Organizational alignment | Deepens single-vendor (GCP) dependency, same concern the metrics research raised for Cloud Monitoring | Aligns with Rakuten's own internal platform strategy, same as MonaaS in the metrics decision — but only if the connectivity gap is resolved | Neutral — no vendor dependency either direction |
+| Operational overhead | Lowest: GKE's logging agent needs no UCP-managed shipper; retention and Log Router sinks are configured per project | Medium: UCP maintains the shipper (one Filebeat DaemonSet with RBAC per cluster, measured in the PoC) and files tickets for pipelines and parsers; EaaS runs the backend | Highest: UCP runs Elasticsearch, Kibana, and the shipper, including upgrades, HA, sizing, and licensing |
+| Long-term retention and restore | In-bucket retention up to 3,650 days with no restore; Log Router archive to Cloud Storage or BigQuery, queried with Log Analytics | Legacy: 7 days, then opt-in NFS/Tape or HDFS archives with ticket-based or Hive-only retrieval. Log-aaS: offline tier restored by API call, limits undocumented | UCP-defined ILM and snapshot policy; retention, archive location, and restore procedure are all UCP-owned |
 
 ## Cost
 
-Cost is modeled for the two EaaS generations only. Cloud Logging's per-GiB price is not
-re-confirmed in this document (see [Open questions](#open-questions)), and self-hosted EFK has no
-published figure; both remain as described in the [Quantitative
-comparison](#quantitative-comparison).
+Cost is modeled for the two EaaS generations and Cloud Logging. Self-hosted EFK has no published
+figure and is not modeled; it remains as described in the [Quantitative
+comparison](#quantitative-comparison). Cloud Logging figures come from the Coupon platform team's
+logging cost analysis, which uses GCP's published rates at ¥77 per $0.50.
 
 ### Billing models
 
-| | Legacy EaaS (FY25) | Log-aaS |
-|---|---|---|
-| Basis | Data stored in Elasticsearch at month-end | Data ingested, plus data stored per tier |
-| Shared tier | ¥95.9/GB (Normal), ¥135.7/GB (Secured) | Not applicable — dedicated pipeline by default |
-| Dedicated | About ¥21K/node/month (Normal), ¥47K/node/month (Secured) | Not applicable |
-| Indexing | Included | ¥0.717/GB ingested |
-| Online storage | Included (7-day retention) | ¥60/GB/month |
-| Offline storage | Separate services (NFS/Tape billed by the Storage team, HDFS billed by EaaS) | ¥20/GB/month, no replica stored |
+| | Legacy EaaS (FY25) | Log-aaS | Cloud Logging |
+|---|---|---|---|
+| Basis | Data stored in Elasticsearch at month-end | Data ingested, plus data stored per tier | Data ingested, plus storage beyond 30 days |
+| Shared tier | ¥95.9/GB (Normal), ¥135.7/GB (Secured) | Not applicable — dedicated pipeline by default | Not applicable |
+| Dedicated | About ¥21K/node/month (Normal), ¥47K/node/month (Secured) | Not applicable | Not applicable |
+| Ingestion | Included | ¥0.717/GB ingested | $0.50/GB (about ¥77/GB); first 50 GB per project per month free |
+| Online storage | Included (7-day retention) | ¥60/GB/month | Included for the first 30 days; $0.01/GB/month beyond |
+| Offline / archive | Separate services (NFS/Tape billed by the Storage team, HDFS billed by EaaS) | ¥20/GB/month, no replica stored | Log Router sink to Cloud Storage: Standard $0.023/GB/month, Archive $0.0025/GB/month plus $0.01/GB retrieval; BigQuery $0.02/GB/month storage plus $5/TB scanned |
 
 ### Forecast for comparable MPD tenants
 
@@ -525,6 +527,24 @@ GB/day of ingest, per month. Legacy EaaS at its 7-day default costs ¥671 (Norma
 | 20 GB | ¥17.2K | ¥47.6K | ¥157.6K | ¥13.4K | ¥19.0K |
 | 50 GB | ¥43.1K | ¥119.1K | ¥394.1K | ¥33.6K | ¥47.5K |
 | 100 GB | ¥86.2K | ¥238.2K | ¥788.2K | ¥67.1K | ¥95.0K |
+
+Cloud Logging at the same volumes, using the Coupon analysis rates (¥77/GB ingested, about
+¥1.5/GB/month for storage beyond the included 30 days, free tier ignored):
+
+| Ingest/day | Cloud Logging, 14-day retention | Cloud Logging, 90-day | Cloud Logging, 365-day |
+|---|---|---|---|
+| 10 GB | ¥23.1K | ¥24.0K | ¥28.3K |
+| 20 GB | ¥46.2K | ¥48.0K | ¥56.5K |
+| 50 GB | ¥115.5K | ¥120.1K | ¥141.3K |
+| 100 GB | ¥231.0K | ¥240.2K | ¥282.6K |
+
+The ranking depends on retention. At short retention, legacy EaaS is the cheapest (roughly 30 to
+40% of Cloud Logging's cost at 7 days) because it bills on stored volume while Cloud Logging bills
+every ingested GB. At long retention, Cloud Logging is the cheapest, because storage beyond 30 days
+costs about ¥1.5/GB/month against Log-aaS's ¥20/GB/month offline tier. The Coupon analysis
+reports the same shape at 1,245 GB/day: ¥893K/month on EaaS against ¥2.81M on Cloud Logging
+ingesting everything, and ¥291K after cutting log volume 90% with sampling, so Cloud Logging cost
+is highly sensitive to volume reduction.
 
 The ingest volumes are placeholders, not UCP estimates. Legacy EaaS retention beyond 7 days
 requires the archive services described in [Retention and housekeeping](#retention-and-housekeeping),
@@ -567,6 +587,14 @@ flowchart LR
 The Log-aaS GCS snapshot behavior comes from the Log-aaS failure-test plan (snapshot-to-GCS
 failure cases halt the index deletion), not from a user-facing document. The billing page
 describes offline storage as "cold storage that can be restored using API call".
+
+**Cloud Logging and self-hosted EFK.** Cloud Logging keeps logs searchable in Logs Explorer for
+the bucket's retention period (30 days by default, configurable per bucket up to 3,650 days), so
+retention inside the bucket needs no restore step. For cheaper long-term storage, a Log Router
+sink sends logs to Cloud Storage (Standard or Archive) or BigQuery; the Coupon team's design
+queries archived logs with Log Analytics and keeps the Archive tier for 31 to 365 days of
+compliance retention. Self-hosted EFK has no platform default: UCP defines the Index Lifecycle
+Management policy, the snapshot or archive location, and the restore procedure itself.
 
 **Implications for UCP.** The audit-log baseline from [MCUCP-256/257](logging-and-audit.md) is 90
 days hot and 1 year total. Legacy EaaS Tape offers 6 months or 7 years, so meeting that baseline
@@ -674,9 +702,9 @@ provisioning detail to resolve, not a reason to withhold the platform decision i
   legacy EaaS and will not apply once UCP is migrated to Log-aaS.
 - What is UCP's actual expected log volume across all environments, to convert Cloud Logging's
   per-GiB pricing and EaaS's stored-volume-at-month-end pricing into concrete monthly cost
-  estimates? (This document did not re-confirm Cloud Logging's current exact per-GiB price —
-  GCP's pricing pages did not render fetchable content during this research pass, the same
-  issue the MCUCP-259 research hit for some GCP documentation pages.)
+  estimates? (Cloud Logging's rates in [Cost](#cost) come from the Coupon team's analysis rather
+  than GCP's pricing pages, which did not render fetchable content during this research pass, the
+  same issue the MCUCP-259 research hit for some GCP documentation pages.)
 - Does ADR-007's EaaS/Filebeat decision need to be revisited or reconfirmed once the
   connectivity question above is answered? This document does not edit ADR-007 — it surfaces
   the open question ADR-007 does not address.
@@ -764,6 +792,9 @@ parallel the PoCs already executed for the metrics decision.
 - [Log-aaS forecasted costs based on prior utilization — CLS-MPD tenant](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6907710907) —
   per-tenant Log-aaS cost forecasts for `cls-mpd`, `cls-mpd-ra`, and `cls-mpd-stg`, with
   difference from legacy
+- [\[Public Cloud Integration\] GCP Logging Cost Optimization Strategy](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6418116160) —
+  Coupon platform team's EaaS versus Cloud Logging cost analysis, Cloud Logging and Cloud Storage
+  rates, and Log Router archive design
 - [Log-aaS V1 Failure Test](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6859646879) —
   failure-test plan showing ISM snapshotting indices to a GCS bucket before deletion
 - EaaS Backup and Archiving Guide and EaaS Pricing (`docs/Others/EaaS/eaas-backup-and-archiving-guide.md`,
