@@ -13,7 +13,7 @@ parent_page_id: "../lbaas-proxy-service-auth.md"
 | Repository | [aripermana-putra/kitchen-sink](https://github.com/aripermana-putra/kitchen-sink) |
 | Path | `lbaas-proxy-auth-poc/main.go` |
 | Entry point | `main()` |
-| Base commit | `d81be3e` (the PoC directory is not yet committed; no PoC commit SHA exists) |
+| Commit | `d1f9b08` on `main` |
 | Raw run output | `lbaas-proxy-auth-poc/run-output.txt`, `run-output-2.txt`, `run-output-variants.txt` |
 
 ---
@@ -46,11 +46,12 @@ JWK_PATH=<path to downloaded service account JWK> go run .
 | `PROXY_TOKEN_URL` | `https://roc-tenant-sa-kc-jws-80-keycloak.jpe2-caas1-beta1.caas.jpe2z.r-local.net/token` |
 | `LBAAS_BASE_URL` | `https://qa2-lbaas.r-local.net` |
 | `TLS_INSECURE` | `true` (TLS verification skipped, as `curl -k` in the source test) |
-| `ASSERTOR_AUD_ARRAY` | `false`; `true` signs the assertor with `aud` as `["rns:roc:lbaas"]` |
+| `ASSERTOR_AUD` | `rns:roc:lbaas`; comma-separated list. One value is sent as a string, several as an array |
+| `ASSERTOR_AUD_ARRAY` | `false`; `true` sends the `ASSERTOR_AUD` value as an array even when it has one entry |
 | `TOKEN_SCOPE` | unset; when set, sent as the `scope` form field on the token request |
 | `CONTROLS` | `true`; `false` skips the control calls |
 
-Steps executed in order: sign assertor, token exchange, access token decode, issuer checks, LBaaS call with the proxy token, control calls. The program was run twice with defaults, then three times with variants (`ASSERTOR_AUD_ARRAY`, `TOKEN_SCOPE`, both) and `CONTROLS=false`. Results are recorded in `poc-report.md`.
+Steps executed in order: sign assertor, token exchange, access token decode, issuer checks, LBaaS call with the proxy token, control calls. The program was run twice with defaults, then with variants A–F (`ASSERTOR_AUD_ARRAY`, `TOKEN_SCOPE`, `ASSERTOR_AUD`) and `CONTROLS=false`. Results are recorded in `poc-report.md`.
 
 ### Known-good comparison
 

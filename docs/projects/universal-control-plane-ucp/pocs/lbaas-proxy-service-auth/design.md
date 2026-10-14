@@ -101,7 +101,7 @@ flowchart TD
 4. **Issuer checks**: resolve the `iss` host, fetch `<iss>/.well-known/openid-configuration` and its `jwks_uri`.
 5. **LBaaS call**: `GET /v2/tenants` with the proxy token; record status, body and `x-request-id`.
 6. **Controls**: repeat the LBaaS call with no token, a malformed token and a correctly shaped token with an invalid signature; call a second LBaaS endpoint with the proxy token.
-7. **Variants**: repeat steps 1–5 with the assertor `aud` as an array, with `scope=openid profile rns:roc:lbaas` on the token request, and with both.
+7. **Variants**: repeat steps 1–5 with the assertor `aud` as a single-element array, with `scope=openid profile rns:roc:lbaas` on the token request, with both, with two services in the assertor `aud`, with a different service (`rns:roc:caas`), and with a bare `lbaas`.
 8. **Known-good comparison**: call `GET /v2/tenants` with a QA2 portal user token and compare its `iss`, `aud` (type and entries), `azp`, groups and claim names with the proxy token.
 
 ### Configuration
@@ -113,7 +113,8 @@ flowchart TD
 | `PROXY_TOKEN_URL` | Proxy service `/token` URL |
 | `LBAAS_BASE_URL` | LBaaS base URL (QA2) |
 | `TLS_INSECURE` | When `true`, skip TLS verification for the proxy call (the source test uses `curl -k`) |
-| `ASSERTOR_AUD_ARRAY` | When `true`, the assertor `aud` is `["rns:roc:lbaas"]` instead of a string |
+| `ASSERTOR_AUD` | Comma-separated assertor `aud` value(s); default `rns:roc:lbaas` |
+| `ASSERTOR_AUD_ARRAY` | When `true`, the assertor `aud` is sent as an array even with a single entry |
 | `TOKEN_SCOPE` | Value of the `scope` parameter on the token request (unset by default) |
 | `CONTROLS` | When `false`, skip the control calls in step 6 |
 

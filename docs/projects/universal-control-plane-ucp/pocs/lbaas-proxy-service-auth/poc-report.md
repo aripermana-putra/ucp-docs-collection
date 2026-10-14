@@ -12,7 +12,7 @@ parent_page_id: "../lbaas-proxy-service-auth.md"
 
 The failure from the [source test](https://confluence.rakuten-it.com/confluence/spaces/UCP/pages/6977413500/New+Proxy+Service+-+LBaaS+Test) reproduces on every run. The proxy issues a token with a valid issuer and signature. The LBaaS entry layer then fails with 500 for every path on that host, after signature validation passes.
 
-A user token from the same QA2 realm with the same LBaaS groups is accepted (200). The issuer, the realm, the LBaaS groups and JWKS reachability are therefore not the cause. The remaining differences between the two tokens are the type of `aud`, `azp`, and several claims the proxy token does not carry. The PoC does not isolate which one LBaaS fails on. The proxy builds these claims itself, so the client cannot change them.
+A user token from the same QA2 realm with the same LBaaS groups is accepted (200). The issuer, the realm, the LBaaS groups and JWKS reachability are therefore not the cause. The remaining differences between the two tokens are the type of `aud`, `azp`, and several claims the proxy token does not carry. The PoC does not isolate which one LBaaS fails on. The client chooses the target service through the assertor `aud`; the `aud` type (always a string) and `azp` (always `rns:roc:iam`) do not change with anything the client sends.
 
 ```mermaid
 flowchart TD
@@ -33,7 +33,9 @@ flowchart TD
 | A bad signature returns 403, no token or a malformed token redirects to login | the 500 depends on the token and occurs after signature validation |
 | A QA2 portal user token with the same LBaaS groups returns 200 on `/v2/tenants` | the LBaaS roles and the realm are not the cause |
 | A user token from the other realm (`accounts-onecloud`, no `qa2-`) returns 403 on `/v2/tenants` and `/v2/health` | LBaaS QA2 rejects tokens from another realm at signature or issuer validation |
-| Assertor `aud` as an array and a requested `scope` do not change the issued token | the proxy sets `aud`, `azp` and claims itself |
+| The assertor `aud` selects the target service: it sets the issued `aud` and the groups for that service (`rns:roc:caas` gives `rns:roc:caas::clsd-ucp:roles:admin`, `expires_in=600`) | the client controls which known service, not the claim type |
+| A single-element array assertor `aud`, a requested `scope`, or both do not change the issued token | `aud` stays a string and `azp` stays `rns:roc:iam` |
+| An assertor `aud` with two services is rejected (401 `invalid_client`); a bare `lbaas` is rejected (400 `invalid_target`, "unknown audience") | the proxy accepts one known full service identifier per request |
 | The result is identical across all runs | deterministic |
 
 ## What the PoC did not prove
@@ -77,7 +79,13 @@ flowchart TD
 | B: `scope=openid profile rns:roc:lbaas` | string | `rns:roc:iam` | 500, `ia-v2-cYcJYPOv4dXP89OofofQVlP3Mz` |
 | C: A and B together | string | `rns:roc:iam` | 500, `ia-v2-XV9EpSpkRYqO4gYfGZgyUjbfYR` |
 
-All three variants return 200 from the proxy and issue tokens with the same claims as the default.
+Variants A, B and C return 200 from the proxy and issue tokens with the same claims as the default.
+
+| Variant | Proxy `/token` | Issued `aud` | Issued groups | `azp` | LBaaS `GET /v2/tenants` |
+|---|---|---|---|---|---|
+| D: assertor `aud` = `["rns:roc:lbaas","rns:roc:caas"]` | 401 `{"error":"invalid_client","error_description":"client authentication failed"}` | none | none | none | not called |
+| E: assertor `aud` = `rns:roc:caas` | 200, `expires_in=600` | string `rns:roc:caas` | `rns:roc:caas::clsd-ucp:roles:admin` | `rns:roc:iam` | 403 |
+| F: assertor `aud` = `lbaas` | 400 `{"error":"invalid_target","error_description":"unknown audience"}` | none | none | none | not called |
 
 ### Other realm user token
 
@@ -93,8 +101,8 @@ All three variants return 200 from the proxy and issue tokens with the same clai
 | H1 issuer not resolvable or trusted | Not supported. The issuer resolves and serves discovery and JWKS, and a token with the same issuer is accepted. |
 | H2 missing or unexpected claim causes an unhandled error | Consistent with the data; the claim is not identified. |
 | H3 endpoint fault independent of the token | Not supported. A portal token gets 200 on the same endpoint. |
-| H4 `aud` as string, LBaaS expects an array | Consistent with the data; not confirmed. The client cannot change the type. |
-| H5 `azp` not in `aud` | Consistent with the data; not confirmed. |
+| H4 `aud` as string, LBaaS expects an array | Consistent with the data; not confirmed. No client input produces an array `aud`. |
+| H5 `azp` not in `aud` | Consistent with the data; not confirmed. `azp` is `rns:roc:iam` for every audience tried. |
 
 ## Recommendation
 
