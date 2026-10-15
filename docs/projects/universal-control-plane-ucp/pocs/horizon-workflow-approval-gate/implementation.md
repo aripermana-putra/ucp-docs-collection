@@ -130,8 +130,78 @@ Combined with the earlier reject evidence, both terminal outcomes (`Successful`,
 
 Querying `created_by`/`approver` for the PoC's own workflow immediately after it completed returned zero results, even though `GET /jobs/{id}` (direct lookup) showed the workflow with the correct `created_by` field. The two real workflows that did show up were both still `execution_status: waiting`; the PoC's own workflow was `completed` by query time. This is consistent with `/jobs` listing defaulting to in-progress workflows only — matching the Portal's own Approvals tab, which defaults to an "In-progress" status filter — rather than `created_by`/`approver` filtering being broken. Confirmed directly: a workflow created by this Kind **is** visible via `/jobs` while still open/actionable, the same way any other service's workflow is.
 
+## Evidence — conditional network-team step
+
+The network-team step carries `skip_if` on `params.vlan`, a payload-less `skip` trigger named by `skip_with`, and a `complete` trigger whose payload requires `vlan`. Runs via `VARIANT=vlan`:
+
+| Creation payload | `skip_if` | Result |
+|---|---|---|
+| `vlan` absent | `{{ params.vlan is defined and params.vlan }}` | Step waits; `complete` with `vlan` ends `Successful`; the `complete` trigger is recorded in the workflow |
+| `vlan: "vlan-200"` | `{{ params.vlan is defined and params.vlan }}` | `Error` outcome, step not marked skipped, note "An unexpected error arose, contact the Workflow support team" (node: Network team approval) |
+| `vlan: "vlan-200"` | `{{ params.vlan is defined and params.vlan \| length > 0 }}` | Step shown as "Network team approval (skipped - VLAN provided)", `is_skipped: true`, result `Skip`; workflow ends `Successful` after one approval |
+
+`skip_if` is typed as boolean-or-Jinja. Jinja's `a and b` returns `b` when `a` is true, so the first expression yields the string `vlan-200`, which produces the generic `Error`. The same generic note appeared for this expression fault, so it does not identify the cause. Using a separate payload-less trigger for `skip_with` was tried while diagnosing and did not change the first failure; whether `skip_with` can name the payload-requiring `complete` trigger once `skip_if` is a boolean was not tested. The supplied `vlan` is readable as `params.vlan`. Copying the `complete` payload into workflow `data` with a `data_update` adapter was not tested.
+
+## Evidence — first-layer approver from a UCP service role
+
+Production workflows with `service_resource_role` (`service_rns` `rns:roc:ucp`, role `test-admin`), `VARIANT=service-role`:
+
+| `resource_rns` | Role | Resolved `approve` groups | Operator's `approve` |
+|---|---|---|---|
+| `""` | `test-admin` | none (group dropped as null) | allowed |
+| `""` | `does-not-exist` | none (group dropped as null) | allowed |
+| `tenants:clsd-ucp` | `test-admin` | one group, title "ROC service ucp's resource tenants:clsd-ucp test-admins", zero emails | rejected: `WF0010`, allowed triggers `["cancel"]` |
+
+The definition validates (`definitions:validate`) with and without a resource. The role name is not checked when the resource is empty. UCP defines no Core Data resources, and the operator's `test-admin` is a coarse-grained grant, so a non-empty resource resolves to nobody. With an empty resource, the step has no approver groups and the operator, who is the requester and holds the Workflow `admin` and `creator` roles, can still approve.
+
+## Evidence — first-layer approver from a list of emails
+
+`VARIANT=user-groups` builds five `user` groups reading `params.approver_emails[i]`, each evaluating to an empty value when the list is shorter, with the first carrying a `backup_spec` to `clsd-ucp-team`:
+
+| `approver_emails` | Resolved `approve` groups | Operator's `approve` |
+|---|---|---|
+| the operator | one group with that email (other slots dropped) | allowed; `Successful` |
+| empty | none; the backup team is not present | allowed; `Successful` |
+
+An empty list leaves the step without approver groups, and the backup group is not applied to a null group. Who, other than the operator, could approve in the empty case was not tested; this needs a requester who holds neither the `admin` nor the `creator` role.
+
+## Evidence — custom notification email
+
+`VARIANT=email` adds an `email` callback node before the first approval step (`recipient` `{{ params.approver_emails[0] }}`, subject and body over `params`). The node reports `success` and the workflow proceeds; the message arrives in the recipient's inbox from the QA Workflow sender with the rendered request details. Two further production workflows (`SCENARIO=reject-layer1`, distinct `RESOURCE_ID` in the custom subject so each custom email identifies its workflow) compared the built-in emails:
+
+| Run | Workflow | Approve path ends in | Built-in emails received |
+|---|---|---|---|
+| control (`VARIANT=email`) | `1xEGAQ-CGTy8X2rhkk48LI4` | `Successful` | created, ask for review, updated, rejected |
+| `VARIANT=email,no-successful` | `1xEGAr-b5espkXsL7MJcej8` | `Completed` | created, updated, rejected |
+
+Both runs also delivered the custom email. With no path setting `Successful`, the built-in "ask for review" email to the step's approvers was not sent; the other built-in emails were. This matches the Explanation page's rule that a step email goes only to users who can take a required action. Each variant was run once, with the requester and the approver being the same person. Not tested: whether such approvers still see the workflow in the Portal's Approvals tab or `GET /jobs?approver=`, and whether the workflow's outcome is usable by the caller when it can never be `Successful` (approving ends as `Completed`).
+
+## Evidence — custom user group kind over Core Data
+
+A custom `http` user group kind (`tenant-ucp-admins`) reads a tenant's members from the Core Data API with `oauth2_client_credentials`, using a UCP service client (`rns:roc:ucp-ops`) whose secret and the Keycloak token URL are stored as a tenant secret and tenant config in the Workflow tenant. A step uses it as `{"kind": "tenant-ucp-admins", "tenant_rns": <owner tenant>, "tenant": "{{ params.tenant_name }}"}`. The log is `run-20261015-*-custom-kind-oauth.log` in the kitchen-sink PoC directory (no secrets in it).
+
+- The client obtains a token (600 s) from the QA Keycloak and reads the members of `clsd-ucp`, `clsd-ucp-qa4` and `iam` (HTTP 200 each), although its own groups are all `clsd-ucp` roles.
+- The processor must follow the dialect the registration endpoint validates. Accepted: filters after a concrete path, chained filters, and a single `&` for AND. Rejected: filters after `..`, `&&`, and `and`.
+- Role filtering is exercised against `clsd-ucp-qa4`, which has a developer-only and a viewer-only UCP member: the `tenant-admin` processors return 9 emails and exclude both. A service-only filter returns every UCP member regardless of role.
+- Two production workflows from one published definition, differing only in `params.tenant_name`: `clsd-ucp` resolved 5 approvers and `clsd-ucp-qa4` resolved 9, each matching the members with the UCP `tenant-admin` role. `approve`, `reject` and `cancel` were allowed for the operator, who is among the resolved admins.
+- Static `Authorization` headers are not used; the credential is obtained by Workflow from the client id and secret.
+- The kind, secret, config and both workflows were removed afterwards.
+
+The same kind with the processor filtering on the UCP role `test-admin` (held only by the operator in `clsd-ucp`) gives:
+
+| Tenant | `users/sync` | Workflow first step |
+|---|---|---|
+| `clsd-ucp` | the operator's email only | one approver; `approve`, `reject`, `cancel` allowed |
+| `clsd-ucp-qa4` (no holder) | `400 WF0062` | step created with a group that resolves to nobody; the operator's `approve` and `reject` are refused (`allowed: false`), only `cancel` is allowed |
+| `iam` (no holder) | `400 WF0062` | not run as a workflow |
+
+`WF0062` is therefore returned both for a failed call and for a processor that matches nobody. Unlike an empty `user` group or an empty `resource_rns`, which are dropped as null groups, a custom kind group that resolves to nobody is kept and no one can approve. A rerun of the `clsd-ucp-qa4` case (`run-20261015-*-custom-kind-test-admin-empty-tenant.log`) read the workflow after its step existed: `triggers_users.approve` and `.reject` each hold the custom group with `emails: []`, while `cancel` holds only the requester; the operator is allowed `cancel` only. The other logs are `run-20261015-*-custom-kind-test-admin*.log` (the first ends with a script error, the second removes the kind, secret, config and workflows).
+
+Not covered: the production `rns:roc:ucp` client and its permissions across all tenants UCP serves; behavior when the secret or config key is missing; refresh of membership on an open workflow.
+
 ## What is not covered
 
 - Whether UCP's own tenant/RBAC model maps 1:1 onto OneCloud tenant admins for the `tenant` user group kind to resolve correctly outside this PoC's own already-OneCloud-native tenant.
 - The resume callback and its retry behavior (Part B) — deferred, not currently being pursued.
+- Step expiry: no mechanism was found in the API schema or the Reference page.
 - `cancel-layer1` was not run — treated as low-risk given its structural identity to `reject-layer1`, not because it was verified.

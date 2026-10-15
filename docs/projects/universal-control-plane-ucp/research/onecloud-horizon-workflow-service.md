@@ -105,6 +105,60 @@ The tutorial [Workflow 2.39.0 - Tutorial](https://confluence.rakuten-it.com/conf
 
 The caveat is scope: "tenant" and "admins" here are Horizon/OneCloud's own IAM concepts (Tenant Management), not UCP's. This resolves cleanly **if** each UCP tenant corresponds 1:1 to an OneCloud tenant RNS and UCP's `tenant-admin` role is granted to the same users as that OneCloud tenant's `admins` role. If UCP's tenant/RBAC model is independent of OneCloud IAM (its own Postgres-backed tenant table, not synced to Core Data), the built-in Tenant kind won't resolve the right people. The platform's fallback for that case is a **custom user group kind** ([Workflow 2.39.0 - Explanation](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6881495339), "Custom user group kinds" section): a tenant-defined method for Workflow to fetch a list of users, which could point back at a UCP-owned endpoint that resolves "admins of tenant X" from UCP's own data. Other predefined kinds exist too — Organisation, Service, Service resource role, SID organisation, Team — none of which is a closer match than Tenant for this use case, but Service resource role (scoped to a `service_rns` + `resource_rns` + `role`) is worth keeping in mind if UCP registers per-resource approval scopes rather than per-tenant ones later.
 
+### Choosing the approver user group kind for UCP
+
+A step's `users` is a list of user groups. The kinds accepted by the API are `user`, `tenant`, `organization`, `sid_organization`, `service`, `service_resource_role`, `team`, and tenant-defined custom kinds (the request schema `ApiUserGroups` in the [Workflow OpenAPI spec](https://qa-horizon-workflow-api.r-local.net/openapi.json)). Which one fits UCP depends on whether UCP's tenants are OneCloud tenants:
+
+| Kind | Resolves to | Fit for "admins of the requesting tenant" |
+|---|---|---|
+| `tenant` | the `admins` of a OneCloud tenant RNS, taken from a request parameter | Works today (proven in the PoC); requires UCP tenants to be OneCloud tenants |
+| `service` | the service's provider admins; `role` is fixed to `service-provider-admin` | Wrong semantics |
+| `service_resource_role` | holders of a role on a registered Core Data resource of a service | Needs UCP registered in Core Data with tenant resources and fine-grained role grants; with an empty `resource_rns` it resolves to nothing |
+| `user` (one per email) | a single person, value can be Jinja over request parameters | Works for any tenant model; the approver list is supplied by UCP at creation and frozen |
+| custom HTTP kind | whatever a tenant-registered HTTP call returns, filtered by a JSONPath `processor` | Fits UCP's own tenant model; proven in the PoC against Core Data's members endpoint (see below) |
+
+**Custom user group kind over Core Data (route suggested by the Workflow team).** A tenant registers a custom kind with `POST /workflow-sapi/2/tenants/{tenant_rns}/user-group-kinds` (an `id` and an `http` spec: Jinja `url`, optional `auth`, optional `headers`, and a JSONPath `processor` that extracts the emails). A step then uses it as a user group. The call is made by Workflow, so the endpoint it queries must be reachable from Workflow's backend. Core Data's members endpoint is an internal Horizon API, so this route does not need a UCP-owned endpoint (reachability from Workflow's backend is inferred, not tested). The definition proven in the PoC (QA), adapted from the Workflow team's suggestion:
+
+```json
+{
+  "id": "tenant-ucp-admins",
+  "spec": {
+    "kind": "http",
+    "auth": {
+      "auth_type": "oauth2_client_credentials",
+      "client_id": "rns:roc:ucp-ops",
+      "client_secret": "{{ tenant_secrets.client_secret }}",
+      "token_url": "{{ tenant_config.keycloak_url }}"
+    },
+    "url": "https://qa-horizon-data-api.r-local.net/v0/tenants/rns:roc:iam::{{ ctx_tenant }}/members?roles=true",
+    "processor": "$.items[?(@.services[?(@.rns == 'rns:roc:ucp' & @.roles[?(@.name == 'tenant-admin')])])].email"
+  }
+}
+```
+
+Differences from the suggested sample, each required for it to work: the URL needs `?roles=true` (roles are omitted from the response otherwise); the role name is `tenant-admin`; and the JSONPath dialect accepts a filter only after a concrete path (not after `..`) and uses a single `&` for AND (`&&` and `and` are rejected at registration).
+
+and the step's group:
+
+```json
+{ "kind": "tenant-ucp-admins", "tenant_rns": "<tenant that owns the kind>", "tenant": "{{ params.tenant_name }}" }
+```
+
+How the pieces fit:
+
+- Extra properties on the group (`tenant` above) become `ctx_<name>` variables in the kind's expressions, so one registered kind serves every requesting tenant.
+- `client_secret` and `keycloak_url` come from tenant-level secrets and config (`POST .../tenants/{tenant_rns}/secrets` and `.../config`). The client needs a service credential for `rns:roc:ucp` that can read tenant members.
+- The members endpoint returns `items[].email` and `items[].services[].roles[].name` only when called with `?roles=true` ([Core Data API Swagger](https://qa-horizon-data-api.r-local.net/v0/docs/swagger.json)). Without it the filter matches nobody and the group resolves empty. The role name filtered on must be UCP's actual role name (the `groups` claim of a UCP user's token shows `rns:roc:ucp::<tenant>:roles:tenant-admin`).
+- Creating the kind and using it in a definition are API-only today; the Portal UI does not support custom user group kinds yet (support is being added). The Workflow team's message does not say whether approvers are affected when acting on such a workflow through the Portal's Approvals dashboard; `/jobs` access is ABAC and does not depend on the group kind.
+- Membership of a custom kind is re-resolved by the periodic refresh described below, and `PUT .../user-group-kinds/{id}/users/sync` (operator role) can trigger a sync.
+- Proven in the PoC: with a UCP-owned client (`client_credentials`), the kind resolves the UCP `tenant-admin` holders of the tenant passed on the group, for different tenants within one Kind (see the [PoC implementation](../pocs/horizon-workflow-approval-gate/implementation.md)). `PUT …/user-group-kinds/{id}/users/sync` with the context returns the resolved emails, which makes it a quick way to test a kind without creating a workflow. It returns `WF0062` both for a failed call and for a processor that matches nobody. A custom group that resolves to nobody is retained and no one can approve, unlike an empty `user` group or an empty `resource_rns`, which are dropped (so the empty case fails closed here).
+
+Behaviors that shape the choice:
+
+- **Empty or null groups are not safe by default.** A group that evaluates to null (an empty `user`, or `service_resource_role` with an empty resource) is removed. When every group on a trigger is removed, the PoC's requester, who also held the Workflow `admin` and `creator` roles, could still approve. A `backup_spec` on a null group did not take effect. Whether a requester without those roles can approve is unverified. UCP must therefore refuse to create a workflow whose approver list is empty, instead of relying on the platform.
+- **Membership refresh depends on the kind.** The platform re-resolves user groups of active workflows periodically, per the [Explanation](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6536157431) page (a new tenant admin can approve within about a day). This applies to the dynamic kinds (`tenant`, `team`, `service_resource_role`, custom). A `user` group built from request parameters stays as supplied at creation, so admins added or removed afterwards are not reflected. Refresh behavior was not tested.
+- **Emails are supplied by the creator.** With `user` groups, UCP looks up tenant admins in Core Data and passes them in the creation payload; the definition reads them through `params`.
+
 ### Callback and adapter nodes: how the state machine reaches out and remembers things
 
 These two node/component kinds are what would carry Part B (the resume mechanism) if it's picked back up, and they're worth understanding as a pair since they solve two different problems in the same flow — callbacks reach *out* of the workflow, adapters mutate the workflow's *own* data — per the confirmed schema in [Workflow 2.39.0 - Reference](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6881495342) ("Callback kinds" / "Adapters kinds" sections):
@@ -227,7 +281,9 @@ The [Workflow 2.39.0 - User Documentation](https://confluence.rakuten-it.com/con
 
 These still apply and matter for a governance-critical gate like this:
 
-- **Notifications are mandatory and not configurable off** — every production workflow sends email at creation, at reaching a step, and at completion. This is a platform behavior UCP would inherit, not something to design from scratch, but also not something UCP can suppress if it's undesirable for high-frequency drift-reconciliation approvals.
+- **Notifications are mandatory and not configurable off** — every production workflow sends email at creation, at reaching a step, and at completion. This is a platform behavior UCP would inherit, not something to design from scratch, but also not something UCP can suppress if it's undesirable for high-frequency drift-reconciliation approvals. The content of the built-in email has no customization; the Workflow team confirmed there is no support for custom email content. The review email can show extra request details: the Workflow team indicated the definition's `fingerprint_fields` (parameters that identify a request) are shown in it, with a screenshot of the "Your review is required" email listing "Availability Zone" and "Tenant Id" next to the workflow type, the approver's role, the requester and the request time. This is not documented and has not been tried here. A fingerprint also blocks a second active workflow with the same values (`409 WF0011`), so its fields must be chosen so legitimate repeated requests are not rejected. An `email` callback node placed before the first approval step delivered a custom message carrying request details (confirmed in an inbox), so approvers receive it in addition to the built-in email. Users who can take a required action, meaning one that leads to a path setting the `Successful` outcome, are the ones emailed; in the PoC, ending the approve path in `Completed` (so no path sets `Successful`) suppressed the built-in "ask for review" email to approvers while the other built-in emails and the custom email were still sent. This was observed once per variant with the requester and approver being the same person; it relies on a documented footnote, not a stated feature, and the approve outcome can then never be `Successful`.
+- **No step expiry, timer or auto-cancel.** The step node has no deadline or reminder property, the node kinds are Start, Step, Callback and End with no wait or timer, and the only timeout is per HTTP request. Expiring an approval needs a UCP-side timer calling `POST /jobs/{id}/cancel`, which requires a UCP identity to be allowed on the `cancel` trigger.
+- **Conditional steps need a boolean `skip_if`.** A step is skipped when `skip_if` evaluates to true and the trigger named by `skip_with` is applied automatically. A non-boolean result (Jinja `a and b` returns `b`) puts the workflow in the `Error` outcome. Data supplied in the creation `payload` is available as `params`, which lets a request carry values (for example a pre-allocated VLAN) that bypass a later team's step.
 - **Fingerprinting** could be directly useful for drift reconciliation: it can block duplicate active approval requests for the same resource (e.g. one fingerprint per `tenant_rns + resource_id`), preventing duplicate reconciliation approvals from piling up if drift is detected repeatedly before the first request is resolved.
 - **Maturity gaps** in the platform itself (from the [Maturity Assessment Report](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6499814686)): Security & Compliance is the weakest area (2.5/5 — partial scan enforcement, limited pen-testing) and Continuous Improvement is reactive rather than SLO-driven. Given UCP's Approval activity is meant to be a governance/safety gate, this is worth weighing against building the same primitive natively where UCP controls its own security posture end-to-end.
 - **Release coupling risk is real and documented**, not hypothetical: the Billing "Edit Flavor Pricing" rollout ([Operation HOR-15764](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6082700412)) was explicitly tied to a specific Workflow release version, and a slip on either side could have delayed the feature. A UCP integration would carry the same kind of cross-team release dependency on the Workflow team's roadmap.
@@ -253,6 +309,15 @@ Two integration architectures for UCP's Approval activity, based purely on what 
 - Should UCP register one Workflow Kind or two (provisioning approval vs. drift-reconciliation approval)? The existing catalog suggests one Kind per distinct operation, mirroring how CaaS has separate Kinds per quota/resource type rather than one generic "CaaS approval" Kind.
 - Does UCP's tenant model map 1:1 onto OneCloud/Horizon tenant RNS, with UCP's `tenant-admin` role granted to the same users as that tenant's Horizon `admins` role? The PoC's own tenant (`clsd-ucp`) is already a real OneCloud tenant, so its clean resolution doesn't generalize to UCP's actual multi-tenant case. If UCP's tenant model is independent, UCP needs a custom user group kind (an HTTP-based resolver pointing back at UCP's own tenant data) rather than the built-in Tenant kind — this changes the integration shape and should be confirmed with the Workflow Core Team before designing the real Kind definition.
 
+- Which `fingerprint_fields` appear in the review email, how are they labeled, and is the "What is this workflow?" text taken from the Kind's description? Does a fingerprint over request-identifying fields block legitimate repeats?
+- For the custom user group kind: is the group's `tenant_rns` the tenant that owns the kind or the requesting tenant, which service credential and secrets does the `auth` block use, and do approvers acting through the Portal dashboard work for workflows that use a custom kind?
+- Questions for the Workflow Core Team:
+  - Is there a supported way to customize or disable the built-in step notification, or to add request details to it?
+  - When all user groups on a trigger are null or empty, who may use the action? Can the requester self-approve? Does `backup_spec` apply to a null group?
+  - Can an open workflow's approvers be changed, for example through `PATCH .../workflows/{id}`? Do dynamic user groups really re-resolve within a day?
+  - Does `service_resource_role` resolve holders of coarse-grained roles, and is there a supported way to register UCP resources?
+  - Is there any step expiry, reminder or retention mechanism beyond what the spec shows?
+
 ## Related PoCs
 
 - [Horizon Workflow Approval Gate](../pocs/horizon-workflow-approval-gate.md) — **Complete.** Self-service Kind registration, parameter-driven tenant-admin approver resolution, a fixed-Team second layer, and `/jobs`-based production-workflow visibility, all confirmed against the QA environment with real evidence. The resume callback (Part B) is deferred, not attempted. See its [PoC Report](../pocs/horizon-workflow-approval-gate/poc-report.md) for the verdict.
@@ -261,6 +326,7 @@ Two integration architectures for UCP's Approval activity, based purely on what 
 
 - [Tenant Creation Flow](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6534579570) — the direct integration blueprint: sequence diagram, endpoints, callback/retry design decisions
 - [Guide to Workflow Types: Overview, Processes and Approvals](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=5110023427) — catalog of existing production approval-gate Workflow Kinds across -aaS platforms
+- [Explanation (CLDCPS, current)](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6536157431) — current version of the core product documentation; the "Custom user group kinds" section linked by the Workflow team
 - [Workflow 2.39.0 - Explanation](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6881495339) — core product documentation: resource model, ABAC access, notifications, fingerprinting
 - [2. Grant Workflow Service Roles](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6859627666) — onboarding/integration how-to for roles and service accounts
 - [7. Update your workflow creation API call](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6857878512) — current (WaaS) vs. legacy workflow-creation endpoint contract
@@ -271,6 +337,8 @@ Two integration architectures for UCP's Approval activity, based purely on what 
 - [Draft-UCP QA Test Strategy — Phase 1](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6763053812) — confirms UCP already models Approval as a Temporal activity (approve/reject/timeout) in its own architecture
 - [Workflow 2.39.0 - Tutorial](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6881495341) — hands-on walkthrough of building an approval Workflow, including the Tenant user group kind example
 - [Workflow 2.39.0 - Reference](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6881495342) — API environments table, user group kinds schema, error codes
+- [Workflow API OpenAPI spec (QA)](https://qa-horizon-workflow-api.r-local.net/openapi.json) — live schema for user group kinds, node and trigger definitions, creation payload, and transitions
+- [Core Data API Swagger (QA)](https://qa-horizon-data-api.r-local.net/v0/docs/swagger.json) — service roles, resource types, resources, and coarse- versus fine-grained role assignment (linked from the Confluence "Core Data API" page)
 - [Workflow 2.39.0 - How-to guides](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6882888886) — definition-authoring workflow, retry/reset mechanics for production workflows
 - [Workflow 2.39.0 - User Documentation](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=6882369151) — documentation landing page with the "Contact us" onboarding channel
 - [Workflow Stakeholders List](https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=5985737056) — Workflow Core Team contacts and per-service Workflow Owner mapping

@@ -36,6 +36,14 @@ A two-layer approval chain — the submitting tenant's admins, then a fixed team
 - Tenant subscription to the Workflow service (a Core Data API call, not a Workflow API call).
 - The Workflow `admin` role (Kind/definition management, test workflows) and, separately, the `creator` role (required specifically for production workflow creation).
 
+**Added by later scenarios** (details in [Implementation](implementation.md)):
+
+- A later approval step can be skipped from data supplied at creation (`params.vlan`), provided `skip_if` evaluates to a boolean.
+- A custom email from a callback node reaches a recipient supplied in the creation payload; it is sent in addition to the built-in step email, which cannot be customized or disabled by documented means. Ending the approve path in `Completed` instead of `Successful` suppressed the built-in "ask for review" email in a single comparison.
+- Approver lists can be supplied as `user` groups built from `params`. `service_resource_role` with no `resource_rns` resolves to nothing, and a trigger with no resolved groups can still be approved by the operator (requester with `admin` and `creator` roles).
+- A custom user group kind resolves the UCP `tenant-admin` holders of any tenant from Core Data using a UCP service client, with the tenant taken from the request; this removes the need for UCP tenants to be OneCloud tenants.
+- No step expiry or timer exists in the API schema or Reference page.
+
 **Operational gotchas confirmed**, relevant to any real integration:
 
 - `process` (test workflows only) is valid once, right after creation — calling it again after a trigger returns `400 WF0050`, since there's nothing automated left to advance through.
@@ -46,6 +54,8 @@ A two-layer approval chain — the submitting tenant's admins, then a fixed team
 
 - **Whether UCP's own tenant/RBAC model maps 1:1 onto OneCloud tenant admins.** The PoC's tenant (`clsd-ucp`) is already a real OneCloud tenant, so its clean approver resolution does not generalize to UCP's actual multi-tenant case. If UCP's tenant model is independent, the built-in `tenant` user group kind won't resolve the right people, and a custom (HTTP-based) user group kind would be needed instead. This remains the single most important open question before designing a real Kind.
 - **The resume callback (Part B).** Deferred entirely — every real callback URL found in the underlying research is an internal `r-local.net` service, and it was never confirmed whether Workflow's QA backend can reach anything a UCP-controlled endpoint would expose. No callback node was included in the tested definition at all.
+- **Who can approve when no approver group resolves.** Only the operator, holding the requester, `admin` and `creator` roles, was tried. Whether a plain requester could self-approve is untested.
+- **Approver changes after creation**, and whether the periodic group refresh behaves as documented.
 - **The `cancel` action**, empirically. Its transition is structurally identical to `reject` (same shape, different trigger id and terminal outcome) and was not run separately — treated as low-risk by inference, not verified.
 - **A drift-reconciliation-shaped trigger.** The tested Kind models a provisioning-request shape; no existing Workflow Kind anywhere in the platform models "resource drifted → reconciliation approval," so this specific trigger pattern remains unproven, though nothing in the state-machine model suggests it would behave differently.
 - **Any real Temporal integration.** The PoC's script is a standalone driver, not a Temporal activity — how a real "resume a paused Temporal activity from an external signal" mechanism would work was not built or tested.
