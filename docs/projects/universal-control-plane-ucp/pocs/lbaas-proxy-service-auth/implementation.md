@@ -13,8 +13,8 @@ parent_page_id: "../lbaas-proxy-service-auth.md"
 | Repository | [aripermana-putra/kitchen-sink](https://github.com/aripermana-putra/kitchen-sink) |
 | Path | `lbaas-proxy-auth-poc/main.go` |
 | Entry point | `main()` |
-| Commit | `6a7dd0a` on `main` |
-| Raw run output | `lbaas-proxy-auth-poc/run-output.txt`, `run-output-2.txt`, `run-output-variants.txt` |
+| Commit | `92658ae` on `main` |
+| Raw run output | `lbaas-proxy-auth-poc/run-output.txt`, `run-output-2.txt`, `run-output-variants.txt`, `run-output-role-change.txt` |
 
 ---
 
@@ -51,6 +51,7 @@ JWK_PATH=<path to downloaded service account JWK> go run .
 | `ASSERTOR_AUD_ARRAY` | `false`; `true` sends the `ASSERTOR_AUD` value as an array even when it has one entry |
 | `TOKEN_SCOPE` | unset; when set, sent as the `scope` form field on the token request |
 | `CONTROLS` | `true`; `false` skips the control calls |
+| `TOKEN_OUT` | unset; when set, the issued access token is written to this path with mode `0600` |
 
 Steps executed in order: sign assertor, token exchange, access token decode, issuer checks, LBaaS call with the proxy token, control calls. The program was run twice with defaults, then with variants A–F (`ASSERTOR_AUD_ARRAY`, `TOKEN_SCOPE`, `ASSERTOR_AUD`) and `CONTROLS=false`, then with the v3 host variants G–I (`LBAAS_V3_BASE_URL`).
 
@@ -59,6 +60,10 @@ Step 5b makes two additional calls on `LBAAS_V3_BASE_URL`: `GET /v3/version` and
 ### Known-good comparison
 
 User tokens from the OC portal were decoded and sent to LBaaS with `curl` and a `Authorization: Bearer` header, outside the Go program. The tokens are short-lived (600 s), supplied by the user, held in shell memory only and not stored in the repository or docs. The decode printed `iss`, `azp`, `aud` (type and entries), groups and claim names.
+
+### Role-change test
+
+The program mints the token (`TOKEN_OUT` saves it), and `curl` sends `DELETE /v3/tenants/clsd-ucp/acl_rules/<random nonexistent name>` with the saved token. The name is a random 12-character hex value that matches no rule, so the call returns 404 when authorized and 403 when not, and deletes nothing. The saved token files were removed after the test. Roles were changed on the service account in the OC portal by the PoC owner between runs.
 
 ## Limitations
 

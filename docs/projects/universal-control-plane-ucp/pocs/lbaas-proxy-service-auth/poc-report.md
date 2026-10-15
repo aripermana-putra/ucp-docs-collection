@@ -60,6 +60,17 @@ The passing proxy token has `azp=rns:roc:iam` (not among its `aud` entries) and 
 
 `qa-jpc1-user-dlb.r-local.net` and `qa-jpe1-user-dlb.r-local.net` resolve; they were not called. The QA v3 hosts are not listed in the OneCloud documentation, which lists Prod and Dev hosts only (see `evidence.md`).
 
+### Finding 5 — roles are read at exchange; LBaaS trusts the roles in an issued token
+
+| Check | Result |
+|---|---|
+| Role removed from the service account, new proxy token minted about a minute later | The token's `groups` no longer contains the removed role; no cache delay |
+| Token issued before the removal, used after it | Still accepted with the removed role's access |
+| Token issued after the removal, used after it | Refused with 403 |
+| Minting a new token | Does not invalidate older tokens; each is valid until its own `exp` (12 h for LBaaS) |
+
+A role removal reaches new tokens at once and already-issued tokens only when they expire. The window equals the token lifetime of the service.
+
 ## What the PoC proved
 
 | Finding | Observed |
@@ -70,6 +81,8 @@ The passing proxy token has `azp=rns:roc:iam` (not among its `aud` entries) and 
 | The 500 depends on the token | Bad signature gives 403, no or malformed token redirects to login, the portal token gives 200 |
 | The `aud` string-to-array change coincides with 500 turning into 200 | Observed on LBaaS v2 and v3 |
 | Wrong-realm tokens are rejected | A prod-realm user token gets 403 on QA2 v2 |
+| The proxy reads current roles at each exchange | The token minted right after a role removal lacked that role |
+| LBaaS v3 does not re-check roles on a token it already trusts | An old token kept operator access after the role was removed; a new token without it got 403 |
 
 ## What the PoC did not prove
 
@@ -125,6 +138,20 @@ The passing proxy token has `azp=rns:roc:iam` (not among its `aud` entries) and 
 
 Variant I responses: `/v3/version` returns `version=v3.2.7`, `api_region=jpe2`, `cassandra_keyspace=lbaas_jpe2`, `deployment_date=2026-09-10 23:43:14`. `/v3/tenants` returns the `clsd-ucp` tenant with `region_usage_list=["jpe1","jpe2"]`.
 
+### Role-change test (`run-output-role-change.txt`, 2026-10-15, LBaaS v3 QA `qa-jpe2-user-dlb`)
+
+Probe: `DELETE /v3/tenants/clsd-ucp/acl_rules/<random nonexistent name>`; 404 means authorized (the rule does not exist), 403 means not authorized. Nothing is deleted.
+
+| Stage | Issued `groups` | Result |
+|---|---|---|
+| Baseline | operator, viewer | `/v2/tenants` 200 `ia-v2-Wqd9V0DAOmC9pNbotSvvKwCuZT`; `/v3/version` 200; `/v3/tenants` 200 `ia-v3-UzKEKME5tovoZ8e6V1QU92T0lb` |
+| Viewer removed | operator | `/v2/tenants` 200 `ia-v2-26Ko7QUzbSIg7F77w2RrlOEvc0`; `/v3/tenants` 200 `ia-v3-4a3D6Jdv5gvtCokHBVu1fZqMz9` |
+| Both roles, token saved as "old" | operator, viewer | `/v3/tenants` 200; probe 404 `ia-v3-hrKk6dehsKkGr9lmyNKeaUlHw5` |
+| Operator removed, new token | viewer | `/v3/tenants` 403; probe 403 `{"message":"Forbidden"}` |
+| Operator removed, old token | operator, viewer (in the token) | `/v3/tenants` 200; probe 404 `ia-v3-LNjniv8Y70CUfTqtrNc0s7chx6` |
+
+A viewer-only token is refused on `GET /v3/tenants`; the operator role is required to read tenants.
+
 ### Other realm user token
 
 | Call | Result |
@@ -148,6 +175,7 @@ Variant I responses: `/v3/version` returns `version=v3.2.7`, `api_region=jpe2`, 
 2. Report to the LBaaS owners that a string `aud` produces a 500 after signature validation instead of 401 or 400. The failing request IDs above allow them to find the server-side error. RFC 7519 allows `aud` as a string or an array (see `evidence.md`), so the LBaaS gateway should accept both.
 3. Keep `lbaas-proxy-auth-poc` as a regression check for the proxy: it prints the `aud` type and the LBaaS v2 and v3 results in one run.
 4. Add the QA v3 hosts (`qa-<region>-user-dlb.r-local.net`) to the OneCloud LBaaS v3 documentation, which lists Prod and Dev hosts only.
+5. Treat a role removal as effective only after the token lifetime. Discard cached tokens when a tenant changes roles or a call returns 403, and ask the IAM team for short lifetimes on the services UCP uses.
 
 ## Related
 

@@ -23,7 +23,7 @@ sequenceDiagram
     participant LBaaS as LBaaS API (QA2)
 
     Client->>Client: Sign assertor JWT with SA JWK (EdDSA, aud=rns:roc:lbaas, exp=iat+20s)
-    Client->>Proxy: POST /token (client_credentials + client_assertion)
+    Client->>Proxy: POST /token (grant_type=client_credentials, client_assertion = signed JWT)
     Proxy-->>Client: 200 access_token (RS256, aud=rns:roc:lbaas, 12h)
     Client->>LBaaS: GET /v2/tenants (Bearer access_token)
     LBaaS-->>Client: 500 {"message":"Internal Server Error"}
@@ -105,6 +105,7 @@ flowchart TD
 7. **Variants**: repeat steps 1–5 with the assertor `aud` as a single-element array, with `scope=openid profile rns:roc:lbaas` on the token request, with both, with two services in the assertor `aud`, with a different service (`rns:roc:caas`), and with a bare `lbaas`.
 8. **Known-good comparison**: call `GET /v2/tenants` with a QA2 portal user token and compare its `iss`, `aud` (type and entries), `azp`, groups and claim names with the proxy token.
 9. **LBaaS v3**: call `GET /v3/version` and `GET /v3/tenants` with the proxy token on `LBAAS_V3_BASE_URL`. LBaaS v3 is served by the user DLB hosts (`https://<region>-user-dlb.r-local.net/v3`, with `qa-` and `dev-` prefixes for non-prod), not by the v2 host.
+10. **Role change**: change the service account's roles in the OC portal, mint a new token and read its `groups`; then call LBaaS with a token issued before the change and one issued after, using a request that is authorized by the changed role (a delete of a nonexistent resource: 404 when authorized, 403 when not).
 
 ### Configuration
 
