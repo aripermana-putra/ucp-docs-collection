@@ -185,7 +185,7 @@ C's weaker point against B is the LBaaS token lifetime: 12 hours through the pro
 
 A removed role keeps working on tokens issued before the removal, so the token lifetime is the only limit on that window. UCP should discard its cached token when a tenant changes roles or when a call returns 403, and mint a new one.
 
-Where UCP stores the JWK (Vault with External Secrets Operator or a Kubernetes Secret) follows the storage decision in [credential-management.md](credential-management.md) and [system-design.md](../production-design/system-design.md).
+UCP stores the JWK in GCP Secret Manager and synchronizes it to the UCP Crossplane Kubernetes cluster with the External Secrets Operator.
 
 
 ---
