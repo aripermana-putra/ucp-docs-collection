@@ -13,7 +13,7 @@ parent_page_id: "../lbaas-proxy-service-auth.md"
 | Repository | [aripermana-putra/kitchen-sink](https://github.com/aripermana-putra/kitchen-sink) |
 | Path | `lbaas-proxy-auth-poc/main.go` |
 | Entry point | `main()` |
-| Commit | `d1f9b08` on `main` |
+| Commit | `6a7dd0a` on `main` |
 | Raw run output | `lbaas-proxy-auth-poc/run-output.txt`, `run-output-2.txt`, `run-output-variants.txt` |
 
 ---
@@ -45,13 +45,16 @@ JWK_PATH=<path to downloaded service account JWK> go run .
 | `SA_ACCOUNT` | `ucp-cli-auth@clsd-ucp.iam.service-accounts.roc` |
 | `PROXY_TOKEN_URL` | `https://roc-tenant-sa-kc-jws-80-keycloak.jpe2-caas1-beta1.caas.jpe2z.r-local.net/token` |
 | `LBAAS_BASE_URL` | `https://qa2-lbaas.r-local.net` |
+| `LBAAS_V3_BASE_URL` | same as `LBAAS_BASE_URL`; set to `https://qa-jpe2-user-dlb.r-local.net` for LBaaS v3 QA |
 | `TLS_INSECURE` | `true` (TLS verification skipped, as `curl -k` in the source test) |
 | `ASSERTOR_AUD` | `rns:roc:lbaas`; comma-separated list. One value is sent as a string, several as an array |
 | `ASSERTOR_AUD_ARRAY` | `false`; `true` sends the `ASSERTOR_AUD` value as an array even when it has one entry |
 | `TOKEN_SCOPE` | unset; when set, sent as the `scope` form field on the token request |
 | `CONTROLS` | `true`; `false` skips the control calls |
 
-Steps executed in order: sign assertor, token exchange, access token decode, issuer checks, LBaaS call with the proxy token, control calls. The program was run twice with defaults, then with variants A–F (`ASSERTOR_AUD_ARRAY`, `TOKEN_SCOPE`, `ASSERTOR_AUD`) and `CONTROLS=false`. Results are recorded in `poc-report.md`.
+Steps executed in order: sign assertor, token exchange, access token decode, issuer checks, LBaaS call with the proxy token, control calls. The program was run twice with defaults, then with variants A–F (`ASSERTOR_AUD_ARRAY`, `TOKEN_SCOPE`, `ASSERTOR_AUD`) and `CONTROLS=false`, then with the v3 host variants G–I (`LBAAS_V3_BASE_URL`).
+
+Step 5b makes two additional calls on `LBAAS_V3_BASE_URL`: `GET /v3/version` and `GET /v3/tenants`. The program prints the issued `aud` with `%v`, so a string prints as `rns:roc:lbaas` and an array prints as `[rns:roc:lbaas]`. Results are recorded in `poc-report.md`.
 
 ### Known-good comparison
 

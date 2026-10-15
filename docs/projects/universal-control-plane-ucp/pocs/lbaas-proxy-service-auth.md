@@ -21,4 +21,4 @@ parent_page_id: "../pocs.md"
 | implementation.md | The Go program, how it was run, and limitations |
 | evidence.md | Facts taken from the source Confluence test |
 
-**Status:** Failure reproduced; the 500 occurs in the LBaaS entry layer after signature validation. A QA2 portal user token is accepted. The differing claim (`aud` type, `azp`, or missing claims) is not identified and needs a proxy-side change to test — see poc-report.md.
+**Status:** Complete. The 500 was caused by the proxy token's `aud` being a string; the proxy now issues `aud` as an array and LBaaS v2 and v3 (QA) return 200. See poc-report.md.
