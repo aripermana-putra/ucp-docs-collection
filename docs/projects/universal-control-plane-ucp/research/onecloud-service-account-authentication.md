@@ -65,13 +65,15 @@ flowchart TD
     end
     subgraph C[C: service account JWK]
         C1[Tenant creates the service account and roles in the OC portal] --> C2[Tenant downloads the JWK]
-        C2 --> C3[Tenant uploads it to UCP]
+        C2 --> C3[Tenant uploads it to UCP through the API or CLI; UCP validates the key]
         C4[Key lost or rotated] --> C5[Tenant adds a new key and removes the old one in the OC portal]
         C5 --> C3
     end
 ```
 
 Adding, listing and deleting JWKs in the OC portal is fully self-service for tenants, and a service account can hold at most 5 JWKs at a time. Losing a key, or rotating one, therefore needs no IAM-team request.
+
+The tenant generates, downloads and manages the JWK in the OC portal and uploads it to UCP through the UCP API or CLI. The portal generates the key, so the tenant does not choose its algorithm. Ed25519 (`kty=OKP`, `crv=Ed25519`) is the only algorithm confirmed with the proxy, and UCP does not need to support others. UCP validates the JWK at upload: it must contain the private part (`d`), `kty` must be `OKP`, `crv` must be `Ed25519`, and `kid` must be present. Any other key is rejected with a clear error at upload time instead of failing later at signing time.
 
 ### Observed behavior of option B
 
@@ -139,13 +141,13 @@ flowchart TD
 
 ### Dependency and failure behavior
 
-- The proxy is owned by the IAM team (which also runs Keycloak) and is supported in production. Its SLA is not yet known.
-- A cached access token covers an outage for the length of its TTL: hours for LBaaS, only 10 minutes for CaaS. Beyond that UCP cannot obtain new tokens.
-- In QA the proxy exposed one defect (string `aud`), which LBaaS answered with 500 instead of 401. The defect is resolved.
+- The proxy is owned by the IAM team (which also runs Keycloak) and is supported (But not yet in production as of this writing). Its SLA is not yet known.
+- A cached access token covers an outage for the length of its TTL: hours for LBaaS, only 10 minutes for CaaS (QA TTL, should be able to configure it by asking IAM team). Beyond that UCP cannot obtain new tokens.
+- In QA the proxy exposed one defect (string `aud`), which LBaaS answered with 500 instead of 401. The defect is resolved (by changing `aud` to array instead of string).
 
 ### What each option leaves open
 
-All three options store a long-lived secret for each tenant. Exfiltration of that secret from UCP's secret store remains the main residual risk, as already recorded in [cloud-provider-authz-model.md](cloud-provider-authz-model.md). C changes where a stolen secret works (only through the proxy, where each exchange can be logged and the tenant can disable the key) and what travels on every call; it does not remove the risk.
+All three options store a long-lived secret for each tenant. Exfiltration of that secret from UCP's secret store (GCP secret manager is planned, with ESO used to synchronize secret to UCP Crossplane k8s cluster) remains the main residual risk, as already recorded in [cloud-provider-authz-model.md](cloud-provider-authz-model.md). C changes where a stolen secret works (only through the proxy, where each exchange can be logged and the tenant can disable the key) and what travels on every call; it does not remove the risk.
 
 ---
 
@@ -162,7 +164,7 @@ All three options store a long-lived secret for each tenant. Exfiltration of tha
 | Early revocation | Not possible for the JWT; realm key rotation only | Rotate the secret | Remove the key |
 | Rotation without downtime | Replace the JWT | To be confirmed with IAM | Up to 5 keys per account |
 | Scope of one token | Whatever the JWT covers | All services the account has roles for (one token passed on six services) | One service, only its roles |
-| Access token lifetime | Set at mint (long) | 600 s (QA) | 43200 s for LBaaS, 600 s for CaaS; configurable per service |
+| Access token lifetime | Set at mint (long) | 600 s (QA) | 43200 s for LBaaS, 600 s for CaaS; (QA) configurable per service |
 | UCP implementation | Lowest | Token call + cache | Signing + token call + per-service cache |
 | New dependency | None | Keycloak | Proxy service |
 | Available for ROC service accounts | Yes (admin console) | Yes (tested in QA, created through an IAM request) | Yes (tested in QA) |
@@ -179,13 +181,12 @@ Prefer **C** over **A** and **B**:
 
 B is simpler for UCP to implement, issues 10-minute tokens, and one token works across the ROC services tested. It has the same dependency on the IAM team as A for creation, rotation and recovery, so it does not solve the onboarding problem. A B token also covers every service the account has roles for, whereas a C token is limited to the one service requested.
 
-C's weaker point against B is the LBaaS token lifetime: 12 hours through the proxy against 10 minutes for B. The IAM team can configure the proxy lifetime per service, so UCP should ask for a value close to B's for the services it uses.
+C's weaker point against B is the LBaaS token lifetime: 12 hours through the proxy against 10 minutes for B (QA). The IAM team can configure the proxy lifetime per service, so UCP should ask for a value close to B's for the services it uses.
 
 A removed role keeps working on tokens issued before the removal, so the token lifetime is the only limit on that window. UCP should discard its cached token when a tenant changes roles or when a call returns 403, and mint a new one.
 
 Where UCP stores the JWK (Vault with External Secrets Operator or a Kubernetes Secret) follows the storage decision in [credential-management.md](credential-management.md) and [system-design.md](../production-design/system-design.md).
 
-The decision between A, B and C is pending.
 
 ---
 
@@ -199,7 +200,6 @@ The decision between A, B and C is pending.
 | Which tenant role is required to create a service account, assign its roles and manage its keys? Is the same available through an API for UCP-guided onboarding? | IAM team |
 | How is the long-lived JWT minted from the admin console, and what expiry can it have? | IAM team |
 | Does the production proxy behave like QA (same claims, `aud` array, TTLs, hosts)? | IAM team |
-| How does a tenant download and upload the JWK during onboarding, and which key algorithms does the proxy accept besides Ed25519? | UCP team |
 | Do ROC services other than LBaaS accept the proxy token the same way? | UCP team |
 
 ---
