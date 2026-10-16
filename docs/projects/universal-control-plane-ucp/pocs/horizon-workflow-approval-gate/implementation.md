@@ -199,6 +199,86 @@ The same kind with the processor filtering on the UCP role `test-admin` (held on
 
 Not covered: the production `rns:roc:ucp` client and its permissions across all tenants UCP serves; behavior when the secret or config key is missing; refresh of membership on an open workflow.
 
+## Evidence — fingerprint
+
+`VARIANT=fingerprint` (production mode) publishes a definition whose top-level `fingerprint_fields` is `["resource_type", "resource_id", "tenant_name"]`; `payload_schema` also carries `reason`, which is not a fingerprint field. The run (`run-20261016-095039-fingerprint.log`) creates workflows in this order, all by the same requester against the same published version:
+
+| Case | Payload | Result |
+|---|---|---|
+| B | base values, `reason` set | created, stays open |
+| C | identical to B while B is active | `409 WF0011` "An active workflow with the same fingerprint exists"; the body carries the blocking `workflow_id` and the fingerprint values |
+| E | `resource_id` suffixed `-other` | created |
+| F | `tenant_name` removed | `400 WF0040` "Missing part of the fingerprint"; the body lists `fingerprint_fields` |
+| D | identical to B after B is cancelled | created |
+
+The duplicate check therefore applies only to active workflows; it did not block a repeat once the first was cancelled. A control run without a fingerprint is in `run-20261016-095055-fingerprint-control.log`.
+
+The "Your review is required" email for workflow E (screenshot from the operator's inbox) lists, after the workflow type: `Resource Type` (`vm`), `Resource Id`, `Tenant Name`, the approver's role(s), the requester and the request time, followed by a "What is this workflow?" box holding the Kind's description and a "View full workflow details" button. The fingerprint fields are labeled by their field name in title case. `reason`, which is not in the fingerprint, does not appear in the email, although the workflow's page in the OneCloud Portal shows it. The email also lists the actions the approver may take (Approve, Cancel, Reject).
+
+A second run (`VARIANT=fingerprint,user-groups`, approver list the operator only; `run-20261016-100250-fingerprint-version-race.log`) repeated B to F and added two cases:
+
+| Case | Setup | Result |
+|---|---|---|
+| G | workflow G1 open on version 25; the same definition is published as version 26; the same payload is created on version 26 | `409 WF0011` naming G1 (version 25) as the blocking workflow |
+| H | five creations of one new payload issued at the same instant on version 26 | all five created, five distinct workflows |
+
+The check therefore spans published versions of the Kind, and it does not hold under simultaneous creations: concurrent requests for one fingerprint can each pass. All workflows from the run were cancelled and read back as `Canceled`/`completed`. A cancel issued right after creation is refused with `WF0010` until the first step exists; the script retries it.
+
+A third run (`VARIANT=fingerprint-race,user-groups`, approver list the operator only; `run-20261016-101157-fingerprint-race-window.log`) measured the width of the window. Each row is three pairs of creations of one new payload, the second creation delayed by the stated time:
+
+| Delay of the second creation | Accepted per pair (3 pairs) |
+|---|---|
+| 0 ms | 2, 2, 2 |
+| 100 ms | 2, 2, 2 |
+| 300 ms | 2, 2, 2 |
+| 1000 ms | 1, 1, 1 (the second got the `409`) |
+
+The window is therefore longer than 300 ms and shorter than 1000 ms in this environment; the delay is measured from when the second request is issued, so request latency is included. The 21 accepted workflows were cancelled and read back as `Canceled`/`completed`.
+
+A fourth run (`VARIANT=fingerprint-types,user-groups`, approver list the operator only; `run-20261016-105450-fingerprint-types.log`) added six fingerprint fields of other types and created one workflow with them, then repeated the payload. The `409 WF0011` body returns every value with its JSON type intact (number, boolean, object, array, the full 630-character string, the HTML string unchanged). The review email lists each field in the order of `fingerprint_fields`, labeled by the field name in title case with underscores as spaces:
+
+| Field | Value sent | Shown in the email |
+|---|---|---|
+| `dry_run` (boolean) | `true` | `True` |
+| `labels` (object) | `{"env":"qa","team":"ucp"}` | `{ env: qa, team: ucp }` |
+| `markup` (string) | `<b>bold</b> & "quoted" 'single' <script>x</script>` | the same text, escaped and not rendered |
+| `note` (string, 630 characters) | `long-note-segment-` repeated | cut at about 120 characters and ended with `...` |
+| `quota` (number) | `12.5` | `12.5` |
+| `tags` (array) | `["alpha","beta",3]` | `[ alpha, beta, 3 ]` |
+
+Not covered: the other built-in emails (created, canceled) for the fingerprint workflows and the control run; delays between 300 and 1000 ms, and whether the window changes with load.
+
+## Evidence — idempotency inputs
+
+`VARIANT=idempotency,user-groups` (production mode, approver list the operator only; `run-20261016-101741-idempotency.log`) probes the two candidate inputs on version 28 of the Kind, with the fingerprint from the previous section in place.
+
+`X-Request-ID`, one fresh UUID `U`, creations issued two seconds apart:
+
+| Case | Header | Payload | Result |
+|---|---|---|---|
+| I1 | `U` | P1 | created |
+| I2 | `U` | P2 (different `resource_id`) | created, a new workflow with a different id |
+| I3 | `U` | P1 again | `409 WF0011` (fingerprint) |
+| I4 | none | P3 | created |
+| I5 | none | P3 again | `409 WF0011` (fingerprint) |
+
+The header does not deduplicate: the same `U` created two workflows for different payloads and did not return the first workflow for the repeated payload; I3 and I5 behave identically, so the `409` comes from the fingerprint alone.
+
+`POST /jobs:check-duplicate` (`workflow_kind`, `version`, `parameters`) returns `{"is_duplicate": bool}`:
+
+| Call | `is_duplicate` |
+|---|---|
+| active payload P3 | `true` |
+| unknown payload P4 | `false` |
+| issued 0 ms after the creation of the same payload (2 trials) | `false`, `false` |
+| 300 ms (2 trials) | `false`, `false` |
+| 600 ms (2 trials) | `true`, `true` |
+| 1000 ms and 1500 ms (2 trials each) | `true` |
+
+A workflow only counts as a duplicate for `check-duplicate` from somewhere between 300 and 600 ms after its creation request, which matches the race window seen for creation (accepted at 300 ms, refused at 1000 ms). `check-duplicate` is therefore a read of the same state and does not close the window. The 13 workflows from the run were cancelled and read back as `Canceled`/`completed`.
+
+Not covered: whether `check-duplicate` without `version` spans versions; the exact boundary between 300 and 600 ms.
+
 ## What is not covered
 
 - Whether UCP's own tenant/RBAC model maps 1:1 onto OneCloud tenant admins for the `tenant` user group kind to resolve correctly outside this PoC's own already-OneCloud-native tenant.
